@@ -1,0 +1,73 @@
+import { Palette } from "std-widgets.slint";
+
+export enum NavPage { home, clips, settings }
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+
+    height: 36px;
+    border-radius: 6px;
+    background: active ? Palette.accent-background : (touch.has-hover ? Palette.alternate-background : transparent);
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        x: 12px;
+        vertical-alignment: center;
+        text: root.label;
+        font-size: 14px;
+        font-weight: root.active ? 600 : 400;
+        color: root.active ? Palette.accent-foreground : Palette.foreground;
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    in property <NavPage> current;
+    callback selected(NavPage);
+
+    width: 200px;
+    background: Palette.alternate-background;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            padding-bottom: 16px;
+            spacing: 8px;
+            Image {
+                source: @image-url("../assets/tray.png");
+                width: 24px;
+                height: 24px;
+            }
+            Text {
+                text: "OpenClips";
+                font-size: 18px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+
+        NavItem {
+            label: "Home";
+            active: root.current == NavPage.home;
+            clicked => { root.selected(NavPage.home); }
+        }
+        NavItem {
+            label: "Clips";
+            active: root.current == NavPage.clips;
+            clicked => { root.selected(NavPage.clips); }
+        }
+        NavItem {
+            label: "Settings";
+            active: root.current == NavPage.settings;
+            clicked => { root.selected(NavPage.settings); }
+        }
+
+        Rectangle { }
+    }
+}

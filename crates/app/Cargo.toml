@@ -1,0 +1,29 @@
+[package]
+name = "openclips-app"
+description = "OpenClips desktop application: UI, tray, hotkeys and wiring"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "openclips"
+path = "src/main.rs"
+
+[dependencies]
+openclips-core.workspace = true
+openclips-capture.workspace = true
+slint.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+global-hotkey.workspace = true
+chrono.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[lints]
+workspace = true

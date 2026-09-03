@@ -1,0 +1,23 @@
+import { Palette } from "std-widgets.slint";
+
+export component PlaceholderPage inherits Rectangle {
+    in property <string> heading;
+    in property <string> detail;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 8px;
+        alignment: start;
+        Text {
+            text: root.heading;
+            font-size: 26px;
+            font-weight: 700;
+        }
+        Text {
+            text: root.detail;
+            color: Palette.foreground.with-alpha(0.7);
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+    }
+}

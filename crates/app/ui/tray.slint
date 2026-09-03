@@ -1,0 +1,36 @@
+export component TrayIcon inherits SystemTrayIcon {
+    icon: @image-url("../assets/tray.png");
+    tooltip: "OpenClips";
+    title: "OpenClips";
+
+    in property <bool> buffer-active;
+
+    callback open-window();
+    callback toggle-buffer();
+    callback save-clip();
+    callback quit();
+
+    clicked => { root.open-window(); }
+
+    Menu {
+        MenuItem {
+            title: "Open OpenClips";
+            activated => { root.open-window(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: root.buffer-active ? "Stop replay buffer" : "Start replay buffer";
+            activated => { root.toggle-buffer(); }
+        }
+        MenuItem {
+            title: "Save clip now";
+            enabled: root.buffer-active;
+            activated => { root.save-clip(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+}

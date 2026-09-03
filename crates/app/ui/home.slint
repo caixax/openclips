@@ -1,0 +1,170 @@
+import { Palette, Button, ScrollView } from "std-widgets.slint";
+import { AppInfo } from "types.slint";
+
+component InfoRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 12px;
+    Text {
+        text: root.label;
+        width: 110px;
+        color: Palette.foreground.with-alpha(0.6);
+        font-size: 13px;
+    }
+    Text {
+        text: root.value;
+        font-size: 13px;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+    }
+}
+
+component Card inherits Rectangle {
+    in property <string> heading;
+    background: Palette.alternate-background;
+    border-radius: 10px;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+        Text {
+            text: root.heading;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        @children
+    }
+}
+
+component Notice inherits Rectangle {
+    in property <string> message;
+    in property <color> tint: #b8860b;
+    background: root.tint.with-alpha(0.18);
+    border-color: root.tint;
+    border-width: 1px;
+    border-radius: 8px;
+    VerticalLayout {
+        padding: 12px;
+        Text {
+            text: root.message;
+            wrap: word-wrap;
+            font-size: 13px;
+        }
+    }
+}
+
+export component HomePage inherits ScrollView {
+    in property <AppInfo> info;
+    in property <string> startup-warning;
+    in property <string> hotkey-hint;
+    in property <bool> buffer-active;
+    in property <string> buffer-status;
+    in property <string> buffer-detail;
+    in property <string> encoder-name;
+    in property <string> capture-error;
+    in property <string> capture-notice;
+    in property <string> save-status;
+    in property <string> last-clip;
+
+    callback open-config-dir();
+    callback open-clips-dir();
+    callback toggle-buffer();
+    callback save-clip();
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+        alignment: start;
+
+        Text {
+            text: "Welcome";
+            font-size: 26px;
+            font-weight: 700;
+        }
+        Text {
+            text: "Local only game clip recorder. No cloud, no account, no telemetry.";
+            color: Palette.foreground.with-alpha(0.7);
+            font-size: 14px;
+        }
+
+        if root.startup-warning != "": Notice { message: root.startup-warning; }
+        if root.capture-error != "": Notice { message: root.capture-error; tint: #d9534f; }
+        if root.capture-notice != "": Notice { message: root.capture-notice; }
+
+        Card {
+            heading: "Replay buffer";
+            HorizontalLayout {
+                spacing: 10px;
+                Rectangle {
+                    width: 12px;
+                    height: 12px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 6px;
+                    background: root.buffer-active ? #e84444 : Palette.foreground.with-alpha(0.3);
+                }
+                Text {
+                    text: root.buffer-status;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+            InfoRow { label: "Buffer"; value: root.buffer-detail; }
+            InfoRow { label: "Encoder"; value: root.encoder-name; }
+            Text {
+                text: root.hotkey-hint;
+                color: Palette.foreground.with-alpha(0.6);
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Button {
+                    text: root.buffer-active ? "Stop buffer" : "Start buffer";
+                    clicked => { root.toggle-buffer(); }
+                }
+                Button {
+                    text: "Save clip now";
+                    enabled: root.buffer-active;
+                    primary: true;
+                    clicked => { root.save-clip(); }
+                }
+            }
+            if root.save-status != "": Text {
+                text: root.save-status;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.last-clip != "": InfoRow { label: "Last clip"; value: root.last-clip; }
+        }
+
+        Card {
+            heading: "This installation";
+            InfoRow { label: "Version"; value: root.info.version; }
+            InfoRow { label: "Platform"; value: root.info.platform; }
+            InfoRow { label: "Config file"; value: root.info.config-path; }
+            InfoRow { label: "Clips folder"; value: root.info.clips-dir; }
+            InfoRow { label: "Logs"; value: root.info.log-dir; }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Button {
+                    text: "Open config folder";
+                    clicked => { root.open-config-dir(); }
+                }
+                Button {
+                    text: "Open clips folder";
+                    clicked => { root.open-clips-dir(); }
+                }
+            }
+        }
+
+        Text {
+            text: "Closing this window keeps OpenClips running in the system tray. Use the tray menu to quit.";
+            color: Palette.foreground.with-alpha(0.6);
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}

@@ -1,0 +1,73 @@
+import { Palette } from "std-widgets.slint";
+import { Sidebar, NavPage } from "sidebar.slint";
+import { HomePage } from "home.slint";
+import { PlaceholderPage } from "placeholder.slint";
+import { AppInfo } from "types.slint";
+
+export { TrayIcon } from "tray.slint";
+
+export { AppInfo }
+
+export component MainWindow inherits Window {
+    title: "OpenClips";
+    icon: @image-url("../assets/icon.png");
+    min-width: 760px;
+    min-height: 480px;
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: Palette.background;
+
+    in property <AppInfo> info;
+    in property <string> startup-warning;
+    in property <string> hotkey-hint;
+    in property <bool> buffer-active;
+    in property <string> buffer-status: "Stopped";
+    in property <string> buffer-detail;
+    in property <string> encoder-name;
+    in property <string> capture-error;
+    in property <string> capture-notice;
+    in property <string> save-status;
+    in property <string> last-clip;
+
+    callback open-config-dir();
+    callback open-clips-dir();
+    callback toggle-buffer();
+    callback save-clip();
+
+    property <NavPage> page: NavPage.home;
+
+    HorizontalLayout {
+        Sidebar {
+            current: root.page;
+            selected(p) => { root.page = p; }
+        }
+
+        Rectangle {
+            if root.page == NavPage.home: HomePage {
+                info: root.info;
+                startup-warning: root.startup-warning;
+                hotkey-hint: root.hotkey-hint;
+                buffer-active: root.buffer-active;
+                buffer-status: root.buffer-status;
+                buffer-detail: root.buffer-detail;
+                encoder-name: root.encoder-name;
+                capture-error: root.capture-error;
+                capture-notice: root.capture-notice;
+                save-status: root.save-status;
+                last-clip: root.last-clip;
+                open-config-dir => { root.open-config-dir(); }
+                open-clips-dir => { root.open-clips-dir(); }
+                toggle-buffer => { root.toggle-buffer(); }
+                save-clip => { root.save-clip(); }
+            }
+            if root.page == NavPage.clips: PlaceholderPage {
+                heading: "Clips";
+                detail: "The clip library arrives in Sprint 4.";
+            }
+            if root.page == NavPage.settings: PlaceholderPage {
+                heading: "Settings";
+                detail: "Capture, hotkey and audio settings arrive in Sprints 2 and 3. Until then, edit the config file directly.";
+            }
+        }
+    }
+}
