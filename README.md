@@ -15,8 +15,8 @@ philosophy:
 
 ## Status
 
-OpenClips is in early development. The table below is kept current as
-features land.
+OpenClips is feature complete for its first release on Windows. The table
+below is kept current as features land.
 
 | Area | Status |
 | --- | --- |
@@ -27,7 +27,7 @@ features land.
 | Clip library with thumbnails and playback | Done (Sprint 4) |
 | Trim editor (stream copy and frame accurate) | Done (Sprint 5) |
 | Game detection, per game profiles, bundled games database | Done (Sprint 6) |
-| Fullscreen reliability pass, installer, launch on startup | Planned (Sprint 7) |
+| Fullscreen reliability pass, installer, launch on startup | Done (Sprint 7) |
 | Linux backend (PipeWire and desktop portal) | Future |
 
 What works today: the app starts capturing the selected display into memory
@@ -73,11 +73,10 @@ the game, with per game buffer length, subfolder and display overrides.
   points `PKG_CONFIG_PATH` and `PKG_CONFIG` at the default install location;
   set those two variables yourself if GStreamer lives elsewhere.
 
-  At run time the GStreamer DLLs must be on `PATH`:
-
-  ```text
-  PATH += C:\Program Files\gstreamer\1.0\msvc_x86_64\bin
-  ```
+  At run time no `PATH` changes are needed: the GStreamer imports are delay
+  loaded and the app looks for the runtime in a `gstreamer` folder next to
+  the executable, then in `GSTREAMER_1_0_ROOT_MSVC_X86_64`, then in the
+  default install locations, and shows a clear message if none exists.
 
   Plugins used: `d3d11` (screen capture), `nvcodec`, `qsv`, `amfcodec` and
   `mediafoundation` (hardware encoders), `x264` (software fallback),
@@ -91,7 +90,20 @@ cargo build --release
 cargo run --release
 ```
 
-The binary is `target/release/openclips.exe`. Run the checks the CI runs with:
+The binary is `target/release/openclips.exe`. To stage a distributable
+folder and zip, optionally with the GStreamer runtime bundled so it runs on a
+machine without GStreamer, use:
+
+```text
+powershell -File scripts\package.ps1 -BundleRuntime
+```
+
+`packaging\openclips.iss` builds a Windows installer from that staged folder
+with Inno Setup 6 (`ISCC.exe packaging\openclips.iss`). The installer offers
+a desktop shortcut and a "launch when Windows starts" task; the same option
+lives in the app's Settings page and uses the per user Run key.
+
+Run the checks the CI runs with:
 
 ```text
 cargo fmt --all --check
@@ -127,6 +139,7 @@ encoder = "auto"        # auto, nvenc, quick_sync, amf, software
 fps = 60
 bitrate_kbps = 20000
 show_cursor = false
+api = "desktop_duplication"   # or graphics_capture
 
 [capture.display]
 kind = "primary"        # or kind = "monitor", id = "\\\\.\\DISPLAY2"
@@ -264,6 +277,20 @@ exact path decodes with `uridecodebin`, re-encodes with the best available
 hardware encoder and AAC, and uses an accurate seek so the first frame is
 the one you picked.
 
+### Fullscreen games and black clips
+
+Desktop Duplication captures everything the display shows, including
+borderless and exclusive fullscreen games, and follows alt-tab and
+resolution changes: a mode change renegotiates the stream, the ring buffer
+restarts at the new size, and a capture error (a display going away, a
+driver reset) triggers an automatic restart, at most three times a minute
+before the failure is shown. Because a black clip must never be produced
+silently, the ring buffer watches the size of recent keyframes: a real
+picture at HD sizes never encodes below a few kilobytes per keyframe, so
+three tiny keyframes in a row raise a visible warning with the two fixes
+that work in practice (borderless windowed mode, or the Windows Graphics
+Capture method in Settings).
+
 ### Game detection
 
 Every two seconds the app lists running processes (tool help snapshot) and
@@ -276,6 +303,13 @@ binaries. Icons are pulled from the game's own executable through the
 shell (`SHGetFileInfo`) and cached as PNG, so no icon database ships with
 the app. The optional Steam lookup only runs when you press its button and
 only suggests names for executables without one.
+
+### Recovery
+
+A recording interrupted by a crash leaves a `.mp4.part` file that is still
+playable thanks to the fragmented layout. On the next start the library
+renames such files (once they are older than a minute) to
+`<name> (recovered).mp4` so they appear in the gallery.
 
 ### Stack
 

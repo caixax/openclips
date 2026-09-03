@@ -3786,10 +3786,12 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
  "trash",
  "ureq",
+ "windows 0.62.2",
 ]
 
 [[package]]
