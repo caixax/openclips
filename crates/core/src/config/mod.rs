@@ -293,31 +293,75 @@ pub struct GamesConfig {
     pub profiles: Vec<GameProfile>,
 }
 
+/// A hotkey that saves the last `seconds` of the buffer. Zero means the
+/// whole buffer length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SaveHotkey {
+    pub binding: Hotkey,
+    pub seconds: u32,
+}
+
+impl Default for SaveHotkey {
+    fn default() -> Self {
+        Self {
+            binding: Hotkey::new(Modifiers::ALT, Key::Char('8')),
+            seconds: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HotkeyConfig {
-    pub save_replay: Hotkey,
+    /// Any number of save hotkeys, each with its own length.
+    pub save: Vec<SaveHotkey>,
     pub toggle_replay_buffer: Hotkey,
     pub toggle_recording: Hotkey,
+    /// Pre 0.2 single save binding, migrated into `save` on load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_replay: Option<Hotkey>,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
-            save_replay: Hotkey::new(Modifiers::ALT, Key::Char('8')),
+            save: vec![SaveHotkey::default()],
             toggle_replay_buffer: Hotkey::new(Modifiers::ALT, Key::Char('9')),
             toggle_recording: Hotkey::new(Modifiers::ALT, Key::Char('0')),
+            save_replay: None,
         }
     }
 }
 
 impl HotkeyConfig {
-    pub fn all(&self) -> [(&'static str, Hotkey); 3] {
-        [
-            ("save_replay", self.save_replay),
-            ("toggle_replay_buffer", self.toggle_replay_buffer),
-            ("toggle_recording", self.toggle_recording),
-        ]
+    /// Every binding with a name, for conflict checks and display.
+    pub fn all(&self) -> Vec<(String, Hotkey)> {
+        let mut all: Vec<(String, Hotkey)> = self
+            .save
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (format!("save #{}", i + 1), s.binding))
+            .collect();
+        all.push(("toggle_replay_buffer".to_owned(), self.toggle_replay_buffer));
+        all.push(("toggle_recording".to_owned(), self.toggle_recording));
+        all
+    }
+
+    /// The first save binding, for hints.
+    pub fn primary_save(&self) -> Option<&SaveHotkey> {
+        self.save.first()
+    }
+
+    fn migrate(&mut self) {
+        if let Some(binding) = self.save_replay.take()
+            && self.save.is_empty()
+        {
+            self.save.push(SaveHotkey {
+                binding,
+                seconds: 0,
+            });
+        }
     }
 }
 
@@ -338,10 +382,11 @@ impl Config {
                 });
             }
         };
-        let config: Self = toml::from_str(&text).map_err(|source| CoreError::ParseConfig {
+        let mut config: Self = toml::from_str(&text).map_err(|source| CoreError::ParseConfig {
             path: path.to_path_buf(),
             source,
         })?;
+        config.hotkeys.migrate();
         config.validate()?;
         Ok(config)
     }
@@ -436,6 +481,24 @@ impl Config {
                 reason: "must be between 1 and 1024".to_owned(),
             });
         }
+        if self.hotkeys.save.is_empty() {
+            return Err(CoreError::InvalidConfig {
+                field: "hotkeys.save",
+                reason: "at least one save hotkey is required".to_owned(),
+            });
+        }
+        for save in &self.hotkeys.save {
+            if save.seconds != 0
+                && !(MIN_REPLAY_SECONDS..=MAX_REPLAY_SECONDS).contains(&save.seconds)
+            {
+                return Err(CoreError::InvalidConfig {
+                    field: "hotkeys.save.seconds",
+                    reason: format!(
+                        "must be 0 or between {MIN_REPLAY_SECONDS} and {MAX_REPLAY_SECONDS}"
+                    ),
+                });
+            }
+        }
         let bindings = self.hotkeys.all();
         for (i, (name_a, a)) in bindings.iter().enumerate() {
             for (name_b, b) in &bindings[i + 1..] {
@@ -529,14 +592,15 @@ mod tests {
 
     #[test]
     fn partial_file_fills_in_defaults() {
-        let text = "[replay]\nlength_seconds = 90\n\n[hotkeys]\nsave_replay = \"Ctrl+F10\"\n";
+        let text = "[replay]\nlength_seconds = 90\n\n[[hotkeys.save]]\nbinding = \"Ctrl+F10\"\nseconds = 15\n";
         let config: Config = toml::from_str(text).expect("parse");
         assert_eq!(config.replay.length_seconds, 90);
         assert_eq!(
             config.replay.memory_cap_mb,
             ReplayConfig::default().memory_cap_mb
         );
-        assert_eq!(config.hotkeys.save_replay.to_string(), "Ctrl+F10");
+        assert_eq!(config.hotkeys.save[0].binding.to_string(), "Ctrl+F10");
+        assert_eq!(config.hotkeys.save[0].seconds, 15);
         assert_eq!(
             config.hotkeys.toggle_recording,
             HotkeyConfig::default().toggle_recording
@@ -561,7 +625,7 @@ mod tests {
         assert!(config.validate().is_err());
 
         let mut config = Config::default();
-        config.hotkeys.toggle_recording = config.hotkeys.save_replay;
+        config.hotkeys.toggle_recording = config.hotkeys.save[0].binding;
         assert!(matches!(
             config.validate(),
             Err(CoreError::InvalidConfig {
@@ -596,7 +660,7 @@ mod tests {
         assert!(base.replay_limits_changed(&next));
 
         let mut next = base.clone();
-        next.hotkeys.save_replay = "F9".parse().expect("valid");
+        next.hotkeys.save[0].binding = "F9".parse().expect("valid");
         assert!(base.hotkeys_changed(&next));
     }
 
@@ -652,5 +716,24 @@ mod tests {
         let paths = AppPaths::rooted_at("/tmp/openclips-test");
         let config = Config::default();
         assert_eq!(config.clips_dir(&paths), paths.default_clips_dir);
+    }
+}
+
+#[cfg(test)]
+mod hotkey_migration_tests {
+    use super::*;
+
+    #[test]
+    fn old_save_replay_key_becomes_a_save_hotkey() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[hotkeys]\nsave_replay = \"F9\"\nsave = []\n").expect("write");
+        let config = Config::load(&path).expect("load");
+        assert_eq!(config.hotkeys.save.len(), 1);
+        assert_eq!(config.hotkeys.save[0].binding.to_string(), "F9");
+        assert_eq!(config.hotkeys.save[0].seconds, 0);
+        assert!(config.hotkeys.save_replay.is_none());
+        let text = toml::to_string(&config).expect("serialize");
+        assert!(!text.contains("save_replay"));
     }
 }
