@@ -3,6 +3,7 @@
 mod engine;
 mod error;
 mod hotkeys;
+mod settings;
 mod shell;
 mod ui;
 
@@ -38,9 +39,8 @@ fn run() -> Result<(), AppError> {
     );
 
     let (config, startup_warning) = load_config(&paths);
-    let clips_dir = config.clips_dir(&paths);
 
-    let (engine, engine_warning) = match Engine::new(config.clone(), clips_dir.clone()) {
+    let (engine, engine_warning) = match Engine::new(config.clone(), paths.clone()) {
         Ok(engine) => (Some(engine), None),
         Err(err) => {
             error!("capture is unavailable: {err}");
@@ -56,11 +56,10 @@ fn run() -> Result<(), AppError> {
     let app = ui::build(ui::Context {
         paths,
         config,
-        clips_dir,
         engine,
         startup_warning,
     })?;
-    if !app.config.general.start_minimized {
+    if !app.start_minimized {
         app.window.show()?;
     }
     app.tray.show()?;

@@ -4,10 +4,12 @@ export component TrayIcon inherits SystemTrayIcon {
     title: "OpenClips";
 
     in property <bool> buffer-active;
+    in property <bool> recording-active;
 
     callback open-window();
     callback toggle-buffer();
     callback save-clip();
+    callback toggle-recording();
     callback quit();
 
     clicked => { root.open-window(); }
@@ -26,6 +28,10 @@ export component TrayIcon inherits SystemTrayIcon {
             title: "Save clip now";
             enabled: root.buffer-active;
             activated => { root.save-clip(); }
+        }
+        MenuItem {
+            title: root.recording-active ? "Stop recording" : "Start recording";
+            activated => { root.toggle-recording(); }
         }
         MenuSeparator { }
         MenuItem {

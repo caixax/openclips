@@ -27,6 +27,7 @@ gstreamer = "0.25"
 gstreamer-app = "0.25"
 windows = "0.62"
 global-hotkey = "0.8"
+rfd = "0.17"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [workspace.lints.rust]

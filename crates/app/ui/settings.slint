@@ -1,0 +1,286 @@
+import { Palette, Button, ComboBox, SpinBox, LineEdit, CheckBox, ScrollView } from "std-widgets.slint";
+
+export global SettingsState {
+    in-out property <[string]> display-names: ["Primary display"];
+    in-out property <int> display-index: 0;
+    in-out property <[string]> encoder-names: ["Automatic (best available)", "NVIDIA NVENC", "Intel Quick Sync", "AMD AMF", "Software (x264)"];
+    in-out property <int> encoder-index: 0;
+    in-out property <int> fps: 60;
+    in-out property <int> bitrate-kbps: 20000;
+    in-out property <bool> show-cursor: false;
+
+    in-out property <int> replay-length-value: 30;
+    in-out property <int> replay-unit-index: 0;
+    in-out property <int> memory-cap-mb: 1024;
+    in-out property <bool> start-on-launch: true;
+    in-out property <bool> start-minimized: false;
+
+    in-out property <string> clips-dir;
+    in-out property <string> file-name-pattern;
+    in-out property <string> recording-subfolder;
+
+    in-out property <string> hotkey-save-replay;
+    in-out property <string> hotkey-toggle-buffer;
+    in-out property <string> hotkey-toggle-recording;
+    in-out property <int> listening-action: -1;
+
+    in-out property <string> message;
+    in-out property <bool> message-is-error: false;
+
+    callback save();
+    callback revert();
+    callback browse-clips-dir();
+    callback refresh-displays();
+    callback key-captured(int, string, bool, bool, bool, bool);
+}
+
+component Field inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 12px;
+    alignment: start;
+    Text {
+        text: root.label;
+        width: 190px;
+        vertical-alignment: center;
+        font-size: 13px;
+        color: Palette.foreground.with-alpha(0.7);
+    }
+    @children
+}
+
+component Section inherits Rectangle {
+    in property <string> heading;
+    background: Palette.alternate-background;
+    border-radius: 10px;
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+        Text {
+            text: root.heading;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        @children
+    }
+}
+
+component HotkeyRow inherits Field {
+    in property <int> action;
+    in-out property <string> binding;
+    property <bool> listening: SettingsState.listening-action == root.action;
+
+    fs := FocusScope {
+        width: 180px;
+        height: 32px;
+        Rectangle {
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.listening ? Palette.accent-background : Palette.border;
+            background: Palette.background;
+            Text {
+                text: root.listening ? "Press a key..." : root.binding;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                font-size: 13px;
+            }
+        }
+        key-pressed(event) => {
+            if (root.listening) {
+                SettingsState.key-captured(root.action, event.text, event.modifiers.alt, event.modifiers.control, event.modifiers.shift, event.modifiers.meta);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    Button {
+        text: root.listening ? "Cancel" : "Change";
+        clicked => {
+            if (root.listening) {
+                SettingsState.listening-action = -1;
+            } else {
+                SettingsState.listening-action = root.action;
+                fs.focus();
+            }
+        }
+    }
+}
+
+export component SettingsPage inherits ScrollView {
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+        alignment: start;
+
+        Text {
+            text: "Settings";
+            font-size: 26px;
+            font-weight: 700;
+        }
+
+        if SettingsState.message != "": Rectangle {
+            property <color> tint: SettingsState.message-is-error ? #d9534f : #3c9a5f;
+            background: self.tint.with-alpha(0.18);
+            border-color: self.tint;
+            border-width: 1px;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 12px;
+                Text {
+                    text: SettingsState.message;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                }
+            }
+        }
+
+        Section {
+            heading: "Capture";
+            Field {
+                label: "Display";
+                ComboBox {
+                    width: 320px;
+                    model: SettingsState.display-names;
+                    current-index <=> SettingsState.display-index;
+                }
+                Button {
+                    text: "Refresh";
+                    clicked => { SettingsState.refresh-displays(); }
+                }
+            }
+            Field {
+                label: "Encoder";
+                ComboBox {
+                    width: 320px;
+                    model: SettingsState.encoder-names;
+                    current-index <=> SettingsState.encoder-index;
+                }
+            }
+            Field {
+                label: "Frame rate";
+                SpinBox {
+                    width: 140px;
+                    value <=> SettingsState.fps;
+                    minimum: 1;
+                    maximum: 240;
+                }
+            }
+            Field {
+                label: "Bitrate (kbps)";
+                SpinBox {
+                    width: 140px;
+                    value <=> SettingsState.bitrate-kbps;
+                    minimum: 1000;
+                    maximum: 200000;
+                    step-size: 1000;
+                }
+            }
+            Field {
+                label: "Capture mouse cursor";
+                CheckBox { checked <=> SettingsState.show-cursor; }
+            }
+        }
+
+        Section {
+            heading: "Replay buffer";
+            Field {
+                label: "Keep the last";
+                SpinBox {
+                    width: 140px;
+                    value <=> SettingsState.replay-length-value;
+                    minimum: 1;
+                    maximum: 1200;
+                }
+                ComboBox {
+                    width: 140px;
+                    model: ["seconds", "minutes"];
+                    current-index <=> SettingsState.replay-unit-index;
+                }
+            }
+            Field {
+                label: "Memory cap (MB)";
+                SpinBox {
+                    width: 140px;
+                    value <=> SettingsState.memory-cap-mb;
+                    minimum: 64;
+                    maximum: 32768;
+                    step-size: 128;
+                }
+            }
+            Field {
+                label: "Start buffer on launch";
+                CheckBox { checked <=> SettingsState.start-on-launch; }
+            }
+            Text {
+                text: "The buffer lives entirely in memory. Nothing is written to disk until a clip is saved.";
+                color: Palette.foreground.with-alpha(0.6);
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        Section {
+            heading: "Output";
+            Field {
+                label: "Clips folder";
+                LineEdit {
+                    width: 320px;
+                    text <=> SettingsState.clips-dir;
+                }
+                Button {
+                    text: "Browse";
+                    clicked => { SettingsState.browse-clips-dir(); }
+                }
+            }
+            Field {
+                label: "Recordings subfolder";
+                LineEdit {
+                    width: 320px;
+                    text <=> SettingsState.recording-subfolder;
+                    placeholder-text: "Leave empty to use the clips folder";
+                }
+            }
+            Field {
+                label: "File name pattern";
+                LineEdit {
+                    width: 320px;
+                    text <=> SettingsState.file-name-pattern;
+                    placeholder-text: "{game} {date} {time}";
+                }
+            }
+        }
+
+        Section {
+            heading: "Hotkeys";
+            HotkeyRow { label: "Save replay"; action: 0; binding <=> SettingsState.hotkey-save-replay; }
+            HotkeyRow { label: "Start or stop replay buffer"; action: 1; binding <=> SettingsState.hotkey-toggle-buffer; }
+            HotkeyRow { label: "Start or stop recording"; action: 2; binding <=> SettingsState.hotkey-toggle-recording; }
+            Text {
+                text: "Click Change, then press the key combination. Escape cancels.";
+                color: Palette.foreground.with-alpha(0.6);
+                font-size: 12px;
+            }
+        }
+
+        Section {
+            heading: "General";
+            Field {
+                label: "Start minimized to tray";
+                CheckBox { checked <=> SettingsState.start-minimized; }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Button {
+                text: "Save";
+                primary: true;
+                clicked => { SettingsState.save(); }
+            }
+            Button {
+                text: "Revert";
+                clicked => { SettingsState.revert(); }
+            }
+        }
+    }
+}

@@ -53,6 +53,25 @@ component Notice inherits Rectangle {
     }
 }
 
+component StatusLine inherits HorizontalLayout {
+    in property <bool> active;
+    in property <string> text;
+    spacing: 10px;
+    Rectangle {
+        width: 12px;
+        height: 12px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 6px;
+        background: root.active ? #e84444 : Palette.foreground.with-alpha(0.3);
+    }
+    Text {
+        text: root.text;
+        font-size: 14px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+}
+
 export component HomePage inherits ScrollView {
     in property <AppInfo> info;
     in property <string> startup-warning;
@@ -65,11 +84,16 @@ export component HomePage inherits ScrollView {
     in property <string> capture-notice;
     in property <string> save-status;
     in property <string> last-clip;
+    in property <bool> recording-active;
+    in property <string> recording-status;
+    in property <string> recording-message;
+    in property <string> last-recording;
 
     callback open-config-dir();
     callback open-clips-dir();
     callback toggle-buffer();
     callback save-clip();
+    callback toggle-recording();
 
     VerticalLayout {
         padding: 24px;
@@ -93,22 +117,7 @@ export component HomePage inherits ScrollView {
 
         Card {
             heading: "Replay buffer";
-            HorizontalLayout {
-                spacing: 10px;
-                Rectangle {
-                    width: 12px;
-                    height: 12px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 6px;
-                    background: root.buffer-active ? #e84444 : Palette.foreground.with-alpha(0.3);
-                }
-                Text {
-                    text: root.buffer-status;
-                    font-size: 14px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-            }
+            StatusLine { active: root.buffer-active; text: root.buffer-status; }
             InfoRow { label: "Buffer"; value: root.buffer-detail; }
             InfoRow { label: "Encoder"; value: root.encoder-name; }
             Text {
@@ -137,6 +146,32 @@ export component HomePage inherits ScrollView {
                 wrap: word-wrap;
             }
             if root.last-clip != "": InfoRow { label: "Last clip"; value: root.last-clip; }
+        }
+
+        Card {
+            heading: "Session recording";
+            StatusLine { active: root.recording-active; text: root.recording-status; }
+            Text {
+                text: "Records continuously to disk until stopped, independent of the replay buffer.";
+                color: Palette.foreground.with-alpha(0.6);
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Button {
+                    text: root.recording-active ? "Stop recording" : "Start recording";
+                    primary: !root.recording-active;
+                    clicked => { root.toggle-recording(); }
+                }
+            }
+            if root.recording-message != "": Text {
+                text: root.recording-message;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.last-recording != "": InfoRow { label: "Last file"; value: root.last-recording; }
         }
 
         Card {

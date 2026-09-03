@@ -2,11 +2,12 @@ import { Palette } from "std-widgets.slint";
 import { Sidebar, NavPage } from "sidebar.slint";
 import { HomePage } from "home.slint";
 import { PlaceholderPage } from "placeholder.slint";
+import { SettingsPage, SettingsState } from "settings.slint";
 import { AppInfo } from "types.slint";
 
 export { TrayIcon } from "tray.slint";
 
-export { AppInfo }
+export { AppInfo, SettingsState }
 
 export component MainWindow inherits Window {
     title: "OpenClips";
@@ -14,7 +15,7 @@ export component MainWindow inherits Window {
     min-width: 760px;
     min-height: 480px;
     preferred-width: 1000px;
-    preferred-height: 640px;
+    preferred-height: 680px;
     background: Palette.background;
 
     in property <AppInfo> info;
@@ -28,11 +29,17 @@ export component MainWindow inherits Window {
     in property <string> capture-notice;
     in property <string> save-status;
     in property <string> last-clip;
+    in property <bool> recording-active;
+    in property <string> recording-status: "Not recording";
+    in property <string> recording-message;
+    in property <string> last-recording;
 
     callback open-config-dir();
     callback open-clips-dir();
     callback toggle-buffer();
     callback save-clip();
+    callback toggle-recording();
+    callback recording-finished();
 
     property <NavPage> page: NavPage.home;
 
@@ -55,19 +62,21 @@ export component MainWindow inherits Window {
                 capture-notice: root.capture-notice;
                 save-status: root.save-status;
                 last-clip: root.last-clip;
+                recording-active: root.recording-active;
+                recording-status: root.recording-status;
+                recording-message: root.recording-message;
+                last-recording: root.last-recording;
                 open-config-dir => { root.open-config-dir(); }
                 open-clips-dir => { root.open-clips-dir(); }
                 toggle-buffer => { root.toggle-buffer(); }
                 save-clip => { root.save-clip(); }
+                toggle-recording => { root.toggle-recording(); }
             }
             if root.page == NavPage.clips: PlaceholderPage {
                 heading: "Clips";
                 detail: "The clip library arrives in Sprint 4.";
             }
-            if root.page == NavPage.settings: PlaceholderPage {
-                heading: "Settings";
-                detail: "Capture, hotkey and audio settings arrive in Sprints 2 and 3. Until then, edit the config file directly.";
-            }
+            if root.page == NavPage.settings: SettingsPage { }
         }
     }
 }
