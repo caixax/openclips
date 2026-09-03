@@ -231,6 +231,7 @@ impl RecordingSession for Mp4Session {
             duration,
             bytes,
             created: SystemTime::now(),
+            game: None,
         })
     }
 

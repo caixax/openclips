@@ -4,11 +4,13 @@
 
 mod audio;
 mod encoders;
+mod icons;
 mod media;
 mod monitors;
 mod mux;
 mod pipeline;
 mod player;
+mod processes;
 mod props;
 mod recording;
 mod trim;
@@ -20,7 +22,8 @@ use openclips_core::capture::{AudioDeviceInfo, CaptureSettings, EncoderInfo, Mon
 use tracing::{info, warn};
 
 use crate::backend::{
-    CaptureBackend, ClipWriter, FrameSink, MediaTools, Player, PlayerSink, Recorder,
+    CaptureBackend, ClipWriter, FrameSink, IconExtractor, MediaTools, Player, PlayerSink,
+    ProcessWatcher, Recorder,
 };
 use crate::error::CaptureError;
 
@@ -162,6 +165,14 @@ impl CaptureBackend for WindowsBackend {
 
     fn create_player(&self, sink: Arc<dyn PlayerSink>) -> Result<Box<dyn Player>, CaptureError> {
         Ok(Box::new(player::GstPlayer::new(sink)?))
+    }
+
+    fn process_watcher(&self) -> Arc<dyn ProcessWatcher> {
+        Arc::new(processes::ToolHelpWatcher)
+    }
+
+    fn icon_extractor(&self) -> Arc<dyn IconExtractor> {
+        Arc::new(icons::ShellIconExtractor)
     }
 }
 

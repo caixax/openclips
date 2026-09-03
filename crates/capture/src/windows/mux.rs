@@ -65,6 +65,7 @@ impl ClipWriter for Mp4Writer {
             duration: snapshot.duration,
             bytes,
             created: SystemTime::now(),
+            game: None,
         })
     }
 }

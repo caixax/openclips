@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use openclips_core::capture::{AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo};
 use openclips_core::clip::ClipFile;
+use openclips_core::games::RunningProcess;
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo};
 use openclips_core::replay::ReplaySnapshot;
 use openclips_core::trim::{TrimMode, TrimRange};
@@ -118,6 +119,19 @@ pub trait RecordingSession: Send {
     fn path(&self) -> &Path;
 }
 
+/// Lists running processes for game detection.
+pub trait ProcessWatcher: Send + Sync {
+    fn running(&self) -> Result<Vec<RunningProcess>, CaptureError>;
+
+    /// Full path of a process image, when accessible.
+    fn process_path(&self, pid: u32) -> Option<PathBuf>;
+}
+
+/// Pulls the icon out of an executable.
+pub trait IconExtractor: Send + Sync {
+    fn extract_png(&self, exe: &Path, output: &Path) -> Result<(), CaptureError>;
+}
+
 /// The platform abstraction. One implementation per operating system.
 pub trait CaptureBackend: Send {
     fn name(&self) -> &'static str;
@@ -152,4 +166,8 @@ pub trait CaptureBackend: Send {
     fn media_tools(&self) -> Arc<dyn MediaTools>;
 
     fn create_player(&self, sink: Arc<dyn PlayerSink>) -> Result<Box<dyn Player>, CaptureError>;
+
+    fn process_watcher(&self) -> Arc<dyn ProcessWatcher>;
+
+    fn icon_extractor(&self) -> Arc<dyn IconExtractor>;
 }
