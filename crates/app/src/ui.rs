@@ -12,10 +12,12 @@ use tracing::{error, info, warn};
 use crate::engine::{BufferState, Engine, EngineStatus, RecordingState, file_name_of};
 use crate::error::AppError;
 use crate::hotkeys::{self, HotkeyAction, Hotkeys, PressedModifiers};
-use crate::library::LibraryService;
+use crate::library::{LibraryService, format_duration};
 use crate::player::PlayerController;
 use crate::settings;
 use crate::shell;
+use openclips_capture::TrimJob;
+use openclips_core::trim::{TrimMode, TrimRange, trimmed_path};
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
 mod generated {
@@ -623,16 +625,6 @@ fn describe_recording(state: &RecordingState) -> String {
     }
 }
 
-fn format_duration(duration: Duration) -> String {
-    let total = duration.as_secs();
-    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m:02}:{s:02}")
-    }
-}
-
 fn init_library_and_player(window: &MainWindow, shared: &SharedRef) {
     let engine = shared.engine.borrow();
     let Some(engine) = engine.as_ref() else {
@@ -786,6 +778,12 @@ fn open_clip(window: &MainWindow, shared: &SharedRef, id: &str) {
     state.set_renaming(false);
     state.set_confirm_delete(false);
     state.set_message("".into());
+    state.set_editing(false);
+    state.set_trim_busy(false);
+    state.set_trim_message("".into());
+    state.set_trim_in(0.0);
+    state.set_trim_out(record.duration().as_secs_f32());
+    update_trim_texts(&state);
     window.set_page(NavPage::Player);
     if let Some(player) = shared.player.borrow_mut().as_mut() {
         player.open(id, &record.path, &state);
@@ -796,6 +794,7 @@ fn open_clip(window: &MainWindow, shared: &SharedRef, id: &str) {
 
 fn wire_player(window: &MainWindow, shared: &SharedRef) {
     let state = window.global::<PlayerState>();
+    wire_editor(window, shared);
 
     let (s, w) = (shared.clone(), window.as_weak());
     state.on_toggle_play(move || {
@@ -904,4 +903,228 @@ fn wire_player(window: &MainWindow, shared: &SharedRef) {
             Err(message) => state.set_message(message.into()),
         }
     });
+}
+
+fn format_precise(seconds: f32) -> String {
+    let total_ms = (seconds.max(0.0) * 1000.0).round() as u64;
+    let (m, s, ms) = (
+        total_ms / 60_000,
+        (total_ms % 60_000) / 1000,
+        total_ms % 1000,
+    );
+    format!("{m}:{s:02}.{ms:03}")
+}
+
+fn update_trim_texts(state: &PlayerState<'_>) {
+    let (start, end) = (state.get_trim_in(), state.get_trim_out());
+    state.set_trim_in_text(format_precise(start).into());
+    state.set_trim_out_text(format_precise(end).into());
+    let length = (end - start).max(0.0);
+    state.set_trim_summary(format!("Selection: {}", format_precise(length)).into());
+}
+
+fn current_clip_id(shared: &SharedRef) -> Option<String> {
+    shared
+        .player
+        .borrow()
+        .as_ref()
+        .and_then(|p| p.current().map(str::to_owned))
+}
+
+fn wire_editor(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<PlayerState>();
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_set_in(move || {
+        if let Some(window) = w.upgrade() {
+            let state = window.global::<PlayerState>();
+            let position = s
+                .player
+                .borrow()
+                .as_ref()
+                .and_then(|p| p.position())
+                .map(|p| p.as_secs_f32())
+                .unwrap_or(state.get_position());
+            state.set_trim_in(position.min(state.get_trim_out()));
+            update_trim_texts(&state);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_set_out(move || {
+        if let Some(window) = w.upgrade() {
+            let state = window.global::<PlayerState>();
+            let position = s
+                .player
+                .borrow()
+                .as_ref()
+                .and_then(|p| p.position())
+                .map(|p| p.as_secs_f32())
+                .unwrap_or(state.get_position());
+            state.set_trim_out(position.max(state.get_trim_in()));
+            update_trim_texts(&state);
+        }
+    });
+    let w = window.as_weak();
+    state.on_set_in_at(move |seconds| {
+        if let Some(window) = w.upgrade() {
+            let state = window.global::<PlayerState>();
+            state.set_trim_in(seconds.clamp(0.0, state.get_trim_out()));
+            update_trim_texts(&state);
+        }
+    });
+    let w = window.as_weak();
+    state.on_set_out_at(move |seconds| {
+        if let Some(window) = w.upgrade() {
+            let state = window.global::<PlayerState>();
+            state.set_trim_out(seconds.clamp(state.get_trim_in(), state.get_duration().max(0.0)));
+            update_trim_texts(&state);
+        }
+    });
+    let w = window.as_weak();
+    state.on_trim_changed(move || {
+        if let Some(window) = w.upgrade() {
+            update_trim_texts(&window.global::<PlayerState>());
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_preview_selection(move || {
+        if let Some(window) = w.upgrade()
+            && let Some(player) = s.player.borrow_mut().as_mut()
+        {
+            let state = window.global::<PlayerState>();
+            player.preview(
+                Duration::from_secs_f32(state.get_trim_in().max(0.0)),
+                Duration::from_secs_f32(state.get_trim_out().max(0.0)),
+                &state,
+            );
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_save_trim(move || {
+        if let Some(window) = w.upgrade() {
+            save_trim(&window, &s);
+        }
+    });
+}
+
+fn save_trim(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<PlayerState>();
+    let Some(id) = current_clip_id(shared) else {
+        state.set_trim_message("Open a clip first.".into());
+        return;
+    };
+    let record = shared
+        .library
+        .borrow()
+        .as_ref()
+        .and_then(|l| l.record(&id).cloned());
+    let Some(record) = record else {
+        return;
+    };
+    let duration = if record.duration().is_zero() {
+        Duration::from_secs_f32(state.get_duration().max(0.0))
+    } else {
+        record.duration()
+    };
+    let range = match TrimRange::new(
+        Duration::from_secs_f32(state.get_trim_in().max(0.0)),
+        Duration::from_secs_f32(state.get_trim_out().max(0.0)),
+        duration,
+    ) {
+        Ok(range) => range,
+        Err(err) => {
+            state.set_trim_message(err.to_string().into());
+            return;
+        }
+    };
+    if range.is_whole(duration) {
+        state.set_trim_message("The selection covers the whole clip; nothing to trim.".into());
+        return;
+    }
+    let mode = if state.get_trim_mode_index() == 1 {
+        TrimMode::FrameAccurate
+    } else {
+        TrimMode::StreamCopy
+    };
+    let overwrite = state.get_trim_overwrite();
+    let output = if overwrite {
+        record.path.with_extension("mp4.trimmed")
+    } else {
+        trimmed_path(&record.path, &record.title)
+    };
+    let (video_bitrate, audio_bitrate) = {
+        let config = shared.config.borrow();
+        (config.capture.bitrate_kbps, config.audio.bitrate_kbps)
+    };
+    let tools = shared.engine.borrow().as_ref().map(|e| e.media_tools());
+    let Some(tools) = tools else {
+        state.set_trim_message("Trimming is unavailable on this system.".into());
+        return;
+    };
+
+    if overwrite && let Some(player) = shared.player.borrow_mut().as_mut() {
+        player.stop(&state);
+    }
+    state.set_trim_busy(true);
+    state.set_trim_message(
+        match mode {
+            TrimMode::StreamCopy => "Cutting...".to_owned(),
+            TrimMode::FrameAccurate => {
+                "Re-encoding the selection, this takes a moment...".to_owned()
+            }
+        }
+        .into(),
+    );
+    let job = TrimJob {
+        input: record.path.clone(),
+        output: output.clone(),
+        range,
+        mode,
+        video_bitrate_kbps: video_bitrate,
+        audio_bitrate_kbps: audio_bitrate,
+    };
+    let original = record.path.clone();
+    let weak = window.as_weak();
+    let spawned = std::thread::Builder::new()
+        .name("trim".to_owned())
+        .spawn(move || {
+            let result = tools
+                .trim(&job)
+                .map_err(|e| e.to_string())
+                .and_then(|clip| {
+                    if overwrite {
+                        std::fs::rename(&clip.path, &original)
+                            .map_err(|e| format!("could not replace the original: {e}"))?;
+                    }
+                    Ok(clip)
+                });
+            let _ = weak.upgrade_in_event_loop(move |window| {
+                let state = window.global::<PlayerState>();
+                state.set_trim_busy(false);
+                match result {
+                    Ok(clip) => {
+                        let name = if overwrite {
+                            "the original file".to_owned()
+                        } else {
+                            file_name_of(&clip.path)
+                        };
+                        state.set_trim_message(
+                            format!(
+                                "Saved {} ({}, {:.1} MB)",
+                                name,
+                                format_duration(clip.duration),
+                                clip.bytes as f64 / (1024.0 * 1024.0)
+                            )
+                            .into(),
+                        );
+                        window.invoke_library_changed();
+                    }
+                    Err(err) => state.set_trim_message(format!("Trim failed: {err}").into()),
+                }
+            });
+        });
+    if let Err(err) = spawned {
+        state.set_trim_busy(false);
+        state.set_trim_message(format!("Could not start the trim: {err}").into());
+    }
 }

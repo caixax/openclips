@@ -59,6 +59,8 @@ pub struct PlayerController {
     player: Box<dyn Player>,
     shared: Arc<SharedState>,
     current: Option<String>,
+    /// Pause automatically when playback reaches this point.
+    stop_at: Option<Duration>,
 }
 
 impl PlayerController {
@@ -79,11 +81,28 @@ impl PlayerController {
             player: create(sink)?,
             shared,
             current: None,
+            stop_at: None,
         })
     }
 
     pub fn current(&self) -> Option<&str> {
         self.current.as_deref()
+    }
+
+    pub fn position(&self) -> Option<Duration> {
+        self.player.position()
+    }
+
+    /// Plays `from` up to `until`, then pauses.
+    pub fn preview(&mut self, from: Duration, until: Duration, state: &PlayerState<'_>) {
+        if self.current.is_none() {
+            return;
+        }
+        self.shared.finished.store(false, Ordering::SeqCst);
+        self.stop_at = Some(until);
+        self.player.seek(from);
+        self.player.play();
+        state.set_playing(true);
     }
 
     pub fn open(&mut self, id: &str, path: &Path, state: &PlayerState<'_>) {
@@ -113,6 +132,7 @@ impl PlayerController {
         if self.current.is_none() {
             return;
         }
+        self.stop_at = None;
         if self.shared.finished.swap(false, Ordering::SeqCst) {
             self.player.seek(Duration::ZERO);
             self.player.play();
@@ -126,6 +146,7 @@ impl PlayerController {
 
     pub fn seek(&mut self, seconds: f32) {
         if self.current.is_some() {
+            self.stop_at = None;
             self.shared.finished.store(false, Ordering::SeqCst);
             self.player.seek(Duration::from_secs_f32(seconds.max(0.0)));
         }
@@ -157,6 +178,13 @@ impl PlayerController {
             state.set_position(state.get_duration());
             state.set_position_text(state.get_duration_text());
         } else if let Some(position) = self.player.position() {
+            if let Some(until) = self.stop_at
+                && position >= until
+                && self.player.is_playing()
+            {
+                self.player.pause();
+                self.stop_at = None;
+            }
             state.set_position(position.as_secs_f32());
             state.set_position_text(crate::library::format_duration(position).into());
             state.set_playing(self.player.is_playing());

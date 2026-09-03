@@ -1,4 +1,4 @@
-import { Palette, Button, LineEdit, Slider } from "std-widgets.slint";
+import { Palette, Button, LineEdit, Slider, ComboBox, CheckBox } from "std-widgets.slint";
 
 export global PlayerState {
     in-out property <image> frame;
@@ -16,6 +16,18 @@ export global PlayerState {
     in-out property <string> rename-text;
     in-out property <bool> confirm-delete: false;
 
+    // Trim editor
+    in-out property <bool> editing: false;
+    in-out property <float> trim-in: 0;
+    in-out property <float> trim-out: 0;
+    in-out property <string> trim-in-text: "0:00.000";
+    in-out property <string> trim-out-text: "0:00.000";
+    in-out property <string> trim-summary;
+    in-out property <int> trim-mode-index: 0;
+    in-out property <bool> trim-overwrite: false;
+    in-out property <bool> trim-busy: false;
+    in-out property <string> trim-message;
+
     callback toggle-play();
     callback seek(float);
     callback volume-changed(float);
@@ -23,6 +35,93 @@ export global PlayerState {
     callback rename();
     callback delete();
     callback reveal();
+    callback set-in();
+    callback set-out();
+    callback set-in-at(float);
+    callback set-out-at(float);
+    callback preview-selection();
+    callback save-trim();
+    callback trim-changed();
+}
+
+component Timeline inherits Rectangle {
+    height: 44px;
+    property <float> span: max(PlayerState.duration, 0.01);
+    property <length> track-x: 8px;
+    property <length> track-width: root.width - 16px;
+    property <length> in-x: root.track-x + root.track-width * PlayerState.trim-in / root.span;
+    property <length> out-x: root.track-x + root.track-width * PlayerState.trim-out / root.span;
+    property <length> head-x: root.track-x + root.track-width * PlayerState.position / root.span;
+
+    function fraction-at(px: length) -> float {
+        return clamp((px - root.track-x) / root.track-width, 0, 1);
+    }
+
+    Rectangle {
+        x: root.track-x;
+        y: 16px;
+        width: root.track-width;
+        height: 12px;
+        border-radius: 6px;
+        background: Palette.foreground.with-alpha(0.15);
+    }
+    if PlayerState.editing: Rectangle {
+        x: root.in-x;
+        y: 16px;
+        width: max(root.out-x - root.in-x, 0);
+        height: 12px;
+        border-radius: 6px;
+        background: Palette.accent-background.with-alpha(0.55);
+    }
+    Rectangle {
+        x: root.head-x - 1px;
+        y: 10px;
+        width: 2px;
+        height: 24px;
+        background: Palette.foreground;
+    }
+    scrub := TouchArea {
+        x: 0;
+        y: 8px;
+        width: root.width;
+        height: 28px;
+        clicked => { PlayerState.seek(root.fraction-at(self.mouse-x) * root.span); }
+        moved => {
+            if (self.pressed) {
+                PlayerState.seek(root.fraction-at(self.mouse-x) * root.span);
+            }
+        }
+    }
+    if PlayerState.editing: Rectangle {
+        x: root.in-x - 6px;
+        y: 4px;
+        width: 12px;
+        height: 36px;
+        border-radius: 3px;
+        background: Palette.accent-background;
+        TouchArea {
+            moved => {
+                if (self.pressed) {
+                    PlayerState.set-in-at(root.fraction-at(parent.x + 6px + self.mouse-x - 6px) * root.span);
+                }
+            }
+        }
+    }
+    if PlayerState.editing: Rectangle {
+        x: root.out-x - 6px;
+        y: 4px;
+        width: 12px;
+        height: 36px;
+        border-radius: 3px;
+        background: Palette.accent-background;
+        TouchArea {
+            moved => {
+                if (self.pressed) {
+                    PlayerState.set-out-at(root.fraction-at(parent.x + 6px + self.mouse-x - 6px) * root.span);
+                }
+            }
+        }
+    }
 }
 
 export component PlayerPage inherits Rectangle {
@@ -64,6 +163,10 @@ export component PlayerPage inherits Rectangle {
                     PlayerState.rename-text = PlayerState.title;
                     PlayerState.renaming = true;
                 }
+            }
+            Button {
+                text: PlayerState.editing ? "Close trim" : "Trim";
+                clicked => { PlayerState.editing = !PlayerState.editing; }
             }
             Button {
                 text: "Show in Explorer";
@@ -118,6 +221,8 @@ export component PlayerPage inherits Rectangle {
             }
         }
 
+        Timeline { }
+
         HorizontalLayout {
             spacing: 12px;
             Button {
@@ -126,25 +231,11 @@ export component PlayerPage inherits Rectangle {
                 clicked => { PlayerState.toggle-play(); }
             }
             Text {
-                text: PlayerState.position-text;
+                text: PlayerState.position-text + " / " + PlayerState.duration-text;
                 vertical-alignment: center;
                 font-size: 12px;
-                width: 56px;
-                horizontal-alignment: right;
             }
-            Slider {
-                horizontal-stretch: 1;
-                minimum: 0;
-                maximum: max(PlayerState.duration, 0.01);
-                value: PlayerState.position;
-                changed(v) => { PlayerState.seek(v); }
-            }
-            Text {
-                text: PlayerState.duration-text;
-                vertical-alignment: center;
-                font-size: 12px;
-                width: 56px;
-            }
+            Rectangle { horizontal-stretch: 1; }
             Text {
                 text: "Volume";
                 vertical-alignment: center;
@@ -156,6 +247,80 @@ export component PlayerPage inherits Rectangle {
                 maximum: 100;
                 value <=> PlayerState.volume;
                 changed(v) => { PlayerState.volume-changed(v); }
+            }
+        }
+
+        if PlayerState.editing: Rectangle {
+            background: Palette.alternate-background;
+            border-radius: 10px;
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    Button {
+                        text: "Set in";
+                        clicked => { PlayerState.set-in(); }
+                    }
+                    Text {
+                        text: PlayerState.trim-in-text;
+                        vertical-alignment: center;
+                        font-size: 13px;
+                        width: 90px;
+                    }
+                    Button {
+                        text: "Set out";
+                        clicked => { PlayerState.set-out(); }
+                    }
+                    Text {
+                        text: PlayerState.trim-out-text;
+                        vertical-alignment: center;
+                        font-size: 13px;
+                        width: 90px;
+                    }
+                    Button {
+                        text: "Preview selection";
+                        clicked => { PlayerState.preview-selection(); }
+                    }
+                    Text {
+                        text: PlayerState.trim-summary;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: Palette.foreground.with-alpha(0.6);
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    ComboBox {
+                        width: 220px;
+                        model: ["Fast (cuts on keyframes)", "Exact (re-encodes)"];
+                        current-index <=> PlayerState.trim-mode-index;
+                        selected => { PlayerState.trim-changed(); }
+                    }
+                    CheckBox {
+                        text: "Replace the original file";
+                        checked <=> PlayerState.trim-overwrite;
+                    }
+                    Button {
+                        text: PlayerState.trim-busy ? "Saving..." : (PlayerState.trim-overwrite ? "Overwrite original" : "Save as new clip");
+                        primary: true;
+                        enabled: !PlayerState.trim-busy;
+                        clicked => { PlayerState.save-trim(); }
+                    }
+                }
+                if PlayerState.trim-message != "": Text {
+                    text: PlayerState.trim-message;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "Drag the handles on the timeline or use Set in and Set out at the current position. Saving as a new clip never touches the original.";
+                    font-size: 12px;
+                    color: Palette.foreground.with-alpha(0.6);
+                    wrap: word-wrap;
+                }
             }
         }
     }
