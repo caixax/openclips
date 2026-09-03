@@ -12,6 +12,7 @@ pub mod library;
 pub mod logging;
 pub mod media;
 pub mod replay;
+pub mod trim;
 
 pub use config::Config;
 pub use error::{CoreError, Result};

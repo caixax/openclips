@@ -56,6 +56,9 @@ pub enum CoreError {
     #[error("invalid configuration value for {field}: {reason}")]
     InvalidConfig { field: &'static str, reason: String },
 
+    #[error("invalid trim: {0}")]
+    InvalidTrim(String),
+
     #[error("logging is already initialized")]
     LoggingAlreadyInitialized,
 }
