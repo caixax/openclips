@@ -1,6 +1,6 @@
 import { Palette } from "std-widgets.slint";
 
-export enum NavPage { home, clips, settings }
+export enum NavPage { home, clips, player, settings }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -59,7 +59,7 @@ export component Sidebar inherits Rectangle {
         }
         NavItem {
             label: "Clips";
-            active: root.current == NavPage.clips;
+            active: root.current == NavPage.clips || root.current == NavPage.player;
             clicked => { root.selected(NavPage.clips); }
         }
         NavItem {

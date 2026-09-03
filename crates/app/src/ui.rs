@@ -12,8 +12,11 @@ use tracing::{error, info, warn};
 use crate::engine::{BufferState, Engine, EngineStatus, RecordingState, file_name_of};
 use crate::error::AppError;
 use crate::hotkeys::{self, HotkeyAction, Hotkeys, PressedModifiers};
+use crate::library::LibraryService;
+use crate::player::PlayerController;
 use crate::settings;
 use crate::shell;
+use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
 mod generated {
     #![allow(
@@ -50,6 +53,8 @@ struct Shared {
     config: RefCell<Config>,
     engine: RefCell<Option<Engine>>,
     hotkeys: RefCell<Option<Hotkeys>>,
+    library: RefCell<Option<LibraryService>>,
+    player: RefCell<Option<PlayerController>>,
     ticks: RefCell<u32>,
 }
 
@@ -74,8 +79,11 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         config: RefCell::new(ctx.config),
         engine: RefCell::new(ctx.engine),
         hotkeys: RefCell::new(None),
+        library: RefCell::new(None),
+        player: RefCell::new(None),
         ticks: RefCell::new(0),
     });
+    init_library_and_player(&window, &shared);
 
     window.set_info(AppInfo {
         version: APP_VERSION.into(),
@@ -91,6 +99,8 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
     wire_window_lifecycle(&window, &tray);
     wire_actions(&window, &tray, &shared);
     wire_settings(&window, &shared);
+    wire_library(&window, &shared);
+    wire_player(&window, &shared);
     install_hotkeys(&window, &shared);
     let status_timer = start_status_timer(&window, &tray, &shared);
 
@@ -371,6 +381,10 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
     }
 
     update_hotkey_hint(window, &next);
+    if let Some(library) = shared.library.borrow_mut().as_mut() {
+        library.set_dirs(&shared.paths, &next);
+    }
+    refresh_library_ui(window, shared);
     let mut info = window.get_info();
     info.clips_dir = shared.clips_dir().display().to_string().into();
     window.set_info(info);
@@ -409,6 +423,13 @@ fn start_status_timer(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) 
             poll_monitors(&s, &window);
         }
         refresh_status(&window, &tray, &s);
+        let changed = s.library.borrow_mut().as_mut().is_some_and(|l| l.poll());
+        if changed {
+            refresh_library_ui(&window, &s);
+        }
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            player.tick(&window.global::<PlayerState>());
+        }
     });
     timer
 }
@@ -464,6 +485,7 @@ fn toggle_recording(shared: &SharedRef, window: &Weak<MainWindow>) {
                 match result {
                     Ok(clip) => {
                         window.set_last_recording(clip.path.display().to_string().into());
+                        window.invoke_library_changed();
                         window.set_recording_message(
                             format!(
                                 "Saved {} ({}, {:.1} MB)",
@@ -498,6 +520,7 @@ fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>) {
         let _ = weak.upgrade_in_event_loop(move |window| match result {
             Ok(clip) => {
                 window.set_last_clip(clip.path.display().to_string().into());
+                window.invoke_library_changed();
                 window.set_save_status(
                     format!(
                         "Saved {} ({:.1} s, {:.1} MB)",
@@ -608,4 +631,277 @@ fn format_duration(duration: Duration) -> String {
     } else {
         format!("{m:02}:{s:02}")
     }
+}
+
+fn init_library_and_player(window: &MainWindow, shared: &SharedRef) {
+    let engine = shared.engine.borrow();
+    let Some(engine) = engine.as_ref() else {
+        window.global::<LibraryState>().set_message(
+            "The clip library needs the media framework, which is unavailable.".into(),
+        );
+        return;
+    };
+    let library = LibraryService::new(&shared.paths, &shared.config.borrow(), engine.media_tools());
+    *shared.library.borrow_mut() = Some(library);
+    match PlayerController::new(window, |sink| engine.create_player(sink)) {
+        Ok(player) => *shared.player.borrow_mut() = Some(player),
+        Err(err) => {
+            warn!("player unavailable: {err}");
+            window
+                .global::<PlayerState>()
+                .set_message(format!("Playback is unavailable: {err}").into());
+        }
+    }
+}
+
+fn wire_library(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<LibraryState>();
+    refresh_library_ui(window, shared);
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_refresh(move || {
+        if let Some(window) = w.upgrade() {
+            if let Some(library) = s.library.borrow_mut().as_mut() {
+                library.refresh();
+            }
+            refresh_library_ui(&window, &s);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_filter_changed(move || {
+        if let Some(window) = w.upgrade() {
+            refresh_library_ui(&window, &s);
+        }
+    });
+    let s = shared.clone();
+    state.on_open_folder(move || shell::open_folder(&s.clips_dir()));
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_open_clip(move |id| {
+        if let Some(window) = w.upgrade() {
+            open_clip(&window, &s, &id);
+        }
+    });
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    window.on_library_changed(move || {
+        if let Some(window) = w.upgrade() {
+            if let Some(library) = s.library.borrow_mut().as_mut() {
+                library.refresh();
+            }
+            refresh_library_ui(&window, &s);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    window.on_navigated(move |page| {
+        if page != NavPage::Player
+            && let Some(window) = w.upgrade()
+            && let Some(player) = s.player.borrow_mut().as_mut()
+        {
+            player.stop(&window.global::<PlayerState>());
+        }
+    });
+}
+
+fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<LibraryState>();
+    let library = shared.library.borrow();
+    let Some(library) = library.as_ref() else {
+        return;
+    };
+    let games = library.games();
+    let mut names: Vec<SharedString> = vec!["All games".into()];
+    names.extend(games.iter().map(|g| SharedString::from(g.as_str())));
+    let selected = state.get_game_index().max(0) as usize;
+    let filter = (selected > 0)
+        .then(|| games.get(selected - 1).cloned())
+        .flatten();
+    if names.len() != state.get_games().row_count() {
+        state.set_games(ModelRc::new(VecModel::from(names)));
+        state.set_game_index(
+            filter
+                .as_ref()
+                .and_then(|f| games.iter().position(|g| g == f))
+                .map(|i| i as i32 + 1)
+                .unwrap_or(0),
+        );
+    }
+    let search = state.get_search();
+    let cards: Vec<ClipCard> = library
+        .cards(filter.as_deref(), &search)
+        .into_iter()
+        .map(|c| {
+            let thumbnail = c
+                .thumbnail
+                .as_ref()
+                .and_then(|p| Image::load_from_path(p).ok());
+            ClipCard {
+                id: c.id.into(),
+                title: c.title.into(),
+                game: c.game.into(),
+                date: c.date.into(),
+                duration: c.duration.into(),
+                has_thumbnail: thumbnail.is_some(),
+                thumbnail: thumbnail.unwrap_or_default(),
+            }
+        })
+        .collect();
+    let total = cards.len();
+    state.set_clips(ModelRc::new(VecModel::from(cards)));
+    state.set_summary(
+        match total {
+            0 => String::new(),
+            1 => "1 clip".to_owned(),
+            n => format!("{n} clips"),
+        }
+        .into(),
+    );
+}
+
+fn open_clip(window: &MainWindow, shared: &SharedRef, id: &str) {
+    let record = shared
+        .library
+        .borrow()
+        .as_ref()
+        .and_then(|l| l.record(id).cloned());
+    let Some(record) = record else {
+        return;
+    };
+    let state = window.global::<PlayerState>();
+    state.set_title(record.title.clone().into());
+    state.set_path(record.path.display().to_string().into());
+    state.set_details(
+        format!(
+            "{}  |  {}x{}  |  {:.1} MB  |  {}",
+            record
+                .game
+                .clone()
+                .unwrap_or_else(|| record.kind.label().to_owned()),
+            record.width,
+            record.height,
+            record.bytes as f64 / (1024.0 * 1024.0),
+            record.path.display()
+        )
+        .into(),
+    );
+    state.set_renaming(false);
+    state.set_confirm_delete(false);
+    state.set_message("".into());
+    window.set_page(NavPage::Player);
+    if let Some(player) = shared.player.borrow_mut().as_mut() {
+        player.open(id, &record.path, &state);
+    } else {
+        state.set_message("Playback is unavailable on this system.".into());
+    }
+}
+
+fn wire_player(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<PlayerState>();
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_toggle_play(move || {
+        if let Some(window) = w.upgrade()
+            && let Some(player) = s.player.borrow_mut().as_mut()
+        {
+            player.toggle(&window.global::<PlayerState>());
+        }
+    });
+    let s = shared.clone();
+    state.on_seek(move |seconds| {
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            player.seek(seconds);
+        }
+    });
+    let s = shared.clone();
+    state.on_volume_changed(move |percent| {
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            player.set_volume(percent);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_back(move || {
+        if let Some(window) = w.upgrade() {
+            if let Some(player) = s.player.borrow_mut().as_mut() {
+                player.stop(&window.global::<PlayerState>());
+            }
+            window.set_page(NavPage::Clips);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_reveal(move || {
+        if let Some(window) = w.upgrade() {
+            let path = PathBuf::from(window.global::<PlayerState>().get_path().as_str());
+            shell::reveal_file(&path);
+        }
+        let _ = &s;
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_rename(move || {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<PlayerState>();
+        let title = state.get_rename_text().trim().to_owned();
+        let id = s
+            .player
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.current().map(str::to_owned));
+        let Some(id) = id else {
+            return;
+        };
+        let result = s
+            .library
+            .borrow_mut()
+            .as_mut()
+            .map(|l| l.rename(&id, &title))
+            .unwrap_or_else(|| Err("Library unavailable.".to_owned()));
+        match result {
+            Ok(()) => {
+                state.set_title(title.into());
+                state.set_renaming(false);
+                let record = s
+                    .library
+                    .borrow()
+                    .as_ref()
+                    .and_then(|l| l.record(&id).cloned());
+                if let Some(record) = record {
+                    state.set_path(record.path.display().to_string().into());
+                }
+                refresh_library_ui(&window, &s);
+            }
+            Err(message) => state.set_message(message.into()),
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_delete(move || {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<PlayerState>();
+        let id = s
+            .player
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.current().map(str::to_owned));
+        let Some(id) = id else {
+            return;
+        };
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            player.stop(&state);
+        }
+        let result = s
+            .library
+            .borrow_mut()
+            .as_mut()
+            .map(|l| l.delete(&id))
+            .unwrap_or_else(|| Err("Library unavailable.".to_owned()));
+        state.set_confirm_delete(false);
+        match result {
+            Ok(()) => {
+                refresh_library_ui(&window, &s);
+                window.set_page(NavPage::Clips);
+            }
+            Err(message) => state.set_message(message.into()),
+        }
+    });
 }

@@ -1,0 +1,162 @@
+import { Palette, Button, LineEdit, Slider } from "std-widgets.slint";
+
+export global PlayerState {
+    in-out property <image> frame;
+    in-out property <bool> playing: false;
+    in-out property <float> position: 0;
+    in-out property <float> duration: 0;
+    in-out property <string> position-text: "0:00";
+    in-out property <string> duration-text: "0:00";
+    in-out property <float> volume: 100;
+    in-out property <string> title;
+    in-out property <string> details;
+    in-out property <string> path;
+    in-out property <string> message;
+    in-out property <bool> renaming: false;
+    in-out property <string> rename-text;
+    in-out property <bool> confirm-delete: false;
+
+    callback toggle-play();
+    callback seek(float);
+    callback volume-changed(float);
+    callback back();
+    callback rename();
+    callback delete();
+    callback reveal();
+}
+
+export component PlayerPage inherits Rectangle {
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            Button {
+                text: "Back";
+                clicked => { PlayerState.back(); }
+            }
+            if !PlayerState.renaming: Text {
+                text: PlayerState.title;
+                font-size: 20px;
+                font-weight: 700;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if PlayerState.renaming: LineEdit {
+                text <=> PlayerState.rename-text;
+                horizontal-stretch: 1;
+                accepted => { PlayerState.rename(); }
+            }
+            if PlayerState.renaming: Button {
+                text: "Save name";
+                primary: true;
+                clicked => { PlayerState.rename(); }
+            }
+            if PlayerState.renaming: Button {
+                text: "Cancel";
+                clicked => { PlayerState.renaming = false; }
+            }
+            if !PlayerState.renaming: Button {
+                text: "Rename";
+                clicked => {
+                    PlayerState.rename-text = PlayerState.title;
+                    PlayerState.renaming = true;
+                }
+            }
+            Button {
+                text: "Show in Explorer";
+                clicked => { PlayerState.reveal(); }
+            }
+            if !PlayerState.confirm-delete: Button {
+                text: "Delete";
+                clicked => { PlayerState.confirm-delete = true; }
+            }
+            if PlayerState.confirm-delete: Button {
+                text: "Confirm delete";
+                primary: true;
+                clicked => { PlayerState.delete(); }
+            }
+            if PlayerState.confirm-delete: Button {
+                text: "Keep";
+                clicked => { PlayerState.confirm-delete = false; }
+            }
+        }
+
+        Text {
+            text: PlayerState.details;
+            font-size: 12px;
+            color: Palette.foreground.with-alpha(0.6);
+            overflow: elide;
+        }
+
+        if PlayerState.message != "": Rectangle {
+            background: #d9534f30;
+            border-color: #d9534f;
+            border-width: 1px;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 12px;
+                Text { text: PlayerState.message; wrap: word-wrap; font-size: 13px; }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            background: black;
+            border-radius: 8px;
+            clip: true;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: PlayerState.frame;
+                image-fit: contain;
+            }
+            TouchArea {
+                clicked => { PlayerState.toggle-play(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            Button {
+                text: PlayerState.playing ? "Pause" : "Play";
+                width: 80px;
+                clicked => { PlayerState.toggle-play(); }
+            }
+            Text {
+                text: PlayerState.position-text;
+                vertical-alignment: center;
+                font-size: 12px;
+                width: 56px;
+                horizontal-alignment: right;
+            }
+            Slider {
+                horizontal-stretch: 1;
+                minimum: 0;
+                maximum: max(PlayerState.duration, 0.01);
+                value: PlayerState.position;
+                changed(v) => { PlayerState.seek(v); }
+            }
+            Text {
+                text: PlayerState.duration-text;
+                vertical-alignment: center;
+                font-size: 12px;
+                width: 56px;
+            }
+            Text {
+                text: "Volume";
+                vertical-alignment: center;
+                font-size: 12px;
+            }
+            Slider {
+                width: 120px;
+                minimum: 0;
+                maximum: 100;
+                value <=> PlayerState.volume;
+                changed(v) => { PlayerState.volume-changed(v); }
+            }
+        }
+    }
+}

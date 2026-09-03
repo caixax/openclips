@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use openclips_capture::{
-    CaptureBackend, CaptureError, ClipWriter, FrameSink, Recorder, RecordingSession,
+    CaptureBackend, CaptureError, ClipWriter, FrameSink, MediaTools, Player, PlayerSink, Recorder,
+    RecordingSession,
 };
 use openclips_core::capture::{
     AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo, audio_source_key, choose_encoder,
@@ -248,6 +249,14 @@ impl Engine {
 
     pub fn clips_dir(&self) -> PathBuf {
         self.config.clips_dir(&self.paths)
+    }
+
+    pub fn media_tools(&self) -> Arc<dyn MediaTools> {
+        self.backend.media_tools()
+    }
+
+    pub fn create_player(&self, sink: Arc<dyn PlayerSink>) -> Result<Box<dyn Player>, AppError> {
+        Ok(self.backend.create_player(sink)?)
     }
 
     pub fn start_buffer(&mut self) -> Result<(), AppError> {

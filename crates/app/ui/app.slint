@@ -1,13 +1,14 @@
 import { Palette } from "std-widgets.slint";
 import { Sidebar, NavPage } from "sidebar.slint";
 import { HomePage } from "home.slint";
-import { PlaceholderPage } from "placeholder.slint";
+import { ClipsPage, LibraryState } from "clips.slint";
+import { PlayerPage, PlayerState } from "player.slint";
 import { SettingsPage, SettingsState } from "settings.slint";
-import { AppInfo, AudioSourceRow } from "types.slint";
+import { AppInfo, AudioSourceRow, ClipCard } from "types.slint";
 
 export { TrayIcon } from "tray.slint";
 
-export { AppInfo, AudioSourceRow, SettingsState }
+export { AppInfo, AudioSourceRow, ClipCard, SettingsState, LibraryState, PlayerState, NavPage }
 
 export component MainWindow inherits Window {
     title: "OpenClips";
@@ -40,13 +41,15 @@ export component MainWindow inherits Window {
     callback save-clip();
     callback toggle-recording();
     callback recording-finished();
+    callback library-changed();
+    callback navigated(NavPage);
 
-    property <NavPage> page: NavPage.home;
+    in-out property <NavPage> page: NavPage.home;
 
     HorizontalLayout {
         Sidebar {
             current: root.page;
-            selected(p) => { root.page = p; }
+            selected(p) => { root.page = p; root.navigated(p); }
         }
 
         Rectangle {
@@ -72,10 +75,8 @@ export component MainWindow inherits Window {
                 save-clip => { root.save-clip(); }
                 toggle-recording => { root.toggle-recording(); }
             }
-            if root.page == NavPage.clips: PlaceholderPage {
-                heading: "Clips";
-                detail: "The clip library arrives in Sprint 4.";
-            }
+            if root.page == NavPage.clips: ClipsPage { }
+            if root.page == NavPage.player: PlayerPage { }
             if root.page == NavPage.settings: SettingsPage { }
         }
     }

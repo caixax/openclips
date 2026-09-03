@@ -1,0 +1,165 @@
+import { Palette, Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { ClipCard } from "types.slint";
+
+export global LibraryState {
+    in-out property <[ClipCard]> clips: [];
+    in-out property <[string]> games: ["All games"];
+    in-out property <int> game-index: 0;
+    in-out property <string> search;
+    in-out property <string> message;
+    in-out property <string> summary;
+
+    callback open-clip(string);
+    callback refresh();
+    callback open-folder();
+    callback filter-changed();
+}
+
+component Card inherits Rectangle {
+    in property <ClipCard> card;
+    callback clicked();
+
+    border-radius: 10px;
+    background: touch.has-hover ? Palette.alternate-background.brighter(0.15) : Palette.alternate-background;
+    clip: true;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: root.width * 9 / 16;
+            background: #101114;
+            if root.card.has-thumbnail: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.card.thumbnail;
+                image-fit: contain;
+            }
+            if !root.card.has-thumbnail: Text {
+                text: "Preparing preview...";
+                color: Palette.foreground.with-alpha(0.5);
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+            Rectangle {
+                x: parent.width - self.width - 8px;
+                y: parent.height - self.height - 8px;
+                width: duration-text.preferred-width + 12px;
+                height: 20px;
+                border-radius: 4px;
+                background: #000000b0;
+                duration-text := Text {
+                    x: 6px;
+                    y: (parent.height - self.height) / 2;
+                    text: root.card.duration;
+                    color: white;
+                    font-size: 11px;
+                }
+            }
+        }
+        VerticalLayout {
+            padding: 10px;
+            spacing: 4px;
+            Text {
+                text: root.card.title;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.card.game + "  \u{00b7}  " + root.card.date;
+                font-size: 11px;
+                color: Palette.foreground.with-alpha(0.6);
+                overflow: elide;
+            }
+        }
+    }
+}
+
+export component ClipsPage inherits Rectangle {
+    property <length> gap: 16px;
+    property <length> min-card-width: 240px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: "Clips";
+                font-size: 26px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            LineEdit {
+                width: 220px;
+                placeholder-text: "Search";
+                text <=> LibraryState.search;
+                edited => { LibraryState.filter-changed(); }
+            }
+            ComboBox {
+                width: 180px;
+                model: LibraryState.games;
+                current-index <=> LibraryState.game-index;
+                selected => { LibraryState.filter-changed(); }
+            }
+            Button {
+                text: "Refresh";
+                clicked => { LibraryState.refresh(); }
+            }
+            Button {
+                text: "Open folder";
+                clicked => { LibraryState.open-folder(); }
+            }
+        }
+
+        Text {
+            text: LibraryState.summary;
+            font-size: 12px;
+            color: Palette.foreground.with-alpha(0.6);
+        }
+
+        if LibraryState.message != "": Rectangle {
+            background: #d9534f30;
+            border-color: #d9534f;
+            border-width: 1px;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 12px;
+                Text { text: LibraryState.message; wrap: word-wrap; font-size: 13px; }
+            }
+        }
+
+        if LibraryState.clips.length == 0: Text {
+            text: "No clips yet. Press the save hotkey while the buffer is running, or start a recording.";
+            color: Palette.foreground.with-alpha(0.6);
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            property <int> columns: max(1, floor((self.visible-width - root.gap) / (root.min-card-width + root.gap)));
+            property <length> card-width: (self.visible-width - root.gap * (self.columns - 1)) / self.columns;
+            property <length> card-height: self.card-width * 9 / 16 + 62px;
+            viewport-height: ceil(LibraryState.clips.length / self.columns) * (self.card-height + root.gap);
+
+            for card[i] in LibraryState.clips: Card {
+                x: mod(i, parent.columns) * (parent.card-width + root.gap);
+                y: floor(i / parent.columns) * (parent.card-height + root.gap);
+                width: parent.card-width;
+                height: parent.card-height;
+                card: card;
+                clicked => { LibraryState.open-clip(card.id); }
+            }
+        }
+    }
+}

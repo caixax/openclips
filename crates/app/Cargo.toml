@@ -21,6 +21,7 @@ thiserror.workspace = true
 tracing.workspace = true
 global-hotkey.workspace = true
 rfd.workspace = true
+trash.workspace = true
 chrono.workspace = true
 
 [build-dependencies]

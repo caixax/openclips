@@ -21,3 +21,21 @@ pub fn open_folder(path: &Path) {
         warn!("could not open {}: {err}", path.display());
     }
 }
+
+/// Opens the file manager with `path` selected.
+pub fn reveal_file(path: &Path) {
+    let result = if cfg!(target_os = "windows") {
+        Command::new("explorer.exe")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg("-R").arg(path).spawn()
+    } else {
+        Command::new("xdg-open")
+            .arg(path.parent().unwrap_or(path))
+            .spawn()
+    };
+    if let Err(err) = result {
+        warn!("could not reveal {}: {err}", path.display());
+    }
+}

@@ -3,6 +3,8 @@
 mod engine;
 mod error;
 mod hotkeys;
+mod library;
+mod player;
 mod settings;
 mod shell;
 mod ui;
