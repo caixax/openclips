@@ -1,0 +1,141 @@
+//! Writes a replay snapshot into an MP4 file:
+//!
+//! ```text
+//! appsrc(byte-stream H.264) -> h264parse -> mp4mux -> filesink
+//! ```
+
+use std::path::Path;
+use std::time::SystemTime;
+
+use gstreamer as gst;
+use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
+use openclips_core::clip::ClipFile;
+use openclips_core::media::EncodedFrame;
+use openclips_core::replay::ReplaySnapshot;
+use tracing::info;
+
+use super::encoders::wait_until_done;
+use crate::backend::ClipWriter;
+use crate::error::CaptureError;
+
+pub struct Mp4Writer;
+
+impl ClipWriter for Mp4Writer {
+    fn write_clip(&self, snapshot: &ReplaySnapshot, path: &Path) -> Result<ClipFile, CaptureError> {
+        let first = snapshot.frames.first().ok_or(CaptureError::EmptyBuffer)?;
+        if !first.keyframe {
+            return Err(CaptureError::ClipWrite {
+                path: path.to_path_buf(),
+                reason: "snapshot does not start at a keyframe".to_owned(),
+            });
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| CaptureError::ClipWrite {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            })?;
+        }
+
+        let partial = path.with_extension("mp4.part");
+        let result = write(snapshot, &partial).and_then(|()| {
+            std::fs::rename(&partial, path).map_err(|e| format!("could not finalize file: {e}"))
+        });
+        if let Err(reason) = result {
+            let _ = std::fs::remove_file(&partial);
+            return Err(CaptureError::ClipWrite {
+                path: path.to_path_buf(),
+                reason,
+            });
+        }
+
+        let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        info!(
+            "clip written: {} ({:.1} s, {} frames, {} bytes)",
+            path.display(),
+            snapshot.duration.as_secs_f64(),
+            snapshot.frames.len(),
+            bytes
+        );
+        Ok(ClipFile {
+            path: path.to_path_buf(),
+            duration: snapshot.duration,
+            bytes,
+            created: SystemTime::now(),
+        })
+    }
+}
+
+fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
+    let stream = &snapshot.stream;
+    let caps = gst::Caps::builder("video/x-h264")
+        .field("stream-format", "byte-stream")
+        .field("alignment", "au")
+        .field("width", stream.width.max(1) as i32)
+        .field("height", stream.height.max(1) as i32)
+        .field(
+            "framerate",
+            gst::Fraction::new(stream.fps_num.max(1) as i32, stream.fps_den.max(1) as i32),
+        )
+        .build();
+    let appsrc = gst_app::AppSrc::builder()
+        .caps(&caps)
+        .format(gst::Format::Time)
+        .is_live(false)
+        .build();
+    let parse = gst::ElementFactory::make("h264parse")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mux = gst::ElementFactory::make("mp4mux")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let filesink = gst::ElementFactory::make("filesink")
+        .property("location", path.to_string_lossy().as_ref())
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let pipeline = gst::Pipeline::with_name("openclips-mux");
+    let src: gst::Element = appsrc.clone().upcast();
+    pipeline
+        .add_many([&src, &parse, &mux, &filesink])
+        .map_err(|e| e.to_string())?;
+    gst::Element::link_many([&src, &parse, &mux, &filesink]).map_err(|e| e.to_string())?;
+
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|_| "could not start the muxer".to_owned())?;
+
+    let origin = snapshot.frames[0].pts;
+    let frame_duration = stream.frame_duration().as_nanos() as u64;
+    for frame in &snapshot.frames {
+        let buffer = to_buffer(frame, origin.nanos(), frame_duration);
+        appsrc
+            .push_buffer(buffer)
+            .map_err(|e| format!("muxer rejected a frame: {e:?}"))?;
+    }
+    appsrc
+        .end_of_stream()
+        .map_err(|e| format!("could not finish the stream: {e:?}"))?;
+
+    let outcome = wait_until_done(&pipeline, gst::ClockTime::from_seconds(60));
+    let _ = pipeline.set_state(gst::State::Null);
+    outcome
+}
+
+fn to_buffer(frame: &EncodedFrame, origin_ns: u64, duration_ns: u64) -> gst::Buffer {
+    let mut buffer = gst::Buffer::from_slice(frame.data.clone());
+    if let Some(b) = buffer.get_mut() {
+        b.set_pts(gst::ClockTime::from_nseconds(
+            frame.pts.nanos().saturating_sub(origin_ns),
+        ));
+        let dts = frame.dts.unwrap_or(frame.pts);
+        b.set_dts(gst::ClockTime::from_nseconds(
+            dts.nanos().saturating_sub(origin_ns),
+        ));
+        b.set_duration(gst::ClockTime::from_nseconds(duration_ns));
+        if !frame.keyframe {
+            b.set_flags(gst::BufferFlags::DELTA_UNIT);
+        }
+    }
+    buffer
+}
