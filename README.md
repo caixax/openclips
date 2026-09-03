@@ -23,7 +23,7 @@ features land.
 | Workspace, config file, logging, tray app skeleton | Done (Sprint 0) |
 | Rolling replay buffer with GPU encode and Alt+8 save | Done (Sprint 1) |
 | Display selection, buffer length, hotkey rebinding, full session recording | Done (Sprint 2) |
-| Multi source audio (desktop loopback and microphones) | Planned (Sprint 3) |
+| Multi source audio (desktop loopback and microphones) | Done (Sprint 3) |
 | Clip library with thumbnails and playback | Planned (Sprint 4) |
 | Trim editor (stream copy and frame accurate) | Planned (Sprint 5) |
 | Game detection, per game profiles, bundled games database | Planned (Sprint 6) |
@@ -38,7 +38,11 @@ the tray menu offers the same actions. The Settings page covers display,
 encoder, frame rate, bitrate, buffer length (seconds or minutes), memory
 cap, output folders, hotkey rebinding and start up behaviour. Displays are
 re-enumerated while the app runs, and a capture of a display that goes away
-moves to the primary display. Clips are video only until Sprint 3.
+moves to the primary display. Audio comes from any combination of playback
+devices (captured through WASAPI loopback) and microphones, each with its own
+volume and mute, mixed into one AAC track or split into desktop and
+microphone tracks. A device that fails mid capture is dropped and capture
+continues without it.
 
 ## Building
 
@@ -121,6 +125,19 @@ memory_cap_mb = 1024
 # clips_dir = "D:\\Clips"
 file_name_pattern = "{game} {date} {time}"
 
+[audio]
+enabled = true
+separate_tracks = false   # true keeps microphones on a second track
+bitrate_kbps = 160
+
+[[audio.sources]]
+id = "default"            # "default" follows the Windows default device
+name = "Default output"
+kind = "output"           # output = loopback of a playback device, input = microphone
+enabled = true
+volume = 1.0              # 0.0 to 2.0
+muted = false
+
 [hotkeys]
 save_replay = "Alt+8"
 toggle_replay_buffer = "Alt+9"
@@ -158,12 +175,17 @@ The Windows backend runs one GStreamer pipeline:
 
 ```text
 d3d11screencapturesrc -> d3d11convert -> videorate -> hardware encoder -> h264parse -> appsink
+wasapi2src (loopback) -> volume -\
+wasapi2src (microphone) -> volume -> audiomixer -> AAC encoder -> appsink
 ```
 
 Frames stay on the GPU until they are encoded, and `videorate` pins them to
 an exact frame grid so that buffer math and the container frame rate are
-reliable. Every encoded access unit is handed to `core`, which keeps them in
-a ring bounded by both duration and bytes. The ring evicts whole groups of pictures, so the oldest frame it holds
+reliable. Audio and video share the pipeline clock, and both are handed to
+`core` as running time, so they line up in the clip. Every encoded access
+unit and audio packet is handed to `core`, which keeps them in a ring
+bounded by both duration and bytes; audio is trimmed to the oldest video
+frame. The ring evicts whole groups of pictures, so the oldest frame it holds
 is always a keyframe, and every keyframe carries its parameter sets. Nothing
 touches the disk until you press the hotkey.
 
@@ -184,9 +206,13 @@ a recording needs it and stops when neither does.
 
 Encoders are tried in order (NVENC, Quick Sync, AMF, Media Foundation, x264)
 and the first one that delivers a frame wins. A fallback is reported in the
-UI rather than hidden. Running a throwaway test encode before the real
-pipeline was found to break the following NVENC session, which is why the
-real pipeline is the probe.
+UI rather than hidden. Two hard learned rules shape this: the real pipeline
+is the probe, because a throwaway test encode was found to break the
+following NVENC session, and Media Foundation elements are kept out of the
+path until every vendor encoder has failed, because loading one into the
+process makes NVENC session creation fail with
+`NV_ENC_ERR_INVALID_VERSION`. The AAC encoder order follows the same rule:
+`avenc_aac`, then `voaacenc`, and `mfaacenc` only as a last resort.
 
 ### Stack
 
