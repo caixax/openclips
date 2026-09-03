@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bootstrap;
 mod engine;
 mod error;
 mod games;
@@ -8,6 +9,7 @@ mod library;
 mod player;
 mod settings;
 mod shell;
+mod startup;
 mod steam;
 mod ui;
 
@@ -36,6 +38,20 @@ fn main() -> ExitCode {
 fn run() -> Result<(), AppError> {
     let paths = AppPaths::discover()?;
     let _log_guard = logging::init(&paths.log_dir)?;
+    let runtime = match bootstrap::locate() {
+        Ok(runtime) => runtime,
+        Err(message) => {
+            error!("{message}");
+            rfd::MessageDialog::new()
+                .set_title("OpenClips")
+                .set_level(rfd::MessageLevel::Error)
+                .set_description(&message)
+                .show();
+            return Err(AppError::Runtime(message));
+        }
+    };
+    info!("GStreamer runtime: {}", runtime.bin.display());
+    let minimized_flag = std::env::args().any(|a| a == "--minimized");
     info!(
         version = APP_VERSION,
         platform = Platform::current().name(),
@@ -43,6 +59,12 @@ fn run() -> Result<(), AppError> {
     );
 
     let (config, startup_warning) = load_config(&paths);
+    if config.general.launch_on_startup
+        && !startup::is_enabled()
+        && let Err(err) = startup::apply(true)
+    {
+        warn!("could not refresh the launch on startup entry: {err}");
+    }
 
     let (engine, engine_warning) = match Engine::new(config.clone(), paths.clone()) {
         Ok(engine) => (Some(engine), None),
@@ -63,7 +85,7 @@ fn run() -> Result<(), AppError> {
         engine,
         startup_warning,
     })?;
-    if !app.start_minimized {
+    if !app.start_minimized && !minimized_flag {
         app.window.show()?;
     }
     app.tray.show()?;

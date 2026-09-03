@@ -79,8 +79,13 @@ impl LibraryService {
         }
     }
 
-    /// Rescans the folders and queues work for anything new.
+    /// Rescans the folders and queues work for anything new. Partial files
+    /// left behind by a crash are renamed so they show up as clips.
     pub fn refresh(&mut self) {
+        recover_partial_files(&self.clips_dir);
+        if self.recordings_dir != self.clips_dir {
+            recover_partial_files(&self.recordings_dir);
+        }
         let mut files = scan_dir(&self.clips_dir, ClipKind::Replay);
         if self.recordings_dir != self.clips_dir {
             files.extend(scan_dir(&self.recordings_dir, ClipKind::Recording));
@@ -293,4 +298,43 @@ pub fn format_duration(duration: Duration) -> String {
 fn format_date(when: SystemTime) -> String {
     let local: chrono::DateTime<chrono::Local> = when.into();
     local.format("%Y-%m-%d %H:%M").to_string()
+}
+
+/// A `.mp4.part` that nobody has touched for a while is a recording cut
+/// short by a crash. Fragmented output keeps it playable, so it is renamed
+/// into a clip instead of being left to rot. Files still being written are
+/// skipped by their recent modification time.
+fn recover_partial_files(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_part = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.to_lowercase().ends_with(".mp4.part"));
+        if !is_part {
+            continue;
+        }
+        let recent = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age < Duration::from_secs(60));
+        if recent {
+            continue;
+        }
+        let stem = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n[..n.len() - ".mp4.part".len()].to_owned())
+            .unwrap_or_else(|| "Recovered".to_owned());
+        let target = openclips_core::clip::unique_path(dir, &format!("{stem} (recovered).mp4"));
+        match std::fs::rename(&path, &target) {
+            Ok(()) => info!("recovered {} as {}", path.display(), target.display()),
+            Err(err) => warn!("could not recover {}: {err}", path.display()),
+        }
+    }
 }

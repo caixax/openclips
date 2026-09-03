@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use openclips_core::capture::{AudioDeviceInfo, AudioDeviceKind, MonitorInfo};
 use openclips_core::config::{AudioSourceConfig, Config, DisplaySelection, EncoderPreference};
-use openclips_core::config::{CaptureScope, GameAction, GameProfile};
+use openclips_core::config::{CaptureApi, CaptureScope, GameAction, GameProfile};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::ui::{AudioSourceRow, GameProfileRow, SettingsState};
@@ -42,6 +42,11 @@ pub fn populate(
     state.set_fps(config.capture.fps as i32);
     state.set_bitrate_kbps(config.capture.bitrate_kbps as i32);
     state.set_show_cursor(config.capture.show_cursor);
+    state.set_capture_api_index(match config.capture.api {
+        CaptureApi::DesktopDuplication => 0,
+        CaptureApi::GraphicsCapture => 1,
+    });
+    state.set_launch_on_startup(config.general.launch_on_startup);
 
     let seconds = config.replay.length_seconds;
     if seconds >= 60 && seconds.is_multiple_of(60) {
@@ -226,6 +231,12 @@ pub fn collect(
     config.capture.fps = state.get_fps().max(1) as u32;
     config.capture.bitrate_kbps = state.get_bitrate_kbps().max(1) as u32;
     config.capture.show_cursor = state.get_show_cursor();
+    config.capture.api = if state.get_capture_api_index() == 1 {
+        CaptureApi::GraphicsCapture
+    } else {
+        CaptureApi::DesktopDuplication
+    };
+    config.general.launch_on_startup = state.get_launch_on_startup();
 
     let value = state.get_replay_length_value().max(1) as u32;
     config.replay.length_seconds = if state.get_replay_unit_index() == UNIT_MINUTES {

@@ -383,10 +383,15 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
         state.set_message(format!("Could not save settings: {err}").into());
         return;
     }
+    let mut problems = Vec::new();
 
+    if shared.config.borrow().general.launch_on_startup != next.general.launch_on_startup
+        && let Err(err) = crate::startup::apply(next.general.launch_on_startup)
+    {
+        problems.push(err);
+    }
     let mut rebind = shared.config.borrow().hotkeys_changed(&next);
     *shared.config.borrow_mut() = next.clone();
-    let mut problems = Vec::new();
     if let Some(engine) = shared.engine.borrow_mut().as_mut() {
         match engine.apply_config(next.clone()) {
             Ok(needs_rebind) => rebind |= needs_rebind,
@@ -586,7 +591,16 @@ fn refresh_status(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
     if let BufferState::Failed(reason) = &status.buffer {
         window.set_capture_error(reason.clone().into());
     }
-    window.set_capture_notice(status.notice.clone().unwrap_or_default().into());
+    let mut notice = status.notice.clone().unwrap_or_default();
+    if status.blank {
+        if !notice.is_empty() {
+            notice.push(' ');
+        }
+        notice.push_str(
+            "The capture looks black. If the game runs in exclusive fullscreen, switch it to borderless windowed, or choose Windows Graphics Capture under Settings.",
+        );
+    }
+    window.set_capture_notice(notice.into());
 
     let recording = matches!(
         status.recording,

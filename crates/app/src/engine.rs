@@ -3,9 +3,10 @@
 //! thread; backend threads only touch the shared sink state.
 
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openclips_capture::{
     CaptureBackend, CaptureError, ClipWriter, FrameSink, IconExtractor, MediaTools, Player,
@@ -55,6 +56,8 @@ pub struct EngineStatus {
     pub replay_length: Duration,
     /// Non fatal information such as an encoder fallback.
     pub notice: Option<String>,
+    /// The capture is producing black or empty frames.
+    pub blank: bool,
 }
 
 pub type SaveCallback = Box<dyn FnOnce(Result<ClipFile, String>) + Send + 'static>;
@@ -189,6 +192,9 @@ pub struct Engine {
     notice: Option<String>,
     last_failure: Option<String>,
     monitors: Vec<MonitorInfo>,
+    /// Timestamps of automatic restarts after capture errors, to cap them.
+    restarts: VecDeque<Instant>,
+    blank_warned: bool,
 }
 
 impl Engine {
@@ -233,6 +239,8 @@ impl Engine {
             notice: None,
             last_failure: None,
             monitors,
+            restarts: VecDeque::new(),
+            blank_warned: false,
         })
     }
 
@@ -675,6 +683,15 @@ impl Engine {
                         Err(err) => self.last_failure = Some(err.to_string()),
                     }
                 }
+                CaptureError::Pipeline { message, .. }
+                    if self.wants_capture() && self.allow_restart() =>
+                {
+                    match self.restart_capture() {
+                        Ok(()) => self
+                            .add_notice(format!("Capture restarted after an error ({message}).")),
+                        Err(err) => self.last_failure = Some(err.to_string()),
+                    }
+                }
                 other => self.last_failure = Some(other.to_string()),
             }
         }
@@ -697,17 +714,47 @@ impl Engine {
             }
         };
         let buffer = lock(&self.buffer);
+        let stats = buffer.stats();
+        if stats.looks_blank && !self.blank_warned && self.is_capturing() {
+            warn!("capture looks blank");
+            self.blank_warned = true;
+        } else if !stats.looks_blank {
+            self.blank_warned = false;
+        }
         EngineStatus {
             buffer: buffer_state,
             recording,
-            stats: buffer.stats(),
+            stats,
             stream: buffer.stream().cloned(),
             audio_tracks: buffer.audio_tracks().len(),
             encoder: self.active.clone(),
             backend: self.backend.name(),
             replay_length: self.effective_replay_length(),
             notice: self.notice.clone(),
+            blank: self.blank_warned,
         }
+    }
+
+    fn wants_capture(&self) -> bool {
+        self.buffer_wanted || self.auto_buffer || self.recording_wanted
+    }
+
+    /// At most three automatic restarts per minute; after that the failure
+    /// is surfaced and the user decides.
+    fn allow_restart(&mut self) -> bool {
+        let now = Instant::now();
+        while self
+            .restarts
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60))
+        {
+            self.restarts.pop_front();
+        }
+        if self.restarts.len() >= 3 {
+            return false;
+        }
+        self.restarts.push_back(now);
+        true
     }
 
     /// Snapshots the buffer immediately and writes the clip on a worker

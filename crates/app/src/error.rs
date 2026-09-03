@@ -13,4 +13,7 @@ pub enum AppError {
 
     #[error("hotkey error: {0}")]
     Hotkey(String),
+
+    #[error("{0}")]
+    Runtime(String),
 }

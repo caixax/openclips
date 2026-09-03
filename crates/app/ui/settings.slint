@@ -9,6 +9,8 @@ export global SettingsState {
     in-out property <int> fps: 60;
     in-out property <int> bitrate-kbps: 20000;
     in-out property <bool> show-cursor: false;
+    in-out property <int> capture-api-index: 0;
+    in-out property <bool> launch-on-startup: false;
 
     in-out property <int> replay-length-value: 30;
     in-out property <int> replay-unit-index: 0;
@@ -206,6 +208,15 @@ export component SettingsPage inherits ScrollView {
                 label: "Capture mouse cursor";
                 CheckBox { checked <=> SettingsState.show-cursor; }
             }
+            Field {
+                label: "Capture method";
+                ComboBox {
+                    width: 320px;
+                    model: ["Desktop Duplication (default)", "Windows Graphics Capture"];
+                    current-index <=> SettingsState.capture-api-index;
+                }
+            }
+            Hint { text: "Desktop Duplication is the fastest path and handles borderless and exclusive fullscreen. Switch to Windows Graphics Capture only if clips come out black."; }
         }
 
         Section {
@@ -468,6 +479,10 @@ export component SettingsPage inherits ScrollView {
             Field {
                 label: "Start minimized to tray";
                 CheckBox { checked <=> SettingsState.start-minimized; }
+            }
+            Field {
+                label: "Launch when Windows starts";
+                CheckBox { checked <=> SettingsState.launch-on-startup; }
             }
         }
 
