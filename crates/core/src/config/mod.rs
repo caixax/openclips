@@ -289,6 +289,30 @@ impl Config {
     pub fn replay_memory_cap_bytes(&self) -> usize {
         self.replay.memory_cap_mb as usize * 1024 * 1024
     }
+
+    /// True when moving from `self` to `next` requires the capture pipeline
+    /// to be rebuilt (anything the encoder or the source is configured with).
+    pub fn capture_restart_needed(&self, next: &Config) -> bool {
+        self.capture != next.capture || self.replay.temp_dir != next.replay.temp_dir
+    }
+
+    pub fn hotkeys_changed(&self, next: &Config) -> bool {
+        self.hotkeys != next.hotkeys
+    }
+
+    pub fn replay_limits_changed(&self, next: &Config) -> bool {
+        self.replay.length_seconds != next.replay.length_seconds
+            || self.replay.memory_cap_mb != next.replay.memory_cap_mb
+    }
+
+    pub fn recordings_dir(&self, paths: &AppPaths) -> PathBuf {
+        let sub = self.recording.subfolder.trim();
+        if sub.is_empty() {
+            self.clips_dir(paths)
+        } else {
+            self.clips_dir(paths).join(sub)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +399,36 @@ mod tests {
         assert!(text.contains("kind = \"monitor\""), "{text}");
         let back: Config = toml::from_str(&text).expect("deserialize");
         assert_eq!(back.capture.display, config.capture.display);
+    }
+
+    #[test]
+    fn change_detection_covers_capture_and_hotkeys() {
+        let base = Config::default();
+        let mut next = base.clone();
+        assert!(!base.capture_restart_needed(&next));
+        next.capture.fps = 30;
+        assert!(base.capture_restart_needed(&next));
+
+        let mut next = base.clone();
+        next.replay.length_seconds = 120;
+        assert!(!base.capture_restart_needed(&next));
+        assert!(base.replay_limits_changed(&next));
+
+        let mut next = base.clone();
+        next.hotkeys.save_replay = "F9".parse().expect("valid");
+        assert!(base.hotkeys_changed(&next));
+    }
+
+    #[test]
+    fn recordings_dir_uses_subfolder() {
+        let paths = AppPaths::rooted_at("/tmp/openclips-test");
+        let mut config = Config::default();
+        assert_eq!(
+            config.recordings_dir(&paths),
+            paths.default_clips_dir.join("Recordings")
+        );
+        config.recording.subfolder = "  ".to_owned();
+        assert_eq!(config.recordings_dir(&paths), paths.default_clips_dir);
     }
 
     #[test]
