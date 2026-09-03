@@ -34,6 +34,7 @@ pub struct Config {
     pub recording: RecordingConfig,
     pub output: OutputConfig,
     pub audio: AudioConfig,
+    pub games: GamesConfig,
     pub hotkeys: HotkeyConfig,
 }
 
@@ -47,6 +48,7 @@ impl Default for Config {
             recording: RecordingConfig::default(),
             output: OutputConfig::default(),
             audio: AudioConfig::default(),
+            games: GamesConfig::default(),
             hotkeys: HotkeyConfig::default(),
         }
     }
@@ -220,6 +222,55 @@ impl AudioConfig {
     }
 }
 
+/// Whether capture runs all the time or only while a known game runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureScope {
+    #[default]
+    Global,
+    PerGame,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GameAction {
+    #[default]
+    Buffer,
+    Recording,
+    Ignore,
+}
+
+impl GameAction {
+    pub const fn label(self) -> &'static str {
+        match self {
+            GameAction::Buffer => "Replay buffer",
+            GameAction::Recording => "Full recording",
+            GameAction::Ignore => "Do nothing",
+        }
+    }
+}
+
+/// Per game overrides. Every optional field falls back to the global value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GameProfile {
+    /// Lower case executable file name.
+    pub exe: String,
+    /// Empty means "use the database name".
+    pub name: String,
+    pub action: GameAction,
+    pub replay_length_seconds: Option<u32>,
+    pub subfolder: Option<String>,
+    pub display: Option<DisplaySelection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GamesConfig {
+    pub scope: CaptureScope,
+    pub profiles: Vec<GameProfile>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HotkeyConfig {
@@ -336,6 +387,24 @@ impl Config {
                 return Err(CoreError::InvalidConfig {
                     field: "audio.sources.volume",
                     reason: format!("{} must be between 0.0 and 2.0", source.name),
+                });
+            }
+        }
+        for profile in &self.games.profiles {
+            if profile.exe.trim().is_empty() {
+                return Err(CoreError::InvalidConfig {
+                    field: "games.profiles.exe",
+                    reason: "a game profile needs an executable name".to_owned(),
+                });
+            }
+            if let Some(secs) = profile.replay_length_seconds
+                && !(MIN_REPLAY_SECONDS..=MAX_REPLAY_SECONDS).contains(&secs)
+            {
+                return Err(CoreError::InvalidConfig {
+                    field: "games.profiles.replay_length_seconds",
+                    reason: format!(
+                        "must be between {MIN_REPLAY_SECONDS} and {MAX_REPLAY_SECONDS}"
+                    ),
                 });
             }
         }

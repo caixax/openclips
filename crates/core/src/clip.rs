@@ -89,6 +89,8 @@ pub struct ClipFile {
     pub duration: Duration,
     pub bytes: u64,
     pub created: SystemTime,
+    /// The game that was running when the clip was made, when known.
+    pub game: Option<String>,
 }
 
 #[cfg(test)]
