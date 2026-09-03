@@ -1,7 +1,8 @@
 //! Windows backend built on GStreamer: DXGI desktop duplication through
-//! `d3d11screencapturesrc`, hardware encoding on the D3D11 device, and MP4
-//! muxing for clips.
+//! `d3d11screencapturesrc`, hardware encoding on the D3D11 device, WASAPI
+//! audio capture, and MP4 muxing for clips and recordings.
 
+mod audio;
 mod encoders;
 mod monitors;
 mod mux;
@@ -12,11 +13,14 @@ mod recording;
 use std::sync::Arc;
 
 use gstreamer as gst;
-use openclips_core::capture::{CaptureSettings, EncoderInfo, MonitorInfo};
-use tracing::info;
+use openclips_core::capture::{AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo};
+use tracing::{info, warn};
 
 use crate::backend::{CaptureBackend, ClipWriter, FrameSink, Recorder};
 use crate::error::CaptureError;
+
+const START_ATTEMPTS: u32 = 3;
+const START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
 
 pub struct WindowsBackend {
     encoders: Vec<EncoderInfo>,
@@ -33,14 +37,21 @@ impl WindowsBackend {
         for element in [
             "d3d11screencapturesrc",
             "d3d11convert",
+            "videorate",
             "h264parse",
             "mp4mux",
             "appsink",
             "appsrc",
+            "wasapi2src",
+            "audiomixer",
+            "aacparse",
         ] {
             if gst::ElementFactory::find(element).is_none() {
                 return Err(CaptureError::MissingElement(element.to_owned()));
             }
+        }
+        if audio::choose_encoder().is_none() {
+            return Err(CaptureError::NoAudioEncoder);
         }
 
         let encoders = encoders::discover();
@@ -78,6 +89,10 @@ impl CaptureBackend for WindowsBackend {
         Ok(monitors::enumerate().into_iter().map(|m| m.info).collect())
     }
 
+    fn list_audio_devices(&self) -> Result<Vec<AudioDeviceInfo>, CaptureError> {
+        audio::list_devices()
+    }
+
     fn start(
         &mut self,
         settings: &CaptureSettings,
@@ -86,9 +101,30 @@ impl CaptureBackend for WindowsBackend {
         if self.capture.is_some() {
             return Err(CaptureError::AlreadyRunning);
         }
-        let capture = pipeline::CapturePipeline::start(settings, sink)?;
-        self.capture = Some(capture);
-        Ok(())
+        // NVENC occasionally refuses to open a session and succeeds moments
+        // later, so a start that fails inside the encoder is retried before
+        // the caller moves on to another encoder.
+        let attempts = if settings.encoder.kind.is_hardware() {
+            START_ATTEMPTS
+        } else {
+            1
+        };
+        let mut last = None;
+        for attempt in 1..=attempts {
+            match pipeline::CapturePipeline::start(settings, sink.clone()) {
+                Ok(capture) => {
+                    self.capture = Some(capture);
+                    return Ok(());
+                }
+                Err(err @ CaptureError::EncoderStart { .. }) if attempt < attempts => {
+                    warn!("{err}; retrying ({attempt}/{attempts})");
+                    std::thread::sleep(START_RETRY_DELAY);
+                    last = Some(err);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last.unwrap_or(CaptureError::NoEncoder))
     }
 
     fn stop(&mut self) {
@@ -99,6 +135,12 @@ impl CaptureBackend for WindowsBackend {
 
     fn is_running(&self) -> bool {
         self.capture.is_some()
+    }
+
+    fn set_audio_level(&self, source_key: &str, volume: f32, muted: bool) -> bool {
+        self.capture
+            .as_ref()
+            .is_some_and(|c| c.set_audio_level(source_key, volume, muted))
     }
 
     fn clip_writer(&self) -> Arc<dyn ClipWriter> {

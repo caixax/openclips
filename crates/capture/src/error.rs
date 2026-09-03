@@ -16,14 +16,22 @@ pub enum CaptureError {
     #[error("no usable video encoder was found")]
     NoEncoder,
 
+    #[error("no AAC audio encoder was found")]
+    NoAudioEncoder,
+
     #[error("display \"{0}\" was not found")]
     MonitorNotFound(String),
 
     #[error("failed to build the capture pipeline: {0}")]
     PipelineBuild(String),
 
-    #[error("the capture pipeline failed: {0}")]
-    Pipeline(String),
+    #[error("the capture pipeline failed: {message}")]
+    Pipeline { message: String, element: String },
+
+    /// An audio source failed. `key` identifies the source so the caller can
+    /// continue without it.
+    #[error("audio source {key} failed: {message}")]
+    AudioSource { key: String, message: String },
 
     #[error("encoder {encoder} could not start: {reason}")]
     EncoderStart { encoder: String, reason: String },

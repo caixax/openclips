@@ -6,9 +6,12 @@
 //!   -> appsink
 //! ```
 //!
-//! Frames leave the pipeline as Annex B access units with parameter sets on
-//! every keyframe, so the replay buffer can start a clip at any keyframe.
+//! plus one audio branch per track (see `audio.rs`). Frames leave the
+//! pipeline as Annex B access units with parameter sets on every keyframe,
+//! so the replay buffer can start a clip at any keyframe. Audio and video
+//! share the pipeline clock, so their timestamps are directly comparable.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -22,6 +25,7 @@ use openclips_core::config::DisplaySelection;
 use openclips_core::media::{EncodedFrame, StreamInfo, Timestamp, VideoCodec};
 use tracing::{error, info, warn};
 
+use super::audio;
 use super::encoders::{self, EncoderTuning};
 use super::monitors;
 use crate::backend::FrameSink;
@@ -29,10 +33,15 @@ use crate::error::CaptureError;
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Source element name to source key, shared with the bus watch so that
+/// an error can be attributed to one audio device.
+type SourceNames = Arc<HashMap<String, String>>;
+
 pub struct CapturePipeline {
     pipeline: gst::Pipeline,
     stop_flag: Arc<AtomicBool>,
     bus_thread: Option<JoinHandle<()>>,
+    volumes: HashMap<String, gst::Element>,
 }
 
 impl CapturePipeline {
@@ -41,7 +50,8 @@ impl CapturePipeline {
         sink: Arc<dyn FrameSink>,
     ) -> Result<Self, CaptureError> {
         let first_frame = Arc::new(AtomicBool::new(false));
-        let pipeline = build(settings, sink.clone(), first_frame.clone())?;
+        let built = build(settings, sink.clone(), first_frame.clone())?;
+        let pipeline = built.pipeline;
         let bus = pipeline
             .bus()
             .ok_or_else(|| CaptureError::PipelineBuild("pipeline has no bus".to_owned()))?;
@@ -53,26 +63,40 @@ impl CapturePipeline {
                 reason: format!("could not start capture: {err}"),
             });
         }
-        if let Err(reason) = wait_for_first_frame(&bus, &first_frame) {
+        if let Err(err) = wait_for_first_frame(&bus, &first_frame, &built.source_names) {
             let _ = pipeline.set_state(gst::State::Null);
-            return Err(CaptureError::EncoderStart {
-                encoder: settings.encoder.element.clone(),
-                reason,
+            return Err(match err {
+                CaptureError::Pipeline { message, .. } => CaptureError::EncoderStart {
+                    encoder: settings.encoder.element.clone(),
+                    reason: message,
+                },
+                other => other,
             });
         }
         info!(
-            "capture started with {} on {}",
+            "capture started with {} on {} and {} audio track(s)",
             settings.encoder.element,
-            describe_display(&settings.display)
+            describe_display(&settings.display),
+            settings.audio_tracks.len()
         );
 
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let bus_thread = spawn_bus_watch(bus, stop_flag.clone(), sink);
+        let bus_thread = spawn_bus_watch(bus, stop_flag.clone(), sink, built.source_names);
         Ok(Self {
             pipeline,
             stop_flag,
             bus_thread: Some(bus_thread),
+            volumes: built.volumes,
         })
+    }
+
+    pub fn set_audio_level(&self, source_key: &str, volume: f32, muted: bool) -> bool {
+        let Some(element) = self.volumes.get(source_key) else {
+            return false;
+        };
+        element.set_property("volume", f64::from(volume.clamp(0.0, 10.0)));
+        element.set_property("mute", muted);
+        true
     }
 
     pub fn stop(mut self) {
@@ -106,26 +130,60 @@ fn describe_display(display: &DisplaySelection) -> String {
     }
 }
 
+/// Turns a bus error into the matching error value. Errors raised by an
+/// audio source element are attributed to that source.
+fn classify_error(err: &gst::message::Error, names: &HashMap<String, String>) -> CaptureError {
+    let element = err.src().map(|s| s.name().to_string()).unwrap_or_default();
+    let message = encoders::describe_error(err);
+    if let Some(key) = names.get(&element) {
+        return CaptureError::AudioSource {
+            key: key.clone(),
+            message,
+        };
+    }
+    CaptureError::Pipeline { message, element }
+}
+
 /// The first encoded frame is the proof that the source, the GPU path and
 /// the encoder all agreed. Until it arrives, an error on the bus means the
-/// encoder is unusable and the caller should try the next one.
-fn wait_for_first_frame(bus: &gst::Bus, first_frame: &AtomicBool) -> Result<(), String> {
+/// pipeline is unusable as configured.
+fn wait_for_first_frame(
+    bus: &gst::Bus,
+    first_frame: &AtomicBool,
+    names: &HashMap<String, String>,
+) -> Result<(), CaptureError> {
     let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
     let poll = gst::ClockTime::from_mseconds(50);
     while !first_frame.load(Ordering::SeqCst) {
         if let Some(msg) = bus.timed_pop_filtered(poll, &[gst::MessageType::Error])
             && let gst::MessageView::Error(err) = msg.view()
         {
-            return Err(encoders::describe_error(err));
+            return Err(classify_error(err, names));
         }
         if Instant::now() >= deadline {
-            return Err(format!(
-                "no frame was produced within {} seconds",
-                FIRST_FRAME_TIMEOUT.as_secs()
-            ));
+            return Err(CaptureError::Pipeline {
+                message: format!(
+                    "no frame was produced within {} seconds",
+                    FIRST_FRAME_TIMEOUT.as_secs()
+                ),
+                element: String::new(),
+            });
         }
     }
     Ok(())
+}
+
+/// Timestamps from different branches only compare as running time, which
+/// accounts for each pad's segment. Falls back to the raw timestamp when a
+/// sample carries no segment.
+pub(super) fn running_time(sample: &gst::Sample, pts: Option<gst::ClockTime>) -> Timestamp {
+    let pts = pts.unwrap_or(gst::ClockTime::ZERO);
+    let running = sample
+        .segment()
+        .and_then(|segment| segment.downcast_ref::<gst::ClockTime>())
+        .and_then(|segment| segment.to_running_time(pts))
+        .unwrap_or(pts);
+    Timestamp::from_nanos(running.nseconds())
 }
 
 fn make(element: &str) -> Result<gst::Element, CaptureError> {
@@ -134,11 +192,17 @@ fn make(element: &str) -> Result<gst::Element, CaptureError> {
         .map_err(|_| CaptureError::MissingElement(element.to_owned()))
 }
 
+struct Built {
+    pipeline: gst::Pipeline,
+    volumes: HashMap<String, gst::Element>,
+    source_names: SourceNames,
+}
+
 fn build(
     settings: &CaptureSettings,
     sink: Arc<dyn FrameSink>,
     first_frame: Arc<AtomicBool>,
-) -> Result<gst::Pipeline, CaptureError> {
+) -> Result<Built, CaptureError> {
     let spec = encoders::spec_for(&settings.encoder.element)
         .ok_or_else(|| CaptureError::MissingElement(settings.encoder.element.clone()))?;
 
@@ -208,7 +272,7 @@ fn build(
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(new_sample_handler(
-                sink,
+                sink.clone(),
                 settings.encoder.element.clone(),
                 first_frame,
             ))
@@ -230,7 +294,26 @@ fn build(
         .add_many(&refs)
         .map_err(|e| CaptureError::PipelineBuild(e.to_string()))?;
     gst::Element::link_many(&refs).map_err(|e| CaptureError::PipelineBuild(e.to_string()))?;
-    Ok(pipeline)
+
+    let mut volumes = HashMap::new();
+    let mut source_names = HashMap::new();
+    for (index, plan) in settings.audio_tracks.iter().enumerate() {
+        let branch = audio::build_track(
+            &pipeline,
+            index as u32,
+            plan,
+            settings.audio_bitrate_kbps,
+            sink.clone(),
+        )?;
+        volumes.extend(branch.volumes);
+        source_names.extend(branch.source_names);
+    }
+
+    Ok(Built {
+        pipeline,
+        volumes,
+        source_names: Arc::new(source_names),
+    })
 }
 
 struct StreamTracker {
@@ -291,9 +374,10 @@ fn new_sample_handler(
             return Ok(gst::FlowSuccess::Ok);
         };
         let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+        let pts = running_time(&sample, buffer.pts());
         let frame = EncodedFrame {
-            pts: Timestamp::from_nanos(buffer.pts().map(|t| t.nseconds()).unwrap_or(0)),
-            dts: buffer.dts().map(|t| Timestamp::from_nanos(t.nseconds())),
+            pts,
+            dts: buffer.dts().map(|_| running_time(&sample, buffer.dts())),
             duration: buffer.duration().map(|d| d.into()),
             keyframe: !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT),
             data: Arc::from(map.as_slice()),
@@ -308,6 +392,7 @@ fn spawn_bus_watch(
     bus: gst::Bus,
     stop_flag: Arc<AtomicBool>,
     sink: Arc<dyn FrameSink>,
+    names: SourceNames,
 ) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("capture-bus".to_owned())
@@ -324,20 +409,21 @@ fn spawn_bus_watch(
                 };
                 match msg.view() {
                     gst::MessageView::Error(err) => {
-                        let text = encoders::describe_error(err);
-                        error!("capture pipeline error: {text}");
-                        sink.on_error(CaptureError::Pipeline(text));
+                        let error = classify_error(err, &names);
+                        error!("capture pipeline error: {error}");
+                        sink.on_error(error);
                         return;
                     }
                     gst::MessageView::Eos(_) => {
                         warn!("capture pipeline reached end of stream");
-                        sink.on_error(CaptureError::Pipeline(
-                            "the capture source stopped".to_owned(),
-                        ));
+                        sink.on_error(CaptureError::Pipeline {
+                            message: "the capture source stopped".to_owned(),
+                            element: String::new(),
+                        });
                         return;
                     }
                     gst::MessageView::Warning(w) => {
-                        warn!("capture pipeline warning: {}", w.error())
+                        warn!("capture pipeline warning: {}", w.error());
                     }
                     _ => {}
                 }

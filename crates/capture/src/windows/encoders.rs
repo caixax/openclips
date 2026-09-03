@@ -5,6 +5,11 @@
 //! fail to open, so the capture pipeline itself is the verification: it must
 //! deliver a first frame before a start counts as successful, and the caller
 //! moves on to the next encoder when it does not.
+//!
+//! Media Foundation elements must never run before NVENC in the same
+//! process: once an MF encoder has been loaded, NVENC session creation fails
+//! with NV_ENC_ERR_INVALID_VERSION. That is why `mfh264enc` sits behind every
+//! vendor encoder and why the audio branch avoids `mfaacenc`.
 
 use gstreamer as gst;
 use gstreamer::prelude::*;

@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! appsrc(byte-stream H.264) -> h264parse -> mp4mux -> filesink
+//! appsrc(raw AAC)           -/
 //! ```
 
 use std::path::Path;
@@ -15,6 +16,7 @@ use openclips_core::media::{EncodedFrame, StreamInfo};
 use openclips_core::replay::ReplaySnapshot;
 use tracing::info;
 
+use super::audio;
 use super::encoders::wait_until_done;
 use crate::backend::ClipWriter;
 use crate::error::CaptureError;
@@ -51,10 +53,11 @@ impl ClipWriter for Mp4Writer {
 
         let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         info!(
-            "clip written: {} ({:.1} s, {} frames, {} bytes)",
+            "clip written: {} ({:.1} s, {} frames, {} audio track(s), {} bytes)",
             path.display(),
             snapshot.duration.as_secs_f64(),
             snapshot.frames.len(),
+            snapshot.audio.len(),
             bytes
         );
         Ok(ClipFile {
@@ -66,47 +69,78 @@ impl ClipWriter for Mp4Writer {
     }
 }
 
+fn make(element: &str) -> Result<gst::Element, String> {
+    gst::ElementFactory::make(element)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
     let stream = &snapshot.stream;
-    let caps = h264_caps(stream);
-    let appsrc = gst_app::AppSrc::builder()
-        .caps(&caps)
+    let video_src = gst_app::AppSrc::builder()
+        .caps(&h264_caps(stream))
         .format(gst::Format::Time)
         .is_live(false)
+        .max_bytes(0)
         .build();
-    let parse = gst::ElementFactory::make("h264parse")
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mux = gst::ElementFactory::make("mp4mux")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let parse = make("h264parse")?;
+    let mux = make("mp4mux")?;
     let filesink = gst::ElementFactory::make("filesink")
         .property("location", path.to_string_lossy().as_ref())
         .build()
         .map_err(|e| e.to_string())?;
 
     let pipeline = gst::Pipeline::with_name("openclips-mux");
-    let src: gst::Element = appsrc.clone().upcast();
+    let src: gst::Element = video_src.clone().upcast();
     pipeline
         .add_many([&src, &parse, &mux, &filesink])
         .map_err(|e| e.to_string())?;
     gst::Element::link_many([&src, &parse, &mux, &filesink]).map_err(|e| e.to_string())?;
 
+    let mut audio_srcs = Vec::new();
+    for track in &snapshot.audio {
+        if track.packets.is_empty() {
+            continue;
+        }
+        let appsrc = gst_app::AppSrc::builder()
+            .caps(&audio::packet_caps(&track.info))
+            .format(gst::Format::Time)
+            .is_live(false)
+            .max_bytes(0)
+            .build();
+        let src: gst::Element = appsrc.clone().upcast();
+        pipeline.add(&src).map_err(|e| e.to_string())?;
+        src.link(&mux).map_err(|e| e.to_string())?;
+        audio_srcs.push((appsrc, track));
+    }
+
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|_| "could not start the muxer".to_owned())?;
 
-    let origin = snapshot.frames[0].pts;
+    let origin = snapshot.origin().nanos();
     let frame_duration = stream.frame_duration().as_nanos() as u64;
     for frame in &snapshot.frames {
-        let buffer = to_buffer(frame, origin.nanos(), frame_duration);
-        appsrc
+        let buffer = to_buffer(frame, origin, frame_duration);
+        video_src
             .push_buffer(buffer)
             .map_err(|e| format!("muxer rejected a frame: {e:?}"))?;
     }
-    appsrc
+    video_src
         .end_of_stream()
-        .map_err(|e| format!("could not finish the stream: {e:?}"))?;
+        .map_err(|e| format!("could not finish the video stream: {e:?}"))?;
+
+    for (appsrc, track) in &audio_srcs {
+        let duration = audio::packet_duration_ns(&track.info);
+        for packet in &track.packets {
+            appsrc
+                .push_buffer(audio::packet_to_buffer(packet, origin, duration))
+                .map_err(|e| format!("muxer rejected an audio packet: {e:?}"))?;
+        }
+        appsrc
+            .end_of_stream()
+            .map_err(|e| format!("could not finish an audio stream: {e:?}"))?;
+    }
 
     let outcome = wait_until_done(&pipeline, gst::ClockTime::from_seconds(60));
     let _ = pipeline.set_state(gst::State::Null);

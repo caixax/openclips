@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use openclips_core::capture::{CaptureSettings, EncoderInfo, MonitorInfo};
+use openclips_core::capture::{AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo};
 use openclips_core::clip::ClipFile;
-use openclips_core::media::{EncodedFrame, StreamInfo};
+use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo};
 use openclips_core::replay::ReplaySnapshot;
 
 use crate::error::CaptureError;
@@ -15,6 +15,9 @@ pub trait FrameSink: Send + Sync + 'static {
     /// the stream properties change mid capture.
     fn on_stream(&self, info: StreamInfo);
     fn on_frame(&self, frame: EncodedFrame);
+    /// Called once per audio track before its first packet.
+    fn on_audio_track(&self, info: AudioTrackInfo);
+    fn on_audio(&self, packet: AudioPacket);
     /// A fatal capture failure. The backend stops after reporting it.
     fn on_error(&self, error: CaptureError);
 }
@@ -29,13 +32,16 @@ pub trait Recorder: Send + Sync {
     fn start(
         &self,
         stream: &StreamInfo,
+        audio: &[AudioTrackInfo],
         path: &Path,
     ) -> Result<Box<dyn RecordingSession>, CaptureError>;
 }
 
-/// One recording in progress. The first pushed frame must be a keyframe.
+/// One recording in progress. The first pushed video frame must be a
+/// keyframe; audio packets older than that frame are ignored.
 pub trait RecordingSession: Send {
     fn push(&mut self, frame: &EncodedFrame) -> Result<(), CaptureError>;
+    fn push_audio(&mut self, packet: &AudioPacket) -> Result<(), CaptureError>;
     fn finish(self: Box<Self>) -> Result<ClipFile, CaptureError>;
     fn path(&self) -> &Path;
 }
@@ -49,6 +55,8 @@ pub trait CaptureBackend: Send {
 
     fn list_monitors(&self) -> Result<Vec<MonitorInfo>, CaptureError>;
 
+    fn list_audio_devices(&self) -> Result<Vec<AudioDeviceInfo>, CaptureError>;
+
     fn start(
         &mut self,
         settings: &CaptureSettings,
@@ -58,6 +66,10 @@ pub trait CaptureBackend: Send {
     fn stop(&mut self);
 
     fn is_running(&self) -> bool;
+
+    /// Adjusts a running source's level. Returns false when no such source
+    /// is part of the running capture.
+    fn set_audio_level(&self, source_key: &str, volume: f32, muted: bool) -> bool;
 
     /// A thread safe writer that can be used while capture is running.
     fn clip_writer(&self) -> Arc<dyn ClipWriter>;
