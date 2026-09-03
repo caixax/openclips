@@ -25,7 +25,7 @@ features land.
 | Display selection, buffer length, hotkey rebinding, full session recording | Done (Sprint 2) |
 | Multi source audio (desktop loopback and microphones) | Done (Sprint 3) |
 | Clip library with thumbnails and playback | Done (Sprint 4) |
-| Trim editor (stream copy and frame accurate) | Planned (Sprint 5) |
+| Trim editor (stream copy and frame accurate) | Done (Sprint 5) |
 | Game detection, per game profiles, bundled games database | Planned (Sprint 6) |
 | Fullscreen reliability pass, installer, launch on startup | Planned (Sprint 7) |
 | Linux backend (PipeWire and desktop portal) | Future |
@@ -45,7 +45,11 @@ microphone tracks. A device that fails mid capture is dropped and capture
 continues without it. The Clips page lists every clip and recording with a
 thumbnail, date and duration, filters by game or title, plays clips in the
 app with audio, and can rename, delete (to the Recycle Bin) or reveal a
-file in Explorer.
+file in Explorer. The player has a trim mode: drag the in and out handles
+on the timeline (or set them at the playhead), preview the selection, and
+save it as a new file. The fast mode copies the streams and cuts on
+keyframes; the exact mode re-encodes the selection for a frame accurate
+cut. Replacing the original is an explicit checkbox, off by default.
 
 ## Building
 
@@ -231,6 +235,18 @@ all on a worker thread. Playback uses `playbin3` with an `appsink` video
 sink: decoded RGBA frames (scaled to at most 1280 pixels wide) are handed to
 the Slint image element, audio plays through the default output, and
 seeking is frame accurate.
+
+### Trimming
+
+Both trim paths are a seek with a segment: the pipeline prerolls, a seek
+with start and stop selects the range, and the muxer receives exactly that
+segment before end of stream. The fast path demuxes and remuxes the encoded
+streams (`qtdemux -> h264parse -> mp4mux`, audio alongside) with a keyframe
+snapping seek, so it finishes in a fraction of a second and the start lands
+on the previous keyframe (one second apart at the default settings). The
+exact path decodes with `uridecodebin`, re-encodes with the best available
+hardware encoder and AAC, and uses an accurate seek so the first frame is
+the one you picked.
 
 ### Stack
 
