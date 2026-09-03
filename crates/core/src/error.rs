@@ -40,6 +40,16 @@ pub enum CoreError {
     #[error("failed to serialize config: {0}")]
     SerializeConfig(#[from] toml::ser::Error),
 
+    #[error("invalid library file {path}: {source}")]
+    ParseLibrary {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("failed to serialize the library: {0}")]
+    SerializeLibrary(#[from] serde_json::Error),
+
     #[error("invalid hotkey binding \"{input}\": {reason}")]
     InvalidHotkey { input: String, reason: String },
 

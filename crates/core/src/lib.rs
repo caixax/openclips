@@ -8,6 +8,7 @@ pub mod capture;
 pub mod clip;
 pub mod config;
 pub mod error;
+pub mod library;
 pub mod logging;
 pub mod media;
 pub mod replay;
