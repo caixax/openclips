@@ -21,7 +21,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use openclips_core::capture::CaptureSettings;
-use openclips_core::config::DisplaySelection;
+use openclips_core::config::{CaptureApi, DisplaySelection};
 use openclips_core::media::{EncodedFrame, StreamInfo, Timestamp, VideoCodec};
 use tracing::{error, info, warn};
 
@@ -208,6 +208,13 @@ fn build(
 
     let src = make("d3d11screencapturesrc")?;
     src.set_property("show-cursor", settings.show_cursor);
+    let api = match settings.api {
+        CaptureApi::DesktopDuplication => "dxgi",
+        CaptureApi::GraphicsCapture => "wgc",
+    };
+    if !super::props::set_nick(&src, "capture-api", api) {
+        warn!("this GStreamer build has no capture-api selection, using the default");
+    }
     match &settings.display {
         DisplaySelection::Primary => src.set_property("monitor-index", -1i32),
         DisplaySelection::Monitor(id) => {
