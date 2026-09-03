@@ -26,7 +26,7 @@ features land.
 | Multi source audio (desktop loopback and microphones) | Done (Sprint 3) |
 | Clip library with thumbnails and playback | Done (Sprint 4) |
 | Trim editor (stream copy and frame accurate) | Done (Sprint 5) |
-| Game detection, per game profiles, bundled games database | Planned (Sprint 6) |
+| Game detection, per game profiles, bundled games database | Done (Sprint 6) |
 | Fullscreen reliability pass, installer, launch on startup | Planned (Sprint 7) |
 | Linux backend (PipeWire and desktop portal) | Future |
 
@@ -50,6 +50,11 @@ on the timeline (or set them at the playhead), preview the selection, and
 save it as a new file. The fast mode copies the streams and cuts on
 keyframes; the exact mode re-encodes the selection for a frame accurate
 cut. Replacing the original is an explicit checkbox, off by default.
+Running games are detected from their executable through a bundled
+database of about 1900 titles plus your own profiles; clips are named and
+tagged with the game, cards show the game's icon (extracted from the
+executable itself), and in per game mode capture starts and stops with
+the game, with per game buffer length, subfolder and display overrides.
 
 ## Building
 
@@ -147,6 +152,17 @@ kind = "output"           # output = loopback of a playback device, input = micr
 enabled = true
 volume = 1.0              # 0.0 to 2.0
 muted = false
+
+[games]
+scope = "global"          # global = always capture, per_game = only while a known game runs
+
+[[games.profiles]]
+exe = "hl2.exe"           # lower case executable name
+name = ""                 # empty = name from the bundled database
+action = "buffer"         # buffer, recording or ignore
+# replay_length_seconds = 120
+# subfolder = "Half-Life"
+# display = { kind = "primary" }
 
 [hotkeys]
 save_replay = "Alt+8"
@@ -247,6 +263,19 @@ on the previous keyframe (one second apart at the default settings). The
 exact path decodes with `uridecodebin`, re-encodes with the best available
 hardware encoder and AAC, and uses an accurate seek so the first frame is
 the one you picked.
+
+### Game detection
+
+Every two seconds the app lists running processes (tool help snapshot) and
+the foreground window's process, and matches executable names against your
+profiles and the bundled database in `crates/core/assets/games.json`. That
+file is generated from the public seed list with
+`cargo run -p openclips-core --example build_games_db`, which drops
+launchers, installers and runtimes, normalizes names and resolves shared
+binaries. Icons are pulled from the game's own executable through the
+shell (`SHGetFileInfo`) and cached as PNG, so no icon database ships with
+the app. The optional Steam lookup only runs when you press its button and
+only suggests names for executables without one.
 
 ### Stack
 
