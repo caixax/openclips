@@ -24,7 +24,7 @@ features land.
 | Rolling replay buffer with GPU encode and Alt+8 save | Done (Sprint 1) |
 | Display selection, buffer length, hotkey rebinding, full session recording | Done (Sprint 2) |
 | Multi source audio (desktop loopback and microphones) | Done (Sprint 3) |
-| Clip library with thumbnails and playback | Planned (Sprint 4) |
+| Clip library with thumbnails and playback | Done (Sprint 4) |
 | Trim editor (stream copy and frame accurate) | Planned (Sprint 5) |
 | Game detection, per game profiles, bundled games database | Planned (Sprint 6) |
 | Fullscreen reliability pass, installer, launch on startup | Planned (Sprint 7) |
@@ -42,7 +42,10 @@ moves to the primary display. Audio comes from any combination of playback
 devices (captured through WASAPI loopback) and microphones, each with its own
 volume and mute, mixed into one AAC track or split into desktop and
 microphone tracks. A device that fails mid capture is dropped and capture
-continues without it.
+continues without it. The Clips page lists every clip and recording with a
+thumbnail, date and duration, filters by game or title, plays clips in the
+app with audio, and can rename, delete (to the Recycle Bin) or reveal a
+file in Explorer.
 
 ## Building
 
@@ -101,7 +104,10 @@ Linux:    ~/.config/OpenClips/config.toml
 ```
 
 Clips default to `Videos\OpenClips`. Logs default to
-`%LOCALAPPDATA%\OpenClips\data\logs`. A malformed config file is reported in
+`%LOCALAPPDATA%\OpenClips\data\logs`. The library index lives in
+`%LOCALAPPDATA%\OpenClips\data\library.json` and thumbnails in
+`%LOCALAPPDATA%\OpenClips\cache\thumbnails`; both are rebuilt from the clip
+files when missing. A malformed config file is reported in
 the app and ignored for that session; it is never overwritten with defaults.
 
 The keys that matter today:
@@ -156,14 +162,16 @@ and `core` depends on nothing platform specific.
 ```text
 crates/
   core/      Platform independent domain logic: config, errors, logging,
-             the replay ring buffer, clip naming, encoder selection rules.
-  capture/   The platform abstraction. Defines the CaptureBackend, FrameSink
-             and ClipWriter traits and hosts the Windows GStreamer
-             implementation. A Linux backend (pipewiresrc through the
+             the replay ring buffer, clip naming, encoder selection rules,
+             the clip library index.
+  capture/   The platform abstraction. Defines the CaptureBackend, FrameSink,
+             ClipWriter, Recorder, MediaTools and Player traits and hosts
+             the Windows GStreamer implementation. A Linux backend (pipewiresrc through the
              xdg-desktop-portal ScreenCast portal, VAAPI encode) slots in
              here without touching the other crates.
-  app/       The Slint UI, tray icon, global hotkeys and the engine that
-             wires capture into the buffer and the buffer into clip files.
+  app/       The Slint UI, tray icon, global hotkeys, the engine that
+             wires capture into the buffer and the buffer into clip files,
+             the library service and the in app player.
 ```
 
 The capture backend and the UI never talk to each other directly. Everything
@@ -213,6 +221,16 @@ path until every vendor encoder has failed, because loading one into the
 process makes NVENC session creation fail with
 `NV_ENC_ERR_INVALID_VERSION`. The AAC encoder order follows the same rule:
 `avenc_aac`, then `voaacenc`, and `mfaacenc` only as a last resort.
+
+### Library and playback
+
+The library is an index of the files in the clips folder. On start and after
+every save it scans the folder, reads duration and dimensions with the
+GStreamer discoverer and renders a thumbnail with a short decode pipeline,
+all on a worker thread. Playback uses `playbin3` with an `appsink` video
+sink: decoded RGBA frames (scaled to at most 1280 pixels wide) are handed to
+the Slint image element, audio plays through the default output, and
+seeking is frame accurate.
 
 ### Stack
 
