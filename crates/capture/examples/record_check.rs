@@ -35,7 +35,11 @@ impl FrameSink for Sink {
                 return;
             }
             let stream = self.stream.lock().expect("lock").clone().expect("stream");
-            *session = Some(self.recorder.start(&stream, &self.path).expect("start recording"));
+            *session = Some(
+                self.recorder
+                    .start(&stream, &self.path)
+                    .expect("start recording"),
+            );
         }
         if let Some(s) = session.as_mut() {
             s.push(&frame).expect("push");
@@ -65,7 +69,9 @@ fn main() {
         session: Mutex::new(None),
         frames: Mutex::new(0),
     });
-    backend.start(&settings, sink.clone()).expect("start capture");
+    backend
+        .start(&settings, sink.clone())
+        .expect("start capture");
     std::thread::sleep(Duration::from_secs(seconds));
     println!("frames pushed: {}", sink.frames.lock().expect("lock"));
     std::process::exit(0);
