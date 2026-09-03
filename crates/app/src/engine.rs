@@ -2,6 +2,7 @@
 //! recorder, and turns hotkey presses into clip files. Owned by the UI
 //! thread; backend threads only touch the shared sink state.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -9,10 +10,12 @@ use std::time::Duration;
 use openclips_capture::{
     CaptureBackend, CaptureError, ClipWriter, FrameSink, Recorder, RecordingSession,
 };
-use openclips_core::capture::{CaptureSettings, EncoderInfo, MonitorInfo, choose_encoder};
+use openclips_core::capture::{
+    AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo, audio_source_key, choose_encoder,
+};
 use openclips_core::clip::{ClipFile, LocalDateTime, clip_file_name, unique_path};
 use openclips_core::config::{AppPaths, Config, DisplaySelection};
-use openclips_core::media::{EncodedFrame, StreamInfo, Timestamp};
+use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo, Timestamp};
 use openclips_core::replay::{ReplayBuffer, ReplayLimits, ReplayStats};
 use tracing::{error, info, warn};
 
@@ -44,6 +47,7 @@ pub struct EngineStatus {
     pub recording: RecordingState,
     pub stats: ReplayStats,
     pub stream: Option<StreamInfo>,
+    pub audio_tracks: usize,
     pub encoder: EncoderInfo,
     pub backend: &'static str,
     pub replay_length: Duration,
@@ -67,13 +71,13 @@ enum SinkRecording {
 }
 
 /// Everything the capture threads write into. The ring buffer and the
-/// recording are fed from the same encoded frame stream.
+/// recording are fed from the same encoded streams.
 struct CaptureSink {
     buffer: Arc<Mutex<ReplayBuffer>>,
     buffer_enabled: Mutex<bool>,
     recording: Mutex<SinkRecording>,
     recorder: Arc<dyn Recorder>,
-    failure: Mutex<Option<String>>,
+    failure: Mutex<Option<CaptureError>>,
 }
 
 impl CaptureSink {
@@ -84,12 +88,15 @@ impl CaptureSink {
                 if !frame.keyframe {
                     return;
                 }
-                let stream = lock(&self.buffer).stream().cloned();
+                let (stream, audio) = {
+                    let buffer = lock(&self.buffer);
+                    (buffer.stream().cloned(), buffer.audio_tracks())
+                };
                 let Some(stream) = stream else {
                     return;
                 };
                 let path = path.clone();
-                match self.recorder.start(&stream, &path) {
+                match self.recorder.start(&stream, &audio, &path) {
                     Ok(mut session) => {
                         if let Err(err) = session.push(frame) {
                             *slot = SinkRecording::Failed(err.to_string());
@@ -111,6 +118,16 @@ impl CaptureSink {
             SinkRecording::Idle | SinkRecording::Failed(_) => {}
         }
     }
+
+    fn feed_recording_audio(&self, packet: &AudioPacket) {
+        let mut slot = lock(&self.recording);
+        if let SinkRecording::Active(session, _, _) = &mut *slot
+            && let Err(err) = session.push_audio(packet)
+        {
+            error!("{err}");
+            *slot = SinkRecording::Failed(err.to_string());
+        }
+    }
 }
 
 impl FrameSink for CaptureSink {
@@ -125,8 +142,19 @@ impl FrameSink for CaptureSink {
         }
     }
 
+    fn on_audio_track(&self, info: AudioTrackInfo) {
+        lock(&self.buffer).set_audio_track(info);
+    }
+
+    fn on_audio(&self, packet: AudioPacket) {
+        self.feed_recording_audio(&packet);
+        if *lock(&self.buffer_enabled) {
+            lock(&self.buffer).push_audio(packet);
+        }
+    }
+
     fn on_error(&self, error: CaptureError) {
-        *lock(&self.failure) = Some(error.to_string());
+        *lock(&self.failure) = Some(error);
     }
 }
 
@@ -141,8 +169,6 @@ pub struct Engine {
     preferred: EncoderInfo,
     /// The encoder actually driving the running or last capture.
     active: EncoderInfo,
-    /// Encoders that failed to start this session, never retried first.
-    broken: Vec<String>,
     /// Whether the user wants the replay buffer running.
     buffer_wanted: bool,
     recording_wanted: bool,
@@ -150,6 +176,8 @@ pub struct Engine {
     /// A config change that needs a pipeline rebuild, deferred while a
     /// recording is active.
     restart_pending: bool,
+    /// Audio sources that failed this session, skipped until settings change.
+    unavailable_audio: HashSet<String>,
     notice: Option<String>,
     last_failure: Option<String>,
     monitors: Vec<MonitorInfo>,
@@ -186,11 +214,11 @@ impl Engine {
             paths,
             active: encoder.clone(),
             preferred: encoder,
-            broken: Vec::new(),
             buffer_wanted: false,
             recording_wanted: false,
             finishing: false,
             restart_pending: false,
+            unavailable_audio: HashSet::new(),
             notice: None,
             last_failure: None,
             monitors,
@@ -206,6 +234,16 @@ impl Engine {
 
     pub fn monitors(&self) -> &[MonitorInfo] {
         &self.monitors
+    }
+
+    pub fn list_audio_devices(&self) -> Vec<AudioDeviceInfo> {
+        match self.backend.list_audio_devices() {
+            Ok(devices) => devices,
+            Err(err) => {
+                warn!("could not list audio devices: {err}");
+                Vec::new()
+            }
+        }
     }
 
     pub fn clips_dir(&self) -> PathBuf {
@@ -322,14 +360,36 @@ impl Engine {
         self.start_capture()
     }
 
+    fn capture_settings(&self, encoder: EncoderInfo, display: DisplaySelection) -> CaptureSettings {
+        let mut settings = CaptureSettings::from_config(
+            &self.config.capture,
+            &self.config.audio,
+            encoder,
+            self.config.replay.temp_dir.clone(),
+        );
+        settings.display = display;
+        for track in &mut settings.audio_tracks {
+            track
+                .sources
+                .retain(|s| !self.unavailable_audio.contains(&s.key()));
+        }
+        settings.audio_tracks.retain(|t| !t.sources.is_empty());
+        settings
+    }
+
     /// Starts capture with the preferred encoder and falls back through the
-    /// remaining registered encoders when one refuses to start. A fallback is
-    /// reported through the status notice rather than treated as a failure.
+    /// remaining registered encoders when one refuses to start. An audio
+    /// source that fails is dropped and the start is retried without it.
+    /// Both cases are reported through the status notice.
     fn start_capture(&mut self) -> Result<(), AppError> {
         *lock(&self.sink.failure) = None;
         self.last_failure = None;
         self.notice = None;
-        lock(&self.buffer).clear();
+        {
+            let mut buffer = lock(&self.buffer);
+            buffer.clear();
+            buffer.clear_audio_tracks();
+        }
 
         let mut display = self.config.capture.display.clone();
         if let DisplaySelection::Monitor(id) = &display
@@ -351,21 +411,15 @@ impl Engine {
         );
 
         let mut failures = Vec::new();
-        for candidate in candidates {
-            if self.broken.contains(&candidate.element) {
-                continue;
-            }
-            let mut settings = CaptureSettings::from_config(
-                &self.config.capture,
-                candidate.clone(),
-                self.config.replay.temp_dir.clone(),
-            );
-            settings.display = display.clone();
+        let mut index = 0;
+        while index < candidates.len() {
+            let candidate = candidates[index].clone();
+            let settings = self.capture_settings(candidate.clone(), display.clone());
             let sink: Arc<dyn FrameSink> = self.sink.clone();
             match self.backend.start(&settings, sink) {
                 Ok(()) => {
                     if candidate != self.preferred {
-                        self.notice = Some(format!(
+                        self.add_notice(format!(
                             "{} could not start, using {} instead.",
                             self.preferred.kind.label(),
                             candidate.kind.label()
@@ -374,10 +428,18 @@ impl Engine {
                     self.active = candidate;
                     return Ok(());
                 }
+                Err(CaptureError::AudioSource { key, message }) => {
+                    warn!("audio source {key} failed to start: {message}");
+                    self.unavailable_audio.insert(key.clone());
+                    self.add_notice(format!(
+                        "Audio device {} is unavailable, capturing without it.",
+                        self.audio_source_name(&key)
+                    ));
+                }
                 Err(CaptureError::EncoderStart { encoder, reason }) => {
                     warn!("encoder {encoder} failed to start: {reason}");
                     failures.push(format!("{} ({reason})", candidate.kind.label()));
-                    self.broken.push(encoder);
+                    index += 1;
                 }
                 Err(other) => return Err(other.into()),
             }
@@ -385,9 +447,26 @@ impl Engine {
         Err(CaptureError::AllEncodersFailed(failures.join("; ")).into())
     }
 
-    /// Applies a new configuration: live limits immediately, pipeline
-    /// settings through a restart (deferred while recording). Returns
-    /// whether the hotkeys must be re-registered.
+    fn add_notice(&mut self, text: String) {
+        self.notice = Some(match self.notice.take() {
+            Some(existing) => format!("{existing} {text}"),
+            None => text,
+        });
+    }
+
+    fn audio_source_name(&self, key: &str) -> String {
+        self.config
+            .audio
+            .sources
+            .iter()
+            .find(|s| audio_source_key(s.kind, &s.id) == key)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| key.to_owned())
+    }
+
+    /// Applies a new configuration: live limits and levels immediately,
+    /// pipeline settings through a restart (deferred while recording).
+    /// Returns whether the hotkeys must be re-registered.
     pub fn apply_config(&mut self, next: Config) -> Result<bool, AppError> {
         let previous = std::mem::replace(&mut self.config, next);
         let hotkeys = previous.hotkeys_changed(&self.config);
@@ -402,18 +481,30 @@ impl Engine {
             )
         {
             self.preferred = encoder.clone();
-            self.broken.clear();
         }
-        if previous.capture_restart_needed(&self.config) && self.backend.is_running() {
-            if self.recording_wanted {
-                self.restart_pending = true;
-                self.notice =
-                    Some("Capture settings apply when the current recording stops.".to_owned());
-            } else {
-                self.restart_capture()?;
+        if previous.capture_restart_needed(&self.config) {
+            self.unavailable_audio.clear();
+            if self.backend.is_running() {
+                if self.recording_wanted {
+                    self.restart_pending = true;
+                    self.notice =
+                        Some("Capture settings apply when the current recording stops.".to_owned());
+                } else {
+                    self.restart_capture()?;
+                }
             }
+        } else if previous.audio_levels_changed(&self.config) {
+            self.apply_audio_levels();
         }
         Ok(hotkeys)
+    }
+
+    fn apply_audio_levels(&self) {
+        for source in &self.config.audio.sources {
+            let key = audio_source_key(source.kind, &source.id);
+            self.backend
+                .set_audio_level(&key, source.volume, source.muted);
+        }
     }
 
     /// Re-enumerates displays. Returns true when the set changed. A running
@@ -439,12 +530,26 @@ impl Engine {
     }
 
     /// Reports the current state, retiring a failed capture so the UI can
-    /// show the failure and the user can retry.
+    /// show the failure and the user can retry. A failed audio device is
+    /// dropped and capture restarts without it.
     pub fn status(&mut self) -> EngineStatus {
-        if let Some(failure) = lock(&self.sink.failure).take() {
+        let failure = lock(&self.sink.failure).take();
+        if let Some(failure) = failure {
             warn!("capture failed: {failure}");
             self.backend.stop();
-            self.last_failure = Some(failure);
+            match failure {
+                CaptureError::AudioSource { key, .. } if !self.recording_wanted => {
+                    self.unavailable_audio.insert(key.clone());
+                    let name = self.audio_source_name(&key);
+                    match self.restart_capture() {
+                        Ok(()) => self.add_notice(format!(
+                            "Audio device {name} stopped working, capturing without it."
+                        )),
+                        Err(err) => self.last_failure = Some(err.to_string()),
+                    }
+                }
+                other => self.last_failure = Some(other.to_string()),
+            }
         }
         let buffer_state = match (&self.last_failure, self.is_buffering()) {
             (Some(failure), _) => BufferState::Failed(failure.clone()),
@@ -470,6 +575,7 @@ impl Engine {
             recording,
             stats: buffer.stats(),
             stream: buffer.stream().cloned(),
+            audio_tracks: buffer.audio_tracks().len(),
             encoder: self.active.clone(),
             backend: self.backend.name(),
             replay_length: self.config.replay_length(),

@@ -2,11 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
-use openclips_core::capture::MonitorInfo;
-use openclips_core::config::{Config, DisplaySelection, EncoderPreference};
-use slint::{ModelRc, SharedString, VecModel};
+use openclips_core::capture::{AudioDeviceInfo, AudioDeviceKind, MonitorInfo};
+use openclips_core::config::{AudioSourceConfig, Config, DisplaySelection, EncoderPreference};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
-use crate::ui::SettingsState;
+use crate::ui::{AudioSourceRow, SettingsState};
 
 const ENCODERS: [EncoderPreference; 5] = [
     EncoderPreference::Auto,
@@ -18,6 +18,8 @@ const ENCODERS: [EncoderPreference; 5] = [
 
 const UNIT_SECONDS: i32 = 0;
 const UNIT_MINUTES: i32 = 1;
+const KIND_OUTPUT: &str = "output";
+const KIND_INPUT: &str = "input";
 
 /// Fills the settings page from a config. `default_clips_dir` is shown when
 /// the config has no explicit folder so the user sees where clips go.
@@ -25,6 +27,7 @@ pub fn populate(
     state: &SettingsState<'_>,
     config: &Config,
     monitors: &[MonitorInfo],
+    audio_devices: &[AudioDeviceInfo],
     default_clips_dir: &Path,
 ) {
     set_monitors(state, monitors, &config.capture.display);
@@ -58,6 +61,11 @@ pub fn populate(
     state.set_clips_dir(clips_dir.display().to_string().into());
     state.set_file_name_pattern(config.output.file_name_pattern.clone().into());
     state.set_recording_subfolder(config.recording.subfolder.clone().into());
+
+    state.set_audio_enabled(config.audio.enabled);
+    state.set_separate_tracks(config.audio.separate_tracks);
+    state.set_audio_bitrate_kbps(config.audio.bitrate_kbps as i32);
+    set_audio_sources(state, config, audio_devices);
 
     state.set_hotkey_save_replay(config.hotkeys.save_replay.to_string().into());
     state.set_hotkey_toggle_buffer(config.hotkeys.toggle_replay_buffer.to_string().into());
@@ -102,6 +110,97 @@ pub fn selected_display(state: &SettingsState<'_>, monitors: &[MonitorInfo]) -> 
         .unwrap_or(DisplaySelection::Primary)
 }
 
+fn kind_name(kind: AudioDeviceKind) -> &'static str {
+    match kind {
+        AudioDeviceKind::Output => KIND_OUTPUT,
+        AudioDeviceKind::Input => KIND_INPUT,
+    }
+}
+
+fn kind_from_name(name: &str) -> AudioDeviceKind {
+    if name == KIND_INPUT {
+        AudioDeviceKind::Input
+    } else {
+        AudioDeviceKind::Output
+    }
+}
+
+/// Builds the audio rows: every connected device, plus configured devices
+/// that are not connected right now so their settings are not lost.
+pub fn audio_rows(config: &Config, devices: &[AudioDeviceInfo]) -> Vec<AudioSourceRow> {
+    let mut rows: Vec<AudioSourceRow> = devices
+        .iter()
+        .map(|device| {
+            let configured = config
+                .audio
+                .sources
+                .iter()
+                .find(|s| s.id == device.id && s.kind == device.kind);
+            AudioSourceRow {
+                id: device.id.clone().into(),
+                kind: kind_name(device.kind).into(),
+                name: device.name.clone().into(),
+                enabled: configured.is_some_and(|s| s.enabled),
+                volume: configured.map(|s| s.volume * 100.0).unwrap_or(100.0),
+                muted: configured.is_some_and(|s| s.muted),
+                connected: true,
+            }
+        })
+        .collect();
+    for source in &config.audio.sources {
+        let connected = devices
+            .iter()
+            .any(|d| d.id == source.id && d.kind == source.kind);
+        if !connected {
+            rows.push(AudioSourceRow {
+                id: source.id.clone().into(),
+                kind: kind_name(source.kind).into(),
+                name: source.name.clone().into(),
+                enabled: source.enabled,
+                volume: source.volume * 100.0,
+                muted: source.muted,
+                connected: false,
+            });
+        }
+    }
+    rows
+}
+
+/// Replaces the audio rows from the current config and device list. Edits
+/// already made in the page are kept for rows that still exist.
+pub fn set_audio_sources(state: &SettingsState<'_>, config: &Config, devices: &[AudioDeviceInfo]) {
+    let rows = audio_rows(config, devices);
+    state.set_audio_sources(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Same as [`set_audio_sources`] but seeded from the rows currently shown,
+/// so a device refresh does not throw away unsaved edits.
+pub fn refresh_audio_sources(
+    state: &SettingsState<'_>,
+    base: &Config,
+    devices: &[AudioDeviceInfo],
+) {
+    let mut edited = base.clone();
+    edited.audio.sources = collect_audio_sources(state);
+    set_audio_sources(state, &edited, devices);
+}
+
+fn collect_audio_sources(state: &SettingsState<'_>) -> Vec<AudioSourceConfig> {
+    state
+        .get_audio_sources()
+        .iter()
+        .filter(|row| row.enabled || !row.connected)
+        .map(|row| AudioSourceConfig {
+            id: row.id.to_string(),
+            name: row.name.to_string(),
+            kind: kind_from_name(&row.kind),
+            enabled: row.enabled,
+            volume: (row.volume / 100.0).clamp(0.0, 2.0),
+            muted: row.muted,
+        })
+        .collect()
+}
+
 /// Builds a config from the page, starting from `base` so that settings the
 /// page does not show survive untouched.
 pub fn collect(
@@ -141,6 +240,11 @@ pub fn collect(
     let pattern = state.get_file_name_pattern();
     config.output.file_name_pattern = pattern.trim().to_owned();
     config.recording.subfolder = state.get_recording_subfolder().trim().to_owned();
+
+    config.audio.enabled = state.get_audio_enabled();
+    config.audio.separate_tracks = state.get_separate_tracks();
+    config.audio.bitrate_kbps = state.get_audio_bitrate_kbps().max(1) as u32;
+    config.audio.sources = collect_audio_sources(state);
 
     config.hotkeys.save_replay = parse_hotkey("Save replay", &state.get_hotkey_save_replay())?;
     config.hotkeys.toggle_replay_buffer =

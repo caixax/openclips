@@ -5,3 +5,13 @@ export struct AppInfo {
     clips-dir: string,
     log-dir: string,
 }
+
+export struct AudioSourceRow {
+    id: string,
+    kind: string,
+    name: string,
+    enabled: bool,
+    volume: float,
+    muted: bool,
+    connected: bool,
+}

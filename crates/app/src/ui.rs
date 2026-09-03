@@ -215,10 +215,12 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         .as_ref()
         .map(|e| e.monitors().to_vec())
         .unwrap_or_default();
+    let audio_devices = current_audio_devices(shared);
     settings::populate(
         &state,
         &shared.config.borrow(),
         &monitors,
+        &audio_devices,
         &shared.default_clips_dir(),
     );
 
@@ -234,10 +236,12 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         if let Some(window) = w.upgrade() {
             let state = window.global::<SettingsState>();
             let monitors = current_monitors(&s);
+            let audio_devices = current_audio_devices(&s);
             settings::populate(
                 &state,
                 &s.config.borrow(),
                 &monitors,
+                &audio_devices,
                 &s.default_clips_dir(),
             );
             state.set_message("".into());
@@ -273,6 +277,15 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         }
     });
 
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_refresh_audio_devices(move || {
+        if let Some(window) = w.upgrade() {
+            let state = window.global::<SettingsState>();
+            let devices = current_audio_devices(&s);
+            settings::refresh_audio_sources(&state, &s.config.borrow(), &devices);
+        }
+    });
+
     let w = window.as_weak();
     state.on_key_captured(move |action, text, alt, control, shift, meta| {
         let Some(window) = w.upgrade() else {
@@ -302,6 +315,15 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         }
         state.set_listening_action(-1);
     });
+}
+
+fn current_audio_devices(shared: &SharedRef) -> Vec<openclips_core::capture::AudioDeviceInfo> {
+    shared
+        .engine
+        .borrow()
+        .as_ref()
+        .map(|e| e.list_audio_devices())
+        .unwrap_or_default()
 }
 
 fn current_monitors(shared: &SharedRef) -> Vec<openclips_core::capture::MonitorInfo> {
@@ -352,7 +374,14 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
     let mut info = window.get_info();
     info.clips_dir = shared.clips_dir().display().to_string().into();
     window.set_info(info);
-    settings::populate(&state, &next, &monitors, &shared.default_clips_dir());
+    let audio_devices = current_audio_devices(shared);
+    settings::populate(
+        &state,
+        &next,
+        &monitors,
+        &audio_devices,
+        &shared.default_clips_dir(),
+    );
 
     if problems.is_empty() {
         state.set_message_is_error(false);
@@ -543,8 +572,13 @@ fn describe_buffer(status: &EngineStatus) -> String {
             )
         })
         .unwrap_or_default();
+    let audio = match status.audio_tracks {
+        0 => String::new(),
+        1 => ", 1 audio track".to_owned(),
+        n => format!(", {n} audio tracks"),
+    };
     format!(
-        "{available:.0} of {} s buffered, {:.0} MB in memory{resolution}",
+        "{available:.0} of {} s buffered, {:.0} MB in memory{resolution}{audio}",
         status.replay_length.as_secs(),
         stats.bytes as f64 / (1024.0 * 1024.0)
     )
