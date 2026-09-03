@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  GSTREAMER_VERSION: 1.28.6
+
+jobs:
+  check:
+    name: Format, lint, build, test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache GStreamer installer
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: gstreamer-installer.exe
+          key: gstreamer-msvc-x86_64-${{ env.GSTREAMER_VERSION }}
+
+      - name: Download GStreamer installer
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
+          Invoke-WebRequest -Uri $url -OutFile gstreamer-installer.exe
+
+      - name: Install GStreamer (runtime and development)
+        shell: pwsh
+        run: |
+          Start-Process -FilePath .\gstreamer-installer.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/TYPE=devel" -Wait
+          "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace

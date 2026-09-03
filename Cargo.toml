@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/capture", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+repository = "https://github.com/openclips/openclips"
+authors = ["OpenClips contributors"]
+
+[workspace.dependencies]
+openclips-core = { path = "crates/core" }
+openclips-capture = { path = "crates/capture" }
+
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.1"
+thiserror = "2.0"
+directories = "6.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+slint = "1.17"
+slint-build = "1.17"
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+windows = "0.62"
+global-hotkey = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[profile.dev.package."*"]
+opt-level = 2
