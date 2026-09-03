@@ -1,15 +1,21 @@
-import { Palette, Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icons.slint";
+import { IconButton, TextButton, Notice } from "widgets.slint";
 import { ClipCard } from "types.slint";
 
 export global LibraryState {
     in-out property <[ClipCard]> clips: [];
     in-out property <[string]> games: ["All games"];
     in-out property <int> game-index: 0;
+    in-out property <int> kind-index: 0;
+    in-out property <int> sort-index: 0;
     in-out property <string> search;
     in-out property <string> message;
     in-out property <string> summary;
 
     callback open-clip(string);
+    callback edit-clip(string);
     callback refresh();
     callback open-folder();
     callback filter-changed();
@@ -18,9 +24,12 @@ export global LibraryState {
 component Card inherits Rectangle {
     in property <ClipCard> card;
     callback clicked();
+    callback edit();
 
-    border-radius: 10px;
-    background: touch.has-hover ? Palette.alternate-background.brighter(0.15) : Palette.alternate-background;
+    border-radius: Theme.radius;
+    background: touch.has-hover ? Theme.surface-hover : Theme.surface;
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.border : transparent;
     clip: true;
 
     touch := TouchArea {
@@ -28,63 +37,73 @@ component Card inherits Rectangle {
     }
 
     VerticalLayout {
-        spacing: 0px;
         Rectangle {
             height: root.width * 9 / 16;
-            background: #101114;
+            background: #000;
             if root.card.has-thumbnail: Image {
                 width: parent.width;
                 height: parent.height;
                 source: root.card.thumbnail;
-                image-fit: contain;
+                image-fit: cover;
             }
-            if !root.card.has-thumbnail: Text {
-                text: "Preparing preview...";
-                color: Palette.foreground.with-alpha(0.5);
-                font-size: 12px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: parent.width;
-                height: parent.height;
+            if !root.card.has-thumbnail: Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                size: 28px;
+                data: Icons.clapperboard;
+                color: Theme.text-faint;
             }
             Rectangle {
                 x: parent.width - self.width - 8px;
                 y: parent.height - self.height - 8px;
                 width: duration-text.preferred-width + 12px;
-                height: 20px;
+                height: 22px;
                 border-radius: 4px;
-                background: #000000b0;
+                background: #000000c0;
                 duration-text := Text {
                     x: 6px;
                     y: (parent.height - self.height) / 2;
                     text: root.card.duration;
                     color: white;
                     font-size: 11px;
+                    font-weight: 700;
                 }
             }
         }
         VerticalLayout {
-            padding: 10px;
-            spacing: 4px;
+            padding: 12px;
+            spacing: 6px;
             Text {
                 text: root.card.title;
                 font-size: 13px;
-                font-weight: 600;
+                font-weight: 700;
+                color: Theme.text;
                 overflow: elide;
             }
             HorizontalLayout {
                 spacing: 6px;
-                if root.card.has-icon: Image {
-                    width: 14px;
-                    height: 14px;
-                    source: root.card.icon;
-                }
-                Text {
-                    text: root.card.game + "  \u{00b7}  " + root.card.date;
-                    font-size: 11px;
-                    color: Palette.foreground.with-alpha(0.6);
-                    overflow: elide;
-                }
+                alignment: start;
+                if root.card.has-icon: Image { width: 14px; height: 14px; source: root.card.icon; }
+                if !root.card.has-icon: Icon { size: 12px; data: Icons.gamepad; color: Theme.text-muted; }
+                Text { text: root.card.game; font-size: 11px; color: Theme.text-muted; overflow: elide; }
+                Text { text: "\u{00b7}"; font-size: 11px; color: Theme.text-faint; }
+                Icon { size: 11px; data: Icons.hard-drive; color: Theme.text-faint; }
+                Text { text: root.card.size; font-size: 11px; color: Theme.text-muted; }
+                Text { text: "\u{00b7}"; font-size: 11px; color: Theme.text-faint; }
+                Text { text: root.card.date; font-size: 11px; color: Theme.text-muted; overflow: elide; }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.divider; }
+        Rectangle {
+            height: 40px;
+            background: edit-touch.has-hover ? Theme.surface-raised : transparent;
+            edit-touch := TouchArea { clicked => { root.edit(); } }
+            HorizontalLayout {
+                padding-left: 12px;
+                spacing: 8px;
+                alignment: start;
+                Icon { y: (parent.height - self.height) / 2; size: 13px; data: Icons.scissors; color: Theme.text; }
+                Text { text: "Open in editor"; font-size: 12px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
             }
         }
     }
@@ -92,72 +111,88 @@ component Card inherits Rectangle {
 
 export component ClipsPage inherits Rectangle {
     property <length> gap: 16px;
-    property <length> min-card-width: 240px;
+    property <length> min-card-width: 250px;
+    background: Theme.background;
 
     VerticalLayout {
-        padding: 24px;
-        spacing: 16px;
+        padding: Theme.page-padding;
+        padding-top: 18px;
+        spacing: 14px;
 
         HorizontalLayout {
-            spacing: 12px;
-            Text {
-                text: "Clips";
-                font-size: 26px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-            Rectangle { horizontal-stretch: 1; }
-            LineEdit {
-                width: 220px;
-                placeholder-text: "Search";
-                text <=> LibraryState.search;
-                edited => { LibraryState.filter-changed(); }
+            spacing: 10px;
+            alignment: start;
+            IconButton { icon: Icons.arrows-rotate; filled: true; clicked => { LibraryState.refresh(); } }
+            IconButton { icon: Icons.folder-open; filled: true; clicked => { LibraryState.open-folder(); } }
+            ComboBox {
+                width: 150px;
+                model: ["All types", "Clips", "Recordings"];
+                current-index <=> LibraryState.kind-index;
+                selected => { LibraryState.filter-changed(); }
             }
             ComboBox {
-                width: 180px;
+                width: 170px;
                 model: LibraryState.games;
                 current-index <=> LibraryState.game-index;
                 selected => { LibraryState.filter-changed(); }
             }
-            Button {
-                text: "Refresh";
-                clicked => { LibraryState.refresh(); }
+            ComboBox {
+                width: 150px;
+                model: ["Newest first", "Oldest first", "Longest first", "Largest first"];
+                current-index <=> LibraryState.sort-index;
+                selected => { LibraryState.filter-changed(); }
             }
-            Button {
-                text: "Open folder";
-                clicked => { LibraryState.open-folder(); }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: 240px;
+                height: 34px;
+                border-radius: Theme.radius-small;
+                background: Theme.surface-raised;
+                border-width: 1px;
+                border-color: Theme.border;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    spacing: 8px;
+                    Icon { y: (parent.height - self.height) / 2; size: 13px; data: Icons.magnifying-glass; color: Theme.text-muted; }
+                    LineEdit {
+                        horizontal-stretch: 1;
+                        placeholder-text: "Search";
+                        text <=> LibraryState.search;
+                        edited => { LibraryState.filter-changed(); }
+                    }
+                }
             }
         }
 
-        Text {
-            text: LibraryState.summary;
-            font-size: 12px;
-            color: Palette.foreground.with-alpha(0.6);
-        }
+        Text { text: LibraryState.summary; font-size: 12px; color: Theme.text-muted; }
 
-        if LibraryState.message != "": Rectangle {
-            background: #d9534f30;
-            border-color: #d9534f;
-            border-width: 1px;
-            border-radius: 8px;
-            VerticalLayout {
-                padding: 12px;
-                Text { text: LibraryState.message; wrap: word-wrap; font-size: 13px; }
+        if LibraryState.message != "": Notice { message: LibraryState.message; kind: 2; }
+
+        if LibraryState.clips.length == 0: VerticalLayout {
+            padding-top: 40px;
+            spacing: 8px;
+            Icon { x: (parent.width - self.width) / 2; size: 40px; data: Icons.film; color: Theme.text-faint; }
+            Text {
+                text: "No clips yet";
+                horizontal-alignment: center;
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text;
             }
-        }
-
-        if LibraryState.clips.length == 0: Text {
-            text: "No clips yet. Press the save hotkey while the buffer is running, or start a recording.";
-            color: Palette.foreground.with-alpha(0.6);
-            font-size: 14px;
-            wrap: word-wrap;
+            Text {
+                text: "Press the save hotkey while the buffer is running, or start a recording.";
+                horizontal-alignment: center;
+                font-size: 13px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
         }
 
         ScrollView {
             vertical-stretch: 1;
             property <int> columns: max(1, floor((self.visible-width - root.gap) / (root.min-card-width + root.gap)));
             property <length> card-width: (self.visible-width - root.gap * (self.columns - 1)) / self.columns;
-            property <length> card-height: self.card-width * 9 / 16 + 62px;
+            property <length> card-height: self.card-width * 9 / 16 + 108px;
             viewport-height: ceil(LibraryState.clips.length / self.columns) * (self.card-height + root.gap);
 
             for card[i] in LibraryState.clips: Card {
@@ -167,6 +202,7 @@ export component ClipsPage inherits Rectangle {
                 height: parent.card-height;
                 card: card;
                 clicked => { LibraryState.open-clip(card.id); }
+                edit => { LibraryState.edit-clip(card.id); }
             }
         }
     }

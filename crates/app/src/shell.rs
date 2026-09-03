@@ -39,3 +39,30 @@ pub fn reveal_file(path: &Path) {
         warn!("could not reveal {}: {err}", path.display());
     }
 }
+
+/// Free and total bytes of the drive holding `path`, when the OS reports it.
+#[cfg(windows)]
+pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    use windows::core::HSTRING;
+
+    let mut probe = path;
+    while !probe.is_dir() {
+        probe = probe.parent()?;
+    }
+    let (mut free, mut total) = (0u64, 0u64);
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            &HSTRING::from(probe.as_os_str()),
+            Some(&mut free),
+            Some(&mut total),
+            None,
+        )
+    };
+    ok.ok().map(|()| (free, total))
+}
+
+#[cfg(not(windows))]
+pub fn disk_space(_path: &Path) -> Option<(u64, u64)> {
+    None
+}

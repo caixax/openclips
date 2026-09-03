@@ -22,6 +22,8 @@ export struct ClipCard {
     game: string,
     date: string,
     duration: string,
+    size: string,
+    kind: string,
     thumbnail: image,
     has-thumbnail: bool,
     icon: image,
@@ -37,4 +39,11 @@ export struct GameProfileRow {
     display-index: int,
     icon: image,
     has-icon: bool,
+}
+
+export struct SaveHotkeyRow {
+    binding: string,
+    keys: [string],
+    minutes: int,
+    seconds-index: int,
 }

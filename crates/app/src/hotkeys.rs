@@ -15,46 +15,42 @@ use crate::error::AppError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HotkeyAction {
-    SaveReplay,
+    SaveReplay { index: usize },
     ToggleReplayBuffer,
     ToggleRecording,
 }
 
 impl HotkeyAction {
-    pub const ALL: [HotkeyAction; 3] = [
-        HotkeyAction::SaveReplay,
-        HotkeyAction::ToggleReplayBuffer,
-        HotkeyAction::ToggleRecording,
-    ];
-
-    pub fn from_index(index: i32) -> Option<Self> {
-        usize::try_from(index)
-            .ok()
-            .and_then(|i| Self::ALL.get(i).copied())
-    }
-
-    pub fn binding(self, config: &HotkeyConfig) -> Hotkey {
+    pub fn label(self) -> String {
         match self {
-            HotkeyAction::SaveReplay => config.save_replay,
-            HotkeyAction::ToggleReplayBuffer => config.toggle_replay_buffer,
-            HotkeyAction::ToggleRecording => config.toggle_recording,
+            HotkeyAction::SaveReplay { index } => format!("Save hotkey {}", index + 1),
+            HotkeyAction::ToggleReplayBuffer => "Start or stop buffer".to_owned(),
+            HotkeyAction::ToggleRecording => "Start or stop recording".to_owned(),
         }
     }
 }
 
+/// Every configured binding paired with its action.
+pub fn bindings(config: &HotkeyConfig) -> Vec<(HotkeyAction, Hotkey)> {
+    let mut out: Vec<(HotkeyAction, Hotkey)> = config
+        .save
+        .iter()
+        .enumerate()
+        .map(|(index, s)| (HotkeyAction::SaveReplay { index }, s.binding))
+        .collect();
+    out.push((
+        HotkeyAction::ToggleReplayBuffer,
+        config.toggle_replay_buffer,
+    ));
+    out.push((HotkeyAction::ToggleRecording, config.toggle_recording));
+    out
+}
+
+/// Outcome of registering the configured bindings.
+#[derive(Debug, Default)]
 pub struct Hotkeys {
-    manager: GlobalHotKeyManager,
-    registered: Vec<HotKey>,
     /// Bindings the OS refused, with a user facing reason.
     pub rejected: Vec<(HotkeyAction, String)>,
-}
-
-impl Drop for Hotkeys {
-    fn drop(&mut self) {
-        for hotkey in self.registered.drain(..) {
-            let _ = self.manager.unregister(hotkey);
-        }
-    }
 }
 
 type Dispatch = Box<dyn Fn(HotkeyAction)>;
@@ -62,6 +58,10 @@ type Dispatch = Box<dyn Fn(HotkeyAction)>;
 thread_local! {
     static DISPATCH: RefCell<Option<Dispatch>> = const { RefCell::new(None) };
     static BINDINGS: RefCell<HashMap<u32, HotkeyAction>> = RefCell::new(HashMap::new());
+    /// One manager for the whole process: it owns the hidden window that
+    /// receives the presses, so it must outlive every re-registration.
+    static MANAGER: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
+    static REGISTERED: RefCell<Vec<HotKey>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Installs the dispatcher that receives presses on the UI thread. Call once.
@@ -91,44 +91,51 @@ pub fn install_dispatch(dispatch: impl Fn(HotkeyAction) + 'static) {
     }));
 }
 
-/// Registers every binding from the config. Bindings the OS refuses
-/// (typically because another application owns them) are reported and
-/// skipped rather than failing. Drop the previous `Hotkeys` first when
-/// re-registering.
+/// Registers every binding from the config, replacing whatever was
+/// registered before. Bindings the OS refuses (typically because another
+/// application owns them) are reported and skipped rather than failing.
 pub fn register(config: &HotkeyConfig) -> Result<Hotkeys, AppError> {
-    let manager = GlobalHotKeyManager::new().map_err(|e| AppError::Hotkey(e.to_string()))?;
-    let mut hotkeys = Hotkeys {
-        manager,
-        registered: Vec::new(),
-        rejected: Vec::new(),
-    };
-    let mut ids: HashMap<u32, HotkeyAction> = HashMap::new();
-    for action in HotkeyAction::ALL {
-        let binding = action.binding(config);
-        let hotkey = match to_hotkey(binding) {
-            Ok(hotkey) => hotkey,
-            Err(err) => {
-                hotkeys.rejected.push((action, err.to_string()));
-                continue;
+    MANAGER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(GlobalHotKeyManager::new().map_err(|e| AppError::Hotkey(e.to_string()))?);
+        }
+        let manager = slot
+            .as_ref()
+            .ok_or_else(|| AppError::Hotkey("no manager".to_owned()))?;
+        REGISTERED.with(|r| {
+            for hotkey in r.borrow_mut().drain(..) {
+                let _ = manager.unregister(hotkey);
             }
-        };
-        match hotkeys.manager.register(hotkey) {
-            Ok(()) => {
-                info!("registered {binding} for {action:?}");
-                hotkeys.registered.push(hotkey);
-                ids.insert(hotkey.id(), action);
-            }
-            Err(err) => {
-                warn!("could not register {binding} for {action:?}: {err}");
-                hotkeys.rejected.push((
-                    action,
-                    format!("{binding} is already in use by another application"),
-                ));
+        });
+        let mut hotkeys = Hotkeys::default();
+        let mut ids: HashMap<u32, HotkeyAction> = HashMap::new();
+        for (action, binding) in bindings(config) {
+            let hotkey = match to_hotkey(binding) {
+                Ok(hotkey) => hotkey,
+                Err(err) => {
+                    hotkeys.rejected.push((action, err.to_string()));
+                    continue;
+                }
+            };
+            match manager.register(hotkey) {
+                Ok(()) => {
+                    info!("registered {binding} for {action:?}");
+                    REGISTERED.with(|r| r.borrow_mut().push(hotkey));
+                    ids.insert(hotkey.id(), action);
+                }
+                Err(err) => {
+                    warn!("could not register {binding} for {action:?}: {err}");
+                    hotkeys.rejected.push((
+                        action,
+                        format!("{binding} is already in use by another application"),
+                    ));
+                }
             }
         }
-    }
-    BINDINGS.with(|b| *b.borrow_mut() = ids);
-    Ok(hotkeys)
+        BINDINGS.with(|b| *b.borrow_mut() = ids);
+        Ok(hotkeys)
+    })
 }
 
 fn to_hotkey(binding: Hotkey) -> Result<HotKey, AppError> {

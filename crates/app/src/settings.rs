@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use openclips_core::capture::{AudioDeviceInfo, AudioDeviceKind, MonitorInfo};
 use openclips_core::config::{AudioSourceConfig, Config, DisplaySelection, EncoderPreference};
 use openclips_core::config::{CaptureApi, CaptureScope, GameAction, GameProfile};
+use openclips_core::config::{Hotkey, SaveHotkey};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
-use crate::ui::{AudioSourceRow, GameProfileRow, SettingsState};
+use crate::ui::{AudioSourceRow, GameProfileRow, SaveHotkeyRow, SettingsState};
 use slint::Image;
 
 const ENCODERS: [EncoderPreference; 5] = [
@@ -22,6 +23,118 @@ const UNIT_SECONDS: i32 = 0;
 const UNIT_MINUTES: i32 = 1;
 const KIND_OUTPUT: &str = "output";
 const KIND_INPUT: &str = "input";
+/// Save hotkey rows use action ids from this value upwards.
+pub const SAVE_ACTION_BASE: i32 = 100;
+
+/// Quality presets as (name, fps, bitrate in kbps). The last entry is custom.
+pub const QUALITY_PRESETS: [(&str, u32, u32); 3] = [
+    ("Low", 30, 8000),
+    ("Standard", 60, 15000),
+    ("High", 60, 30000),
+];
+
+pub fn quality_index(fps: u32, bitrate_kbps: u32) -> i32 {
+    QUALITY_PRESETS
+        .iter()
+        .position(|(_, f, b)| *f == fps && *b == bitrate_kbps)
+        .map_or(QUALITY_PRESETS.len() as i32, |i| i as i32)
+}
+
+/// Short quality description for the top bar.
+pub fn quality_label(fps: u32, bitrate_kbps: u32) -> String {
+    let mbps = bitrate_kbps as f64 / 1000.0;
+    match QUALITY_PRESETS
+        .iter()
+        .find(|(_, f, b)| *f == fps && *b == bitrate_kbps)
+    {
+        Some((name, _, _)) => format!("{name} quality, {fps} fps"),
+        None => format!("{fps} fps, {mbps:.0} Mbps"),
+    }
+}
+
+/// Keycap texts for a binding, for example ["ALT", "F7"].
+pub fn key_parts(hotkey: Hotkey) -> ModelRc<SharedString> {
+    let parts: Vec<SharedString> = hotkey
+        .to_string()
+        .split('+')
+        .map(|p| SharedString::from(p.to_uppercase()))
+        .collect();
+    ModelRc::new(VecModel::from(parts))
+}
+
+/// Human text for a save length, for example "last 30 s" or "whole buffer".
+pub fn save_length_label(seconds: u32) -> String {
+    match seconds {
+        0 => "saves the whole buffer".to_owned(),
+        s if s % 60 == 0 => format!("saves the last {} min", s / 60),
+        s => format!("saves the last {s} s"),
+    }
+}
+
+fn save_row(save: &SaveHotkey) -> SaveHotkeyRow {
+    SaveHotkeyRow {
+        binding: save.binding.to_string().into(),
+        keys: key_parts(save.binding),
+        minutes: (save.seconds / 60) as i32,
+        seconds_index: ((save.seconds % 60 + 7) / 15).min(3) as i32,
+    }
+}
+
+fn save_rows(state: &SettingsState<'_>) -> Vec<SaveHotkeyRow> {
+    state.get_save_hotkeys().iter().collect()
+}
+
+pub fn set_save_hotkeys(state: &SettingsState<'_>, saves: &[SaveHotkey]) {
+    let rows: Vec<SaveHotkeyRow> = saves.iter().map(save_row).collect();
+    state.set_save_hotkeys(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Replaces the binding of one save row after a key capture.
+pub fn set_save_binding(state: &SettingsState<'_>, index: usize, hotkey: Hotkey) {
+    let model = state.get_save_hotkeys();
+    if let Some(mut row) = model.row_data(index) {
+        row.binding = hotkey.to_string().into();
+        row.keys = key_parts(hotkey);
+        model.set_row_data(index, row);
+    }
+}
+
+/// Appends a save row with a binding that is not used yet and the default
+/// length of fifteen seconds.
+pub fn add_save_hotkey(state: &SettingsState<'_>) {
+    let mut rows = save_rows(state);
+    let used: Vec<String> = rows.iter().map(|r| r.binding.to_string()).collect();
+    let free = (1..=12)
+        .map(|n| format!("Alt+F{n}"))
+        .find(|b| !used.contains(b))
+        .unwrap_or_else(|| "Alt+F1".to_owned());
+    let binding: Hotkey = free
+        .parse()
+        .unwrap_or_else(|_| SaveHotkey::default().binding);
+    rows.push(save_row(&SaveHotkey {
+        binding,
+        seconds: 15,
+    }));
+    state.set_save_hotkeys(ModelRc::new(VecModel::from(rows)));
+}
+
+pub fn remove_save_hotkey(state: &SettingsState<'_>, index: usize) {
+    let mut rows = save_rows(state);
+    if rows.len() > 1 && index < rows.len() {
+        rows.remove(index);
+        state.set_save_hotkeys(ModelRc::new(VecModel::from(rows)));
+    }
+}
+
+fn collect_save_hotkeys(state: &SettingsState<'_>) -> Result<Vec<SaveHotkey>, String> {
+    let mut saves = Vec::new();
+    for (i, row) in state.get_save_hotkeys().iter().enumerate() {
+        let binding = parse_hotkey(&format!("Save hotkey {}", i + 1), &row.binding)?;
+        let seconds = row.minutes.max(0) as u32 * 60 + row.seconds_index.clamp(0, 3) as u32 * 15;
+        saves.push(SaveHotkey { binding, seconds });
+    }
+    Ok(saves)
+}
 
 /// Fills the settings page from a config. `default_clips_dir` is shown when
 /// the config has no explicit folder so the user sees where clips go.
@@ -41,6 +154,10 @@ pub fn populate(
     );
     state.set_fps(config.capture.fps as i32);
     state.set_bitrate_kbps(config.capture.bitrate_kbps as i32);
+    state.set_quality_index(quality_index(
+        config.capture.fps,
+        config.capture.bitrate_kbps,
+    ));
     state.set_show_cursor(config.capture.show_cursor);
     state.set_capture_api_index(match config.capture.api {
         CaptureApi::DesktopDuplication => 0,
@@ -79,9 +196,11 @@ pub fn populate(
         CaptureScope::PerGame => 1,
     });
     set_profile_display_names(state, monitors);
-    state.set_hotkey_save_replay(config.hotkeys.save_replay.to_string().into());
+    set_save_hotkeys(state, &config.hotkeys.save);
     state.set_hotkey_toggle_buffer(config.hotkeys.toggle_replay_buffer.to_string().into());
+    state.set_hotkey_buffer_keys(key_parts(config.hotkeys.toggle_replay_buffer));
     state.set_hotkey_toggle_recording(config.hotkeys.toggle_recording.to_string().into());
+    state.set_hotkey_recording_keys(key_parts(config.hotkeys.toggle_recording));
     state.set_listening_action(-1);
 }
 
@@ -271,7 +390,7 @@ pub fn collect(
     };
     config.games.profiles = collect_game_profiles(state, monitors);
 
-    config.hotkeys.save_replay = parse_hotkey("Save replay", &state.get_hotkey_save_replay())?;
+    config.hotkeys.save = collect_save_hotkeys(state)?;
     config.hotkeys.toggle_replay_buffer =
         parse_hotkey("Start or stop buffer", &state.get_hotkey_toggle_buffer())?;
     config.hotkeys.toggle_recording = parse_hotkey(

@@ -1,0 +1,400 @@
+import { Theme } from "theme.slint";
+import { Icon, IconData, Icons } from "icons.slint";
+
+/// A square button showing only an icon.
+export component IconButton inherits Rectangle {
+    in property <IconData> icon;
+    in property <length> size: 36px;
+    in property <length> icon-size: 16px;
+    in property <color> icon-color: Theme.text;
+    in property <bool> enabled: true;
+    in property <bool> active: false;
+    in property <bool> filled: false;
+    callback clicked();
+
+    width: root.size;
+    height: root.size;
+    border-radius: Theme.radius-small;
+    background: root.active ? Theme.accent : (root.filled || touch.has-hover ? Theme.surface-hover : transparent);
+    opacity: root.enabled ? 1 : 0.4;
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        size: root.icon-size;
+        data: root.icon;
+        color: root.active ? Theme.accent-text : root.icon-color;
+    }
+}
+
+/// Text button with an optional leading icon. `kind`: 0 secondary,
+/// 1 primary (accent), 2 danger, 3 ghost.
+export component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <IconData> icon;
+    in property <bool> has-icon: false;
+    in property <int> kind: 0;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    property <color> fill: root.kind == 1 ? Theme.accent : root.kind == 2 ? #3a1d1f : root.kind == 3 ? transparent : Theme.surface-raised;
+    property <color> fill-hover: root.kind == 1 ? Theme.accent.brighter(0.1) : root.kind == 2 ? #4a2225 : Theme.surface-hover;
+    property <color> fg: root.kind == 1 ? Theme.accent-text : root.kind == 2 ? Theme.danger : Theme.text;
+
+    height: 36px;
+    width: layout.preferred-width + 28px;
+    border-radius: Theme.radius-small;
+    border-width: root.kind == 0 || root.kind == 2 ? 1px : 0px;
+    border-color: root.kind == 2 ? #5a2a2e : Theme.border;
+    background: touch.has-hover && root.enabled ? root.fill-hover : root.fill;
+    opacity: root.enabled ? 1 : 0.45;
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    layout := HorizontalLayout {
+        x: 14px;
+        width: root.width - 28px;
+        spacing: 8px;
+        alignment: center;
+        if root.has-icon: Icon {
+            y: (parent.height - self.height) / 2;
+            size: 14px;
+            data: root.icon;
+            color: root.fg;
+        }
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+/// On/off switch with the accent colour, plus an ON/OFF label.
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    width: 92px;
+    height: 26px;
+    background: transparent;
+    opacity: root.enabled ? 1 : 0.45;
+
+    HorizontalLayout {
+        spacing: 10px;
+        alignment: end;
+        Text {
+            text: root.checked ? "ON" : "OFF";
+            color: Theme.text-muted;
+            font-size: 11px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        track := Rectangle {
+            width: 46px;
+            height: 26px;
+            border-radius: 13px;
+            background: root.checked ? Theme.accent : #3a3a40;
+            animate background { duration: 120ms; }
+            knob := Rectangle {
+                width: 20px;
+                height: 20px;
+                y: 3px;
+                x: root.checked ? parent.width - self.width - 3px : 3px;
+                border-radius: 10px;
+                background: root.checked ? Theme.accent-text : #d4d4d8;
+                animate x { duration: 120ms; }
+            }
+        }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
+/// Section with a heading, a divider and content.
+export component SectionCard inherits Rectangle {
+    in property <string> heading;
+    in property <string> subtitle;
+    background: Theme.surface;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    VerticalLayout {
+        padding: 22px;
+        spacing: 14px;
+        VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: root.heading;
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+            if root.subtitle != "": Text {
+                text: root.subtitle;
+                font-size: 12px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+        Rectangle { height: 1px; background: Theme.divider; }
+        @children
+    }
+}
+
+/// A settings row: title and description on the left, controls on the right.
+export component SettingRow inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> description;
+    spacing: 16px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 3px;
+        alignment: center;
+        Text {
+            text: root.title;
+            font-size: 13px;
+            font-weight: 600;
+            color: Theme.text;
+        }
+        if root.description != "": Text {
+            text: root.description;
+            font-size: 12px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: end;
+        @children
+    }
+}
+
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.divider;
+}
+
+/// One key of a binding, drawn as a keycap.
+component KeyCap inherits Rectangle {
+    in property <string> label;
+    height: 30px;
+    width: cap.preferred-width + 20px;
+    border-radius: Theme.radius-small;
+    background: #0d0d0f;
+    border-width: 1px;
+    border-color: Theme.border;
+    cap := Text {
+        x: 10px;
+        y: (parent.height - self.height) / 2;
+        text: root.label;
+        font-size: 12px;
+        font-weight: 700;
+        color: Theme.text;
+    }
+}
+
+/// Renders a binding as keycaps joined by plus signs. `keys` holds the
+/// parts, for example ["Ctrl", "Alt", "F9"].
+export component KeyPill inherits HorizontalLayout {
+    in property <[string]> keys;
+    in property <bool> listening: false;
+    height: 30px;
+    spacing: 6px;
+    alignment: start;
+    if root.listening: Rectangle {
+        height: 30px;
+        width: 130px;
+        border-radius: Theme.radius-small;
+        background: #0d0d0f;
+        border-width: 1px;
+        border-color: Theme.accent;
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: "Press a key...";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.accent;
+        }
+    }
+    if !root.listening: HorizontalLayout {
+        spacing: 6px;
+        for part[i] in root.keys: HorizontalLayout {
+            spacing: 6px;
+            if i > 0: Text {
+                text: "+";
+                color: Theme.text-faint;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            KeyCap { label: part; }
+        }
+    }
+}
+
+/// Small rounded label.
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Theme.surface-raised;
+    in property <color> fg: Theme.text;
+    height: 22px;
+    width: label.preferred-width + 16px;
+    border-radius: 11px;
+    background: root.tint;
+    label := Text {
+        x: 8px;
+        y: (parent.height - self.height) / 2;
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.fg;
+    }
+}
+
+/// Notice banner. kind: 0 info, 1 warning, 2 error, 3 success.
+export component Notice inherits Rectangle {
+    in property <string> message;
+    in property <int> kind: 1;
+    property <color> tint: root.kind == 2 ? Theme.danger : root.kind == 3 ? Theme.success : root.kind == 0 ? #4f8cff : Theme.warning;
+    background: root.tint.with-alpha(0.12);
+    border-color: root.tint.with-alpha(0.6);
+    border-width: 1px;
+    border-radius: Theme.radius-small;
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 10px;
+        Icon {
+            y: 1px;
+            size: 14px;
+            data: root.kind == 2 ? Icons.circle-xmark : root.kind == 3 ? Icons.circle-check : root.kind == 0 ? Icons.circle-info : Icons.triangle-exclamation;
+            color: root.tint;
+        }
+        Text {
+            text: root.message;
+            wrap: word-wrap;
+            font-size: 13px;
+            color: Theme.text;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+/// Dashed "add" button spanning the available width.
+export component AddButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 44px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.text-muted : Theme.border;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+    touch := TouchArea { clicked => { root.clicked(); } }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        Icon {
+            y: (parent.height - self.height) / 2;
+            size: 14px;
+            data: Icons.circle-plus;
+            color: Theme.text-muted;
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 13px;
+            font-weight: 600;
+            color: Theme.text-muted;
+        }
+    }
+}
+
+/// Selectable option card (quality presets).
+export component OptionCard inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> selected;
+    callback clicked();
+    height: 92px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: root.selected ? Theme.text : Theme.border;
+    background: root.selected ? Theme.surface-hover : Theme.surface-raised;
+    touch := TouchArea { clicked => { root.clicked(); } }
+    VerticalLayout {
+        padding: 14px;
+        spacing: 6px;
+        alignment: start;
+        HorizontalLayout {
+            Text {
+                text: root.title;
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text;
+                horizontal-stretch: 1;
+            }
+            if root.selected: Icon { size: 14px; data: Icons.check; color: Theme.accent; }
+        }
+        Text {
+            text: root.detail;
+            font-size: 12px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+}
+
+/// Page header in the reference style: centred icon, title, description.
+export component PageHeader inherits HorizontalLayout {
+    in property <IconData> icon;
+    in property <string> title;
+    in property <string> description;
+    spacing: 14px;
+    alignment: start;
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        background: Theme.surface-raised;
+        Icon {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            size: 22px;
+            data: root.icon;
+            color: Theme.text;
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        spacing: 4px;
+        Text {
+            text: root.title;
+            font-size: 24px;
+            font-weight: 700;
+            color: Theme.text;
+        }
+        Text {
+            text: root.description;
+            font-size: 13px;
+            color: Theme.text-muted;
+        }
+    }
+}

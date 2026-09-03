@@ -1,31 +1,34 @@
-import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 import { Sidebar, NavPage } from "sidebar.slint";
+import { TopBar } from "topbar.slint";
 import { HomePage } from "home.slint";
 import { ClipsPage, LibraryState } from "clips.slint";
 import { PlayerPage, PlayerState } from "player.slint";
 import { SettingsPage, SettingsState } from "settings.slint";
-import { AppInfo, AudioSourceRow, ClipCard } from "types.slint";
+import { AppInfo, AudioSourceRow, ClipCard, GameProfileRow, SaveHotkeyRow } from "types.slint";
 
 export { TrayIcon } from "tray.slint";
 
-export { AppInfo, AudioSourceRow, ClipCard, SettingsState, LibraryState, PlayerState, NavPage }
+export { AppInfo, AudioSourceRow, ClipCard, GameProfileRow, SaveHotkeyRow, SettingsState, LibraryState, PlayerState, NavPage }
 
 export component MainWindow inherits Window {
     title: "OpenClips";
     icon: @image-url("../assets/icon.png");
-    min-width: 760px;
-    min-height: 480px;
-    preferred-width: 1000px;
-    preferred-height: 680px;
-    background: Palette.background;
+    min-width: 900px;
+    min-height: 560px;
+    preferred-width: 1180px;
+    preferred-height: 740px;
+    background: Theme.background;
+    default-font-family: "Segoe UI";
 
     in property <AppInfo> info;
     in property <string> startup-warning;
-    in property <string> hotkey-hint;
     in property <bool> buffer-active;
     in property <string> buffer-status: "Stopped";
     in property <string> buffer-detail;
+    in property <string> buffer-label: "Buffer off";
     in property <string> encoder-name;
+    in property <string> quality-label;
     in property <string> capture-error;
     in property <string> capture-notice;
     in property <string> save-status;
@@ -34,7 +37,15 @@ export component MainWindow inherits Window {
     in property <string> recording-status: "Not recording";
     in property <string> recording-message;
     in property <string> last-recording;
-    in property <string> detected-game;
+    in property <string> detected-game: "No game detected";
+    in property <image> game-icon;
+    in property <bool> has-game-icon;
+    in property <[string]> save-keys: ["Alt", "8"];
+    in property <string> save-label;
+    in property <[string]> buffer-keys: ["Alt", "9"];
+    in property <[string]> recording-keys: ["Alt", "0"];
+    in property <[ClipCard]> recent-clips: [];
+    in property <string> storage-line;
 
     callback open-config-dir();
     callback open-clips-dir();
@@ -45,42 +56,71 @@ export component MainWindow inherits Window {
     callback library-changed();
     callback clip-saved(string, string);
     callback navigated(NavPage);
+    callback open-clip(string);
 
     in-out property <NavPage> page: NavPage.home;
 
     HorizontalLayout {
         Sidebar {
             current: root.page;
+            storage-line: root.storage-line;
+            buffer-active: root.buffer-active;
+            recording-active: root.recording-active;
             selected(p) => { root.page = p; root.navigated(p); }
         }
 
-        Rectangle {
-            if root.page == NavPage.home: HomePage {
-                info: root.info;
-                startup-warning: root.startup-warning;
-                hotkey-hint: root.hotkey-hint;
+        VerticalLayout {
+            TopBar {
+                game-name: root.detected-game;
+                game-icon: root.game-icon;
+                has-game-icon: root.has-game-icon;
                 buffer-active: root.buffer-active;
-                buffer-status: root.buffer-status;
-                buffer-detail: root.buffer-detail;
-                encoder-name: root.encoder-name;
-                capture-error: root.capture-error;
-                capture-notice: root.capture-notice;
-                save-status: root.save-status;
-                last-clip: root.last-clip;
+                buffer-label: root.buffer-label;
+                save-keys: root.save-keys;
+                save-label: root.save-label;
+                quality: root.quality-label;
                 recording-active: root.recording-active;
-                recording-status: root.recording-status;
-                recording-message: root.recording-message;
-                last-recording: root.last-recording;
-                detected-game: root.detected-game;
-                open-config-dir => { root.open-config-dir(); }
-                open-clips-dir => { root.open-clips-dir(); }
                 toggle-buffer => { root.toggle-buffer(); }
                 save-clip => { root.save-clip(); }
                 toggle-recording => { root.toggle-recording(); }
             }
-            if root.page == NavPage.clips: ClipsPage { }
-            if root.page == NavPage.player: PlayerPage { }
-            if root.page == NavPage.settings: SettingsPage { }
+
+            Rectangle {
+                vertical-stretch: 1;
+                background: Theme.background;
+                if root.page == NavPage.home: HomePage {
+                    info: root.info;
+                    startup-warning: root.startup-warning;
+                    buffer-active: root.buffer-active;
+                    buffer-status: root.buffer-status;
+                    buffer-detail: root.buffer-detail;
+                    encoder-name: root.encoder-name;
+                    capture-error: root.capture-error;
+                    capture-notice: root.capture-notice;
+                    save-status: root.save-status;
+                    last-clip: root.last-clip;
+                    recording-active: root.recording-active;
+                    recording-status: root.recording-status;
+                    recording-message: root.recording-message;
+                    last-recording: root.last-recording;
+                    detected-game: root.detected-game;
+                    save-keys: root.save-keys;
+                    save-label: root.save-label;
+                    buffer-keys: root.buffer-keys;
+                    recording-keys: root.recording-keys;
+                    recent: root.recent-clips;
+                    open-config-dir => { root.open-config-dir(); }
+                    open-clips-dir => { root.open-clips-dir(); }
+                    toggle-buffer => { root.toggle-buffer(); }
+                    save-clip => { root.save-clip(); }
+                    toggle-recording => { root.toggle-recording(); }
+                    open-clip(id) => { root.open-clip(id); }
+                    show-clips => { root.page = NavPage.clips; root.navigated(NavPage.clips); }
+                }
+                if root.page == NavPage.clips: ClipsPage { }
+                if root.page == NavPage.player: PlayerPage { }
+                if root.page == NavPage.settings: SettingsPage { }
+            }
         }
     }
 }

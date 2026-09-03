@@ -1,81 +1,74 @@
-import { Palette, Button, ScrollView } from "std-widgets.slint";
-import { AppInfo } from "types.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icons.slint";
+import { SectionCard, SettingRow, TextButton, Notice, Badge, KeyPill } from "widgets.slint";
+import { AppInfo, ClipCard } from "types.slint";
 
-component InfoRow inherits HorizontalLayout {
+component StatRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
     spacing: 12px;
     Text {
         text: root.label;
-        width: 110px;
-        color: Palette.foreground.with-alpha(0.6);
+        width: 120px;
+        color: Theme.text-muted;
         font-size: 13px;
     }
     Text {
         text: root.value;
         font-size: 13px;
+        color: Theme.text;
         wrap: word-wrap;
         horizontal-stretch: 1;
     }
 }
 
-component Card inherits Rectangle {
-    in property <string> heading;
-    background: Palette.alternate-background;
-    border-radius: 10px;
-
+component RecentCard inherits Rectangle {
+    in property <ClipCard> card;
+    callback clicked();
+    border-radius: Theme.radius-small;
+    background: touch.has-hover ? Theme.surface-hover : Theme.surface-raised;
+    clip: true;
+    touch := TouchArea { clicked => { root.clicked(); } }
     VerticalLayout {
-        padding: 18px;
-        spacing: 10px;
-        Text {
-            text: root.heading;
-            font-size: 16px;
-            font-weight: 600;
+        Rectangle {
+            height: root.width * 9 / 16;
+            background: #000;
+            if root.card.has-thumbnail: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.card.thumbnail;
+                image-fit: cover;
+            }
+            Rectangle {
+                x: parent.width - self.width - 6px;
+                y: parent.height - self.height - 6px;
+                width: dur.preferred-width + 10px;
+                height: 18px;
+                border-radius: 4px;
+                background: #000000c0;
+                dur := Text {
+                    x: 5px;
+                    y: (parent.height - self.height) / 2;
+                    text: root.card.duration;
+                    color: white;
+                    font-size: 10px;
+                    font-weight: 700;
+                }
+            }
         }
-        @children
-    }
-}
-
-component Notice inherits Rectangle {
-    in property <string> message;
-    in property <color> tint: #b8860b;
-    background: root.tint.with-alpha(0.18);
-    border-color: root.tint;
-    border-width: 1px;
-    border-radius: 8px;
-    VerticalLayout {
-        padding: 12px;
-        Text {
-            text: root.message;
-            wrap: word-wrap;
-            font-size: 13px;
+        VerticalLayout {
+            padding: 8px;
+            spacing: 2px;
+            Text { text: root.card.title; font-size: 12px; font-weight: 600; color: Theme.text; overflow: elide; }
+            Text { text: root.card.game + "  \u{00b7}  " + root.card.date; font-size: 10px; color: Theme.text-muted; overflow: elide; }
         }
-    }
-}
-
-component StatusLine inherits HorizontalLayout {
-    in property <bool> active;
-    in property <string> text;
-    spacing: 10px;
-    Rectangle {
-        width: 12px;
-        height: 12px;
-        y: (parent.height - self.height) / 2;
-        border-radius: 6px;
-        background: root.active ? #e84444 : Palette.foreground.with-alpha(0.3);
-    }
-    Text {
-        text: root.text;
-        font-size: 14px;
-        font-weight: 600;
-        vertical-alignment: center;
     }
 }
 
 export component HomePage inherits ScrollView {
     in property <AppInfo> info;
     in property <string> startup-warning;
-    in property <string> hotkey-hint;
     in property <bool> buffer-active;
     in property <string> buffer-status;
     in property <string> buffer-detail;
@@ -89,119 +82,170 @@ export component HomePage inherits ScrollView {
     in property <string> recording-message;
     in property <string> last-recording;
     in property <string> detected-game;
+    in property <[string]> save-keys;
+    in property <string> save-label;
+    in property <[string]> buffer-keys;
+    in property <[string]> recording-keys;
+    in property <[ClipCard]> recent;
 
     callback open-config-dir();
     callback open-clips-dir();
     callback toggle-buffer();
     callback save-clip();
     callback toggle-recording();
+    callback open-clip(string);
+    callback show-clips();
 
     VerticalLayout {
-        padding: 24px;
-        spacing: 16px;
+        padding: Theme.page-padding;
+        spacing: 18px;
         alignment: start;
 
-        Text {
-            text: "Welcome";
-            font-size: 26px;
-            font-weight: 700;
-        }
-        Text {
-            text: "Local only game clip recorder. No cloud, no account, no telemetry.";
-            color: Palette.foreground.with-alpha(0.7);
-            font-size: 14px;
-        }
-
-        if root.startup-warning != "": Notice { message: root.startup-warning; }
-        if root.capture-error != "": Notice { message: root.capture-error; tint: #d9534f; }
-        if root.capture-notice != "": Notice { message: root.capture-notice; }
-
-        Card {
-            heading: "Replay buffer";
-            StatusLine { active: root.buffer-active; text: root.buffer-status; }
-            InfoRow { label: "Buffer"; value: root.buffer-detail; }
-            InfoRow { label: "Encoder"; value: root.encoder-name; }
-            InfoRow { label: "Game"; value: root.detected-game; }
+        VerticalLayout {
+            spacing: 4px;
+            Text { text: "Capture"; font-size: 24px; font-weight: 700; color: Theme.text; }
             Text {
-                text: root.hotkey-hint;
-                color: Palette.foreground.with-alpha(0.6);
+                text: "Everything stays on this PC. Press a hotkey while you play and the last moments land in your clips folder.";
                 font-size: 13px;
+                color: Theme.text-muted;
                 wrap: word-wrap;
+            }
+        }
+
+        if root.startup-warning != "": Notice { message: root.startup-warning; kind: 1; }
+        if root.capture-error != "": Notice { message: root.capture-error; kind: 2; }
+        if root.capture-notice != "": Notice { message: root.capture-notice; kind: 1; }
+
+        HorizontalLayout {
+            spacing: 16px;
+
+            SectionCard {
+                heading: "Replay buffer";
+                subtitle: "Keeps the last moments in memory. Nothing touches the disk until you save.";
+                horizontal-stretch: 1;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: root.buffer-active ? Theme.accent : Theme.text-faint;
+                    }
+                    Text { text: root.buffer-status; font-size: 15px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                }
+                StatRow { label: "Buffer"; value: root.buffer-detail; }
+                StatRow { label: "Encoder"; value: root.encoder-name; }
+                StatRow { label: "Game"; value: root.detected-game; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    KeyPill { keys: root.save-keys; }
+                    Text { text: root.save-label; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    TextButton {
+                        text: root.buffer-active ? "Stop buffer" : "Start buffer";
+                        icon: root.buffer-active ? Icons.stop : Icons.play;
+                        has-icon: true;
+                        clicked => { root.toggle-buffer(); }
+                    }
+                    TextButton {
+                        text: "Save clip now";
+                        icon: Icons.scissors;
+                        has-icon: true;
+                        kind: 1;
+                        enabled: root.buffer-active;
+                        clicked => { root.save-clip(); }
+                    }
+                }
+                if root.save-status != "": Text { text: root.save-status; font-size: 12px; color: Theme.text-muted; wrap: word-wrap; }
+            }
+
+            SectionCard {
+                heading: "Full recording";
+                subtitle: "Records to disk until you stop it. Independent of the buffer.";
+                width: 340px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: root.recording-active ? Theme.record : Theme.text-faint;
+                    }
+                    Text { text: root.recording-status; font-size: 15px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    KeyPill { keys: root.recording-keys; }
+                    Text { text: "start or stop"; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    TextButton {
+                        text: root.recording-active ? "Stop recording" : "Start recording";
+                        icon: root.recording-active ? Icons.stop : Icons.circle-dot;
+                        has-icon: true;
+                        kind: root.recording-active ? 2 : 0;
+                        clicked => { root.toggle-recording(); }
+                    }
+                }
+                if root.recording-message != "": Text { text: root.recording-message; font-size: 12px; color: Theme.text-muted; wrap: word-wrap; }
+            }
+        }
+
+        SectionCard {
+            heading: "Recent clips";
+            subtitle: "";
+            if root.recent.length == 0: Text {
+                text: "No clips yet. Save one with the hotkey while the buffer is running.";
+                font-size: 13px;
+                color: Theme.text-muted;
             }
             HorizontalLayout {
-                spacing: 8px;
-                alignment: start;
-                Button {
-                    text: root.buffer-active ? "Stop buffer" : "Start buffer";
-                    clicked => { root.toggle-buffer(); }
+                spacing: 12px;
+                for card in root.recent: RecentCard {
+                    horizontal-stretch: 1;
+                    card: card;
+                    clicked => { root.open-clip(card.id); }
                 }
-                Button {
-                    text: "Save clip now";
-                    enabled: root.buffer-active;
-                    primary: true;
-                    clicked => { root.save-clip(); }
-                }
-            }
-            if root.save-status != "": Text {
-                text: root.save-status;
-                font-size: 13px;
-                wrap: word-wrap;
-            }
-            if root.last-clip != "": InfoRow { label: "Last clip"; value: root.last-clip; }
-        }
-
-        Card {
-            heading: "Session recording";
-            StatusLine { active: root.recording-active; text: root.recording-status; }
-            Text {
-                text: "Records continuously to disk until stopped, independent of the replay buffer.";
-                color: Palette.foreground.with-alpha(0.6);
-                font-size: 13px;
-                wrap: word-wrap;
             }
             HorizontalLayout {
-                spacing: 8px;
                 alignment: start;
-                Button {
-                    text: root.recording-active ? "Stop recording" : "Start recording";
-                    primary: !root.recording-active;
-                    clicked => { root.toggle-recording(); }
+                TextButton {
+                    text: "All clips";
+                    icon: Icons.film;
+                    has-icon: true;
+                    kind: 3;
+                    clicked => { root.show-clips(); }
                 }
             }
-            if root.recording-message != "": Text {
-                text: root.recording-message;
-                font-size: 13px;
-                wrap: word-wrap;
-            }
-            if root.last-recording != "": InfoRow { label: "Last file"; value: root.last-recording; }
         }
 
-        Card {
+        SectionCard {
             heading: "This installation";
-            InfoRow { label: "Version"; value: root.info.version; }
-            InfoRow { label: "Platform"; value: root.info.platform; }
-            InfoRow { label: "Config file"; value: root.info.config-path; }
-            InfoRow { label: "Clips folder"; value: root.info.clips-dir; }
-            InfoRow { label: "Logs"; value: root.info.log-dir; }
+            subtitle: "";
+            StatRow { label: "Version"; value: root.info.version; }
+            StatRow { label: "Config file"; value: root.info.config-path; }
+            StatRow { label: "Clips folder"; value: root.info.clips-dir; }
+            StatRow { label: "Logs"; value: root.info.log-dir; }
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
-                Button {
-                    text: "Open config folder";
-                    clicked => { root.open-config-dir(); }
-                }
-                Button {
-                    text: "Open clips folder";
-                    clicked => { root.open-clips-dir(); }
-                }
+                TextButton { text: "Open config folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-config-dir(); } }
+                TextButton { text: "Open clips folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-clips-dir(); } }
             }
         }
 
         Text {
-            text: "Closing this window keeps OpenClips running in the system tray. Use the tray menu to quit.";
-            color: Palette.foreground.with-alpha(0.6);
+            text: "Closing the window keeps OpenClips in the tray. Quit from the tray menu.";
             font-size: 12px;
-            wrap: word-wrap;
+            color: Theme.text-faint;
         }
     }
 }

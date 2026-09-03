@@ -758,9 +758,12 @@ impl Engine {
     }
 
     /// Snapshots the buffer immediately and writes the clip on a worker
-    /// thread so the hotkey never blocks the UI or the capture.
-    pub fn save_clip(&self, done: SaveCallback) {
-        let wanted = self.effective_replay_length();
+    /// thread so the hotkey never blocks the UI or the capture. `length`
+    /// limits how far back the clip reaches; `None` or zero saves the whole
+    /// buffer.
+    pub fn save_clip(&self, length: Option<Duration>, done: SaveCallback) {
+        let full = self.effective_replay_length();
+        let wanted = length.filter(|l| !l.is_zero()).unwrap_or(full).min(full);
         let snapshot = lock(&self.buffer).snapshot_last(wanted);
         let Some(snapshot) = snapshot else {
             done(Err(CaptureError::EmptyBuffer.to_string()));

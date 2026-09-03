@@ -1,13 +1,17 @@
-import { Palette, Button, ComboBox, SpinBox, LineEdit, CheckBox, ScrollView, Slider } from "std-widgets.slint";
-import { AudioSourceRow, GameProfileRow } from "types.slint";
+import { ComboBox, SpinBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icons.slint";
+import { IconButton, TextButton, Toggle, SectionCard, SettingRow, Divider, KeyPill, Badge, Notice, AddButton, OptionCard, PageHeader } from "widgets.slint";
+import { AudioSourceRow, GameProfileRow, SaveHotkeyRow } from "types.slint";
 
 export global SettingsState {
     in-out property <[string]> display-names: ["Primary display"];
     in-out property <int> display-index: 0;
     in-out property <[string]> encoder-names: ["Automatic (best available)", "NVIDIA NVENC", "Intel Quick Sync", "AMD AMF", "Software (x264)"];
     in-out property <int> encoder-index: 0;
+    in-out property <int> quality-index: 1;
     in-out property <int> fps: 60;
-    in-out property <int> bitrate-kbps: 20000;
+    in-out property <int> bitrate-kbps: 15000;
     in-out property <bool> show-cursor: false;
     in-out property <int> capture-api-index: 0;
     in-out property <bool> launch-on-startup: false;
@@ -21,6 +25,8 @@ export global SettingsState {
     in-out property <string> clips-dir;
     in-out property <string> file-name-pattern;
     in-out property <string> recording-subfolder;
+    in-out property <string> storage-line;
+    in-out property <float> storage-fraction: 0;
 
     in-out property <bool> audio-enabled: true;
     in-out property <bool> separate-tracks: false;
@@ -38,9 +44,11 @@ export global SettingsState {
     in-out property <string> games-message;
     in-out property <bool> steam-busy: false;
 
-    in-out property <string> hotkey-save-replay;
+    in-out property <[SaveHotkeyRow]> save-hotkeys: [];
     in-out property <string> hotkey-toggle-buffer;
+    in-out property <[string]> hotkey-buffer-keys: [];
     in-out property <string> hotkey-toggle-recording;
+    in-out property <[string]> hotkey-recording-keys: [];
     in-out property <int> listening-action: -1;
 
     in-out property <string> message;
@@ -56,448 +64,414 @@ export global SettingsState {
     callback add-game();
     callback remove-game(string);
     callback suggest-steam-names();
+    callback add-save-hotkey();
+    callback remove-save-hotkey(int);
 }
 
-component Field inherits HorizontalLayout {
-    in property <string> label;
-    spacing: 12px;
-    alignment: start;
-    Text {
-        text: root.label;
-        width: 190px;
-        vertical-alignment: center;
-        font-size: 13px;
-        color: Palette.foreground.with-alpha(0.7);
-    }
-    @children
-}
-
-component Section inherits Rectangle {
-    in property <string> heading;
-    background: Palette.alternate-background;
-    border-radius: 10px;
-    VerticalLayout {
-        padding: 18px;
-        spacing: 10px;
-        Text {
-            text: root.heading;
-            font-size: 16px;
-            font-weight: 600;
-        }
-        @children
-    }
-}
-
-component Hint inherits Text {
-    color: Palette.foreground.with-alpha(0.6);
-    font-size: 12px;
-    wrap: word-wrap;
-}
-
-component HotkeyRow inherits Field {
+component HotkeyCapture inherits FocusScope {
     in property <int> action;
-    in-out property <string> binding;
+    in property <[string]> keys;
     property <bool> listening: SettingsState.listening-action == root.action;
 
-    fs := FocusScope {
-        width: 180px;
-        height: 32px;
-        Rectangle {
-            border-radius: 6px;
-            border-width: 1px;
-            border-color: root.listening ? Palette.accent-background : Palette.border;
-            background: Palette.background;
-            Text {
-                text: root.listening ? "Press a key..." : root.binding;
-                vertical-alignment: center;
-                horizontal-alignment: center;
-                font-size: 13px;
-            }
-        }
-        key-pressed(event) => {
-            if (root.listening) {
-                SettingsState.key-captured(root.action, event.text, event.modifiers.alt, event.modifiers.control, event.modifiers.shift, event.modifiers.meta);
-                return accept;
-            }
-            return reject;
-        }
+    width: pill.preferred-width;
+    height: 32px;
+
+    pill := KeyPill {
+        y: (parent.height - self.height) / 2;
+        keys: root.keys;
+        listening: root.listening;
     }
-    Button {
-        text: root.listening ? "Cancel" : "Change";
+    TouchArea {
         clicked => {
             if (root.listening) {
                 SettingsState.listening-action = -1;
             } else {
                 SettingsState.listening-action = root.action;
-                fs.focus();
+                root.focus();
             }
+        }
+    }
+    key-pressed(event) => {
+        if (root.listening) {
+            SettingsState.key-captured(root.action, event.text, event.modifiers.alt, event.modifiers.control, event.modifiers.shift, event.modifiers.meta);
+            return accept;
+        }
+        return reject;
+    }
+    changed has-focus => {
+        if (!self.has-focus && root.listening) {
+            SettingsState.listening-action = -1;
         }
     }
 }
 
+component Label inherits Text {
+    font-size: 12px;
+    color: Theme.text-muted;
+    vertical-alignment: center;
+}
+
+component Hint inherits Text {
+    font-size: 11px;
+    color: Theme.text-faint;
+    wrap: word-wrap;
+}
+
+component StorageBar inherits Rectangle {
+    height: 8px;
+    border-radius: 4px;
+    background: Theme.surface-hover;
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(SettingsState.storage-fraction, 0, 1);
+        height: parent.height;
+        border-radius: 4px;
+        background: SettingsState.storage-fraction > 0.9 ? Theme.danger : Theme.accent;
+    }
+}
+
 export component SettingsPage inherits ScrollView {
+    property <[string]> minute-options: ["0m", "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "10m", "11m", "12m", "13m", "14m", "15m", "16m", "17m", "18m", "19m", "20m"];
+    property <[string]> second-options: ["00s", "15s", "30s", "45s"];
+
     VerticalLayout {
-        padding: 24px;
-        spacing: 16px;
+        padding: Theme.page-padding;
+        padding-top: 20px;
+        spacing: 18px;
         alignment: start;
 
-        Text {
-            text: "Settings";
-            font-size: 26px;
-            font-weight: 700;
-        }
-
-        if SettingsState.message != "": Rectangle {
-            property <color> tint: SettingsState.message-is-error ? #d9534f : #3c9a5f;
-            background: self.tint.with-alpha(0.18);
-            border-color: self.tint;
-            border-width: 1px;
-            border-radius: 8px;
+        HorizontalLayout {
+            spacing: 12px;
+            PageHeader {
+                icon: Icons.gear;
+                title: "Settings";
+                description: "Capture, audio, games, storage and hotkeys. Changes apply when you save.";
+            }
+            Rectangle { horizontal-stretch: 1; }
             VerticalLayout {
-                padding: 12px;
-                Text {
-                    text: SettingsState.message;
-                    wrap: word-wrap;
-                    font-size: 13px;
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 8px;
+                    TextButton { text: "Revert"; icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
+                    TextButton { text: "Save changes"; icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
                 }
             }
         }
 
-        Section {
-            heading: "Capture";
-            Field {
-                label: "Display";
+        if SettingsState.message != "": Notice { message: SettingsState.message; kind: SettingsState.message-is-error ? 2 : 3; }
+
+        SectionCard {
+            heading: "Hotkeys";
+            subtitle: "Global shortcuts that work while a game has focus. Click a key to change it, Escape cancels.";
+
+            for hk[i] in SettingsState.save-hotkeys: HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                HotkeyCapture { action: 100 + i; keys: hk.keys; }
+                Label { text: "saves the last"; }
                 ComboBox {
-                    width: 320px;
-                    model: SettingsState.display-names;
-                    current-index <=> SettingsState.display-index;
+                    width: 82px;
+                    model: root.minute-options;
+                    current-index <=> hk.minutes;
                 }
-                Button {
-                    text: "Refresh";
-                    clicked => { SettingsState.refresh-displays(); }
-                }
-            }
-            Field {
-                label: "Encoder";
                 ComboBox {
-                    width: 320px;
-                    model: SettingsState.encoder-names;
-                    current-index <=> SettingsState.encoder-index;
+                    width: 82px;
+                    model: root.second-options;
+                    current-index <=> hk.seconds-index;
+                }
+                Label {
+                    text: hk.minutes == 0 && hk.seconds-index == 0 ? "= whole buffer" : "";
+                    color: Theme.text-faint;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                IconButton {
+                    icon: Icons.trash;
+                    icon-color: Theme.danger;
+                    enabled: SettingsState.save-hotkeys.length > 1;
+                    clicked => { SettingsState.remove-save-hotkey(i); }
                 }
             }
-            Field {
-                label: "Frame rate";
-                SpinBox {
-                    width: 140px;
-                    value <=> SettingsState.fps;
-                    minimum: 1;
-                    maximum: 240;
-                }
+            AddButton { text: "Add hotkey"; clicked => { SettingsState.add-save-hotkey(); } }
+            Hint { text: "0m 00s saves everything the buffer holds. Longer lengths are capped by the buffer length below."; }
+            Divider { }
+            SettingRow {
+                title: "Start or stop the replay buffer";
+                description: "Toggles capture without opening the window.";
+                HotkeyCapture { action: 0; keys: SettingsState.hotkey-buffer-keys; }
             }
-            Field {
-                label: "Bitrate (kbps)";
-                SpinBox {
-                    width: 140px;
-                    value <=> SettingsState.bitrate-kbps;
-                    minimum: 1000;
-                    maximum: 200000;
-                    step-size: 1000;
-                }
+            SettingRow {
+                title: "Start or stop a full recording";
+                description: "Records to disk until pressed again.";
+                HotkeyCapture { action: 1; keys: SettingsState.hotkey-recording-keys; }
             }
-            Field {
-                label: "Capture mouse cursor";
-                CheckBox { checked <=> SettingsState.show-cursor; }
-            }
-            Field {
-                label: "Capture method";
-                ComboBox {
-                    width: 320px;
-                    model: ["Desktop Duplication (default)", "Windows Graphics Capture"];
-                    current-index <=> SettingsState.capture-api-index;
-                }
-            }
-            Hint { text: "Desktop Duplication is the fastest path and handles borderless and exclusive fullscreen. Switch to Windows Graphics Capture only if clips come out black."; }
         }
 
-        Section {
+        SectionCard {
+            heading: "Quality";
+            subtitle: "Resolution follows the captured display. Presets set frame rate and bitrate.";
+            HorizontalLayout {
+                spacing: 12px;
+                OptionCard {
+                    title: "Low";
+                    detail: "30 fps, 8 Mbps. Small files.";
+                    selected: SettingsState.quality-index == 0;
+                    clicked => { SettingsState.quality-index = 0; SettingsState.fps = 30; SettingsState.bitrate-kbps = 8000; }
+                }
+                OptionCard {
+                    title: "Standard";
+                    detail: "60 fps, 15 Mbps. Good for sharing.";
+                    selected: SettingsState.quality-index == 1;
+                    clicked => { SettingsState.quality-index = 1; SettingsState.fps = 60; SettingsState.bitrate-kbps = 15000; }
+                }
+                OptionCard {
+                    title: "High";
+                    detail: "60 fps, 30 Mbps. Best detail.";
+                    selected: SettingsState.quality-index == 2;
+                    clicked => { SettingsState.quality-index = 2; SettingsState.fps = 60; SettingsState.bitrate-kbps = 30000; }
+                }
+                OptionCard {
+                    title: "Custom";
+                    detail: "\{SettingsState.fps} fps, \{round(SettingsState.bitrate-kbps / 100) / 10} Mbps";
+                    selected: SettingsState.quality-index == 3;
+                    clicked => { SettingsState.quality-index = 3; }
+                }
+            }
+            if SettingsState.quality-index == 3: HorizontalLayout {
+                spacing: 16px;
+                alignment: start;
+                Label { text: "Frame rate"; }
+                SpinBox { width: 110px; minimum: 15; maximum: 240; value <=> SettingsState.fps; }
+                Label { text: "Bitrate (kbps)"; }
+                SpinBox { width: 130px; minimum: 1000; maximum: 200000; step-size: 1000; value <=> SettingsState.bitrate-kbps; }
+            }
+            Divider { }
+            SettingRow {
+                title: "Encoder";
+                description: "Automatic prefers the GPU encoder and falls back to software.";
+                ComboBox { width: 240px; model: SettingsState.encoder-names; current-index <=> SettingsState.encoder-index; }
+            }
+            SettingRow {
+                title: "Display";
+                description: "The screen that gets captured.";
+                HorizontalLayout {
+                    spacing: 6px;
+                    ComboBox { width: 240px; model: SettingsState.display-names; current-index <=> SettingsState.display-index; }
+                    IconButton { icon: Icons.arrows-rotate; filled: true; size: 32px; clicked => { SettingsState.refresh-displays(); } }
+                }
+            }
+            SettingRow {
+                title: "Capture method";
+                description: "Desktop Duplication is fastest. Windows Graphics Capture helps with some protected apps.";
+                ComboBox { width: 240px; model: ["Desktop Duplication", "Windows Graphics Capture"]; current-index <=> SettingsState.capture-api-index; }
+            }
+            SettingRow {
+                title: "Show cursor";
+                description: "Draw the mouse pointer into clips.";
+                Toggle { checked <=> SettingsState.show-cursor; }
+            }
+        }
+
+        SectionCard {
+            heading: "Replay buffer";
+            subtitle: "The last moments stay in memory and never touch the disk until you save.";
+            SettingRow {
+                title: "Buffer length";
+                description: "How far back a save can reach. Longer buffers use more memory.";
+                HorizontalLayout {
+                    spacing: 6px;
+                    SpinBox { width: 100px; minimum: 1; maximum: 3600; value <=> SettingsState.replay-length-value; }
+                    ComboBox { width: 110px; model: ["seconds", "minutes"]; current-index <=> SettingsState.replay-unit-index; }
+                }
+            }
+            SettingRow {
+                title: "Memory cap";
+                description: "Upper bound in MB. The buffer shrinks to fit.";
+                SpinBox { width: 120px; minimum: 64; maximum: 32768; step-size: 64; value <=> SettingsState.memory-cap-mb; }
+            }
+            SettingRow {
+                title: "Start buffer on launch";
+                description: "Begin capturing as soon as OpenClips opens.";
+                Toggle { checked <=> SettingsState.start-on-launch; }
+            }
+        }
+
+        SectionCard {
             heading: "Audio";
-            Field {
-                label: "Record audio";
-                CheckBox { checked <=> SettingsState.audio-enabled; }
+            subtitle: "Outputs are captured through loopback, inputs are microphones. Volume and mute apply live.";
+            SettingRow {
+                title: "Record audio";
+                description: "Turn off to save video only.";
+                Toggle { checked <=> SettingsState.audio-enabled; }
             }
-            Field {
-                label: "Separate microphone track";
-                CheckBox { checked <=> SettingsState.separate-tracks; }
+            SettingRow {
+                title: "Separate tracks";
+                description: "One track per source so you can mute the mic later.";
+                Toggle { checked <=> SettingsState.separate-tracks; enabled: SettingsState.audio-enabled; }
             }
-            Field {
-                label: "Bitrate (kbps)";
-                SpinBox {
-                    width: 140px;
-                    value <=> SettingsState.audio-bitrate-kbps;
-                    minimum: 64;
-                    maximum: 320;
-                    step-size: 32;
-                }
+            SettingRow {
+                title: "Audio bitrate";
+                description: "AAC kbps per track.";
+                SpinBox { width: 110px; minimum: 64; maximum: 320; step-size: 32; value <=> SettingsState.audio-bitrate-kbps; }
             }
-            Hint { text: "Tick the devices to capture. Outputs are captured through loopback, inputs are microphones. Volume and mute apply immediately."; }
+            Divider { }
             for row in SettingsState.audio-sources: HorizontalLayout {
                 spacing: 12px;
                 alignment: start;
-                CheckBox {
-                    checked <=> row.enabled;
-                    width: 24px;
+                Toggle { y: (parent.height - self.height) / 2; checked <=> row.enabled; }
+                Icon {
+                    y: (parent.height - self.height) / 2;
+                    size: 14px;
+                    data: row.kind == "output" ? Icons.headphones : Icons.microphone;
+                    color: row.connected ? Theme.text : Theme.text-faint;
                 }
                 Text {
                     text: row.connected ? row.name : row.name + " (not connected)";
-                    width: 300px;
+                    width: 280px;
                     vertical-alignment: center;
                     font-size: 13px;
                     overflow: elide;
-                    color: row.connected ? Palette.foreground : Palette.foreground.with-alpha(0.5);
+                    color: row.connected ? Theme.text : Theme.text-faint;
                 }
-                Text {
-                    text: row.kind == "output" ? "Output" : "Input";
-                    width: 56px;
-                    vertical-alignment: center;
-                    font-size: 12px;
-                    color: Palette.foreground.with-alpha(0.6);
-                }
+                Badge { y: (parent.height - self.height) / 2; text: row.kind == "output" ? "Output" : "Input"; }
                 Slider {
+                    y: (parent.height - self.height) / 2;
                     width: 150px;
                     minimum: 0;
                     maximum: 200;
                     value <=> row.volume;
                     enabled: row.enabled && !row.muted;
                 }
-                Text {
-                    text: "\{round(row.volume)}%";
-                    width: 46px;
-                    vertical-alignment: center;
-                    font-size: 12px;
-                }
-                CheckBox {
-                    text: "Mute";
-                    checked <=> row.muted;
+                Label { text: "\{round(row.volume)}%"; width: 44px; }
+                IconButton {
+                    icon: row.muted ? Icons.volume-xmark : Icons.volume-high;
+                    icon-color: row.muted ? Theme.danger : Theme.text;
+                    size: 32px;
                     enabled: row.enabled;
+                    clicked => { row.muted = !row.muted; }
                 }
             }
             HorizontalLayout {
                 alignment: start;
-                Button {
-                    text: "Refresh devices";
-                    clicked => { SettingsState.refresh-audio-devices(); }
-                }
+                TextButton { text: "Refresh devices"; icon: Icons.arrows-rotate; has-icon: true; clicked => { SettingsState.refresh-audio-devices(); } }
             }
         }
 
-        Section {
+        SectionCard {
             heading: "Games";
-            Field {
-                label: "Capture";
-                ComboBox {
-                    width: 360px;
-                    model: ["Always capture the selected display", "Only while a known game is running"];
-                    current-index <=> SettingsState.games-scope-index;
-                }
+            subtitle: "Capture only while a known game runs, with a profile per game.";
+            SettingRow {
+                title: "Capture scope";
+                description: "Always capture, or only while one of the games below is running.";
+                ComboBox { width: 300px; model: ["Always capture the selected display", "Only while a known game is running"]; current-index <=> SettingsState.games-scope-index; }
             }
             Hint { text: SettingsState.running-games; }
             for profile in SettingsState.game-profiles: HorizontalLayout {
-                spacing: 10px;
+                spacing: 12px;
                 alignment: start;
                 Rectangle {
+                    y: (parent.height - self.height) / 2;
                     width: 28px;
                     height: 28px;
-                    if profile.has-icon: Image {
-                        width: 24px;
-                        height: 24px;
-                        x: 2px;
-                        y: 2px;
-                        source: profile.icon;
-                    }
+                    border-radius: 6px;
+                    background: Theme.surface-raised;
+                    if profile.has-icon: Image { width: 22px; height: 22px; x: 3px; y: 3px; source: profile.icon; }
+                    if !profile.has-icon: Icon { x: 7px; y: 7px; size: 14px; data: Icons.gamepad; color: Theme.text-muted; }
                 }
                 VerticalLayout {
-                    width: 220px;
-                    Text {
-                        text: profile.name == "" ? profile.exe : profile.name;
-                        font-size: 13px;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: profile.exe;
-                        font-size: 11px;
-                        color: Palette.foreground.with-alpha(0.6);
-                        overflow: elide;
-                    }
+                    width: 200px;
+                    alignment: center;
+                    Text { text: profile.name == "" ? profile.exe : profile.name; font-size: 13px; font-weight: 600; color: Theme.text; overflow: elide; }
+                    Text { text: profile.exe; font-size: 11px; color: Theme.text-faint; overflow: elide; }
                 }
-                ComboBox {
-                    width: 150px;
-                    model: ["Replay buffer", "Full recording", "Do nothing"];
-                    current-index <=> profile.action-index;
-                }
-                SpinBox {
-                    width: 110px;
-                    value <=> profile.replay-seconds;
-                    minimum: 0;
-                    maximum: 1200;
-                }
-                LineEdit {
-                    width: 130px;
-                    text <=> profile.subfolder;
-                    placeholder-text: "Subfolder";
-                }
-                ComboBox {
-                    width: 170px;
-                    model: SettingsState.profile-display-names;
-                    current-index <=> profile.display-index;
-                }
-                Button {
-                    text: "Remove";
-                    clicked => { SettingsState.remove-game(profile.exe); }
-                }
+                ComboBox { width: 150px; model: ["Replay buffer", "Full recording", "Do nothing"]; current-index <=> profile.action-index; }
+                SpinBox { width: 90px; minimum: 0; maximum: 3600; value <=> profile.replay-seconds; }
+                LineEdit { width: 130px; placeholder-text: "Subfolder"; text <=> profile.subfolder; }
+                ComboBox { width: 170px; model: SettingsState.profile-display-names; current-index <=> profile.display-index; }
+                IconButton { icon: Icons.trash; icon-color: Theme.danger; size: 32px; clicked => { SettingsState.remove-game(profile.exe); } }
             }
-            if SettingsState.game-profiles.length > 0: Hint { text: "Buffer length 0 keeps the global setting. Subfolder is created inside the clips folder."; }
+            Hint { text: "Columns: action when the game starts, buffer length override in seconds (0 keeps the global one), clip subfolder, display."; }
+            Divider { }
             HorizontalLayout {
-                spacing: 10px;
+                spacing: 8px;
                 alignment: start;
                 ComboBox {
-                    width: 300px;
+                    width: 260px;
                     model: SettingsState.running-known;
                     current-index <=> SettingsState.running-known-index;
                     enabled: SettingsState.running-known.length > 0;
                 }
-                Button {
+                TextButton {
                     text: "Add running game";
+                    icon: Icons.plus;
+                    has-icon: true;
                     enabled: SettingsState.running-known.length > 0;
                     clicked => { SettingsState.add-running-game(); }
                 }
             }
             HorizontalLayout {
-                spacing: 10px;
+                spacing: 8px;
                 alignment: start;
-                LineEdit {
-                    width: 200px;
-                    text <=> SettingsState.new-game-exe;
-                    placeholder-text: "game.exe";
-                }
-                LineEdit {
-                    width: 200px;
-                    text <=> SettingsState.new-game-name;
-                    placeholder-text: "Display name (optional)";
-                }
-                Button {
-                    text: "Add";
-                    clicked => { SettingsState.add-game(); }
-                }
-                Button {
+                LineEdit { width: 200px; placeholder-text: "game.exe"; text <=> SettingsState.new-game-exe; }
+                LineEdit { width: 200px; placeholder-text: "Display name (optional)"; text <=> SettingsState.new-game-name; }
+                TextButton { text: "Add"; icon: Icons.plus; has-icon: true; clicked => { SettingsState.add-game(); } }
+                TextButton {
                     text: SettingsState.steam-busy ? "Asking Steam..." : "Suggest names from Steam";
+                    icon: Icons.download;
+                    has-icon: true;
+                    kind: 3;
                     enabled: !SettingsState.steam-busy;
                     clicked => { SettingsState.suggest-steam-names(); }
                 }
             }
-            Hint { text: "Names come from the bundled database. The Steam lookup is optional and only runs when you press the button; it fills empty names for the executables above."; }
-            if SettingsState.games-message != "": Text {
-                text: SettingsState.games-message;
-                font-size: 12px;
-                wrap: word-wrap;
+            if SettingsState.games-message != "": Hint { text: SettingsState.games-message; color: Theme.text-muted; }
+            Hint { text: "Names come from the bundled database. The Steam lookup only runs when you press the button and fills empty names."; }
+        }
+
+        SectionCard {
+            heading: "Storage";
+            subtitle: "Where clips and recordings are written.";
+            SettingRow {
+                title: "Clips folder";
+                description: SettingsState.clips-dir;
+                TextButton { text: "Browse"; icon: Icons.folder-open; has-icon: true; clicked => { SettingsState.browse-clips-dir(); } }
+            }
+            VerticalLayout {
+                spacing: 6px;
+                StorageBar { }
+                Hint { text: SettingsState.storage-line; }
+            }
+            SettingRow {
+                title: "File name pattern";
+                description: "Placeholders: {game} {date} {time} {kind}";
+                LineEdit { width: 260px; text <=> SettingsState.file-name-pattern; }
+            }
+            SettingRow {
+                title: "Recordings subfolder";
+                description: "Full recordings go here, inside the clips folder.";
+                LineEdit { width: 260px; text <=> SettingsState.recording-subfolder; }
             }
         }
 
-        Section {
-            heading: "Replay buffer";
-            Field {
-                label: "Keep the last";
-                SpinBox {
-                    width: 140px;
-                    value <=> SettingsState.replay-length-value;
-                    minimum: 1;
-                    maximum: 1200;
-                }
-                ComboBox {
-                    width: 140px;
-                    model: ["seconds", "minutes"];
-                    current-index <=> SettingsState.replay-unit-index;
-                }
-            }
-            Field {
-                label: "Memory cap (MB)";
-                SpinBox {
-                    width: 140px;
-                    value <=> SettingsState.memory-cap-mb;
-                    minimum: 64;
-                    maximum: 32768;
-                    step-size: 128;
-                }
-            }
-            Field {
-                label: "Start buffer on launch";
-                CheckBox { checked <=> SettingsState.start-on-launch; }
-            }
-            Hint { text: "The buffer lives entirely in memory. Nothing is written to disk until a clip is saved."; }
-        }
-
-        Section {
-            heading: "Output";
-            Field {
-                label: "Clips folder";
-                LineEdit {
-                    width: 320px;
-                    text <=> SettingsState.clips-dir;
-                }
-                Button {
-                    text: "Browse";
-                    clicked => { SettingsState.browse-clips-dir(); }
-                }
-            }
-            Field {
-                label: "Recordings subfolder";
-                LineEdit {
-                    width: 320px;
-                    text <=> SettingsState.recording-subfolder;
-                    placeholder-text: "Leave empty to use the clips folder";
-                }
-            }
-            Field {
-                label: "File name pattern";
-                LineEdit {
-                    width: 320px;
-                    text <=> SettingsState.file-name-pattern;
-                    placeholder-text: "{game} {date} {time}";
-                }
-            }
-        }
-
-        Section {
-            heading: "Hotkeys";
-            HotkeyRow { label: "Save replay"; action: 0; binding <=> SettingsState.hotkey-save-replay; }
-            HotkeyRow { label: "Start or stop replay buffer"; action: 1; binding <=> SettingsState.hotkey-toggle-buffer; }
-            HotkeyRow { label: "Start or stop recording"; action: 2; binding <=> SettingsState.hotkey-toggle-recording; }
-            Hint { text: "Click Change, then press the key combination. Escape cancels."; }
-        }
-
-        Section {
+        SectionCard {
             heading: "General";
-            Field {
-                label: "Start minimized to tray";
-                CheckBox { checked <=> SettingsState.start-minimized; }
+            subtitle: "";
+            SettingRow {
+                title: "Start minimized";
+                description: "Open straight into the tray.";
+                Toggle { checked <=> SettingsState.start-minimized; }
             }
-            Field {
-                label: "Launch when Windows starts";
-                CheckBox { checked <=> SettingsState.launch-on-startup; }
+            SettingRow {
+                title: "Launch with Windows";
+                description: "Adds OpenClips to the current user's startup entries.";
+                Toggle { checked <=> SettingsState.launch-on-startup; }
             }
         }
 
         HorizontalLayout {
+            alignment: end;
             spacing: 8px;
-            alignment: start;
-            Button {
-                text: "Save";
-                primary: true;
-                clicked => { SettingsState.save(); }
-            }
-            Button {
-                text: "Revert";
-                clicked => { SettingsState.revert(); }
-            }
+            TextButton { text: "Revert"; icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
+            TextButton { text: "Save changes"; icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
         }
     }
 }

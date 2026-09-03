@@ -22,7 +22,47 @@ pub struct CardData {
     pub game: String,
     pub date: String,
     pub duration: String,
+    pub size: String,
+    pub kind: String,
     pub thumbnail: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardSort {
+    #[default]
+    Newest,
+    Oldest,
+    Longest,
+    Largest,
+}
+
+impl CardSort {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => CardSort::Oldest,
+            2 => CardSort::Longest,
+            3 => CardSort::Largest,
+            _ => CardSort::Newest,
+        }
+    }
+}
+
+/// What the gallery is narrowed down to.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CardFilter<'a> {
+    pub game: Option<&'a str>,
+    pub kind: Option<ClipKind>,
+    pub search: &'a str,
+    pub sort: CardSort,
+}
+
+pub fn format_size(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{mb:.0} MB")
+    }
 }
 
 struct JobResult {
@@ -211,22 +251,40 @@ impl LibraryService {
         self.library.games()
     }
 
-    pub fn cards(&self, game: Option<&str>, search: &str) -> Vec<CardData> {
-        let needle = search.trim().to_lowercase();
-        self.library
+    pub fn cards(&self, filter: &CardFilter<'_>) -> Vec<CardData> {
+        let needle = filter.search.trim().to_lowercase();
+        let mut clips: Vec<&ClipRecord> = self
+            .library
             .sorted()
             .into_iter()
-            .filter(|c| game.is_none_or(|g| c.game.as_deref() == Some(g)))
+            .filter(|c| filter.game.is_none_or(|g| c.game.as_deref() == Some(g)))
+            .filter(|c| filter.kind.is_none_or(|k| c.kind == k))
             .filter(|c| needle.is_empty() || c.title.to_lowercase().contains(&needle))
+            .collect();
+        match filter.sort {
+            CardSort::Newest => {}
+            CardSort::Oldest => clips.reverse(),
+            CardSort::Longest => clips.sort_by_key(|c| std::cmp::Reverse(c.duration_ms)),
+            CardSort::Largest => clips.sort_by_key(|c| std::cmp::Reverse(c.bytes)),
+        }
+        clips
+            .into_iter()
             .map(|c| CardData {
                 id: c.id.clone(),
                 title: c.title.clone(),
                 game: c.game.clone().unwrap_or_else(|| c.kind.label().to_owned()),
                 date: format_date(c.created),
                 duration: format_duration(c.duration()),
+                size: format_size(c.bytes),
+                kind: c.kind.label().to_owned(),
                 thumbnail: c.thumbnail.clone(),
             })
             .collect()
+    }
+
+    /// Bytes used by every indexed file.
+    pub fn total_bytes(&self) -> u64 {
+        self.library.clips.iter().map(|c| c.bytes).sum()
     }
 
     /// Records the game of a freshly written file, once it is indexed.

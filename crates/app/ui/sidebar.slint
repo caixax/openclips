@@ -1,73 +1,137 @@
-import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, IconData, Icons } from "icons.slint";
 
 export enum NavPage { home, clips, player, settings }
 
-component NavItem inherits Rectangle {
+component RailItem inherits Rectangle {
+    in property <IconData> icon;
     in property <string> label;
     in property <bool> active;
     callback clicked();
 
-    height: 36px;
-    border-radius: 6px;
-    background: active ? Palette.accent-background : (touch.has-hover ? Palette.alternate-background : transparent);
+    width: 52px;
+    height: 52px;
+    border-radius: Theme.radius-small;
+    background: root.active ? Theme.surface-hover : (touch.has-hover ? Theme.surface-raised : transparent);
 
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
-
-    Text {
-        x: 12px;
-        vertical-alignment: center;
-        text: root.label;
-        font-size: 14px;
-        font-weight: root.active ? 600 : 400;
-        color: root.active ? Palette.accent-foreground : Palette.foreground;
+    VerticalLayout {
+        alignment: center;
+        spacing: 4px;
+        Icon {
+            x: (parent.width - self.width) / 2;
+            size: 18px;
+            data: root.icon;
+            color: root.active ? Theme.text : Theme.text-muted;
+        }
+        Text {
+            text: root.label;
+            horizontal-alignment: center;
+            font-size: 10px;
+            font-weight: 600;
+            color: root.active ? Theme.text : Theme.text-muted;
+        }
     }
 }
 
 export component Sidebar inherits Rectangle {
     in property <NavPage> current;
+    in property <string> storage-line;
+    in property <bool> buffer-active;
+    in property <bool> recording-active;
     callback selected(NavPage);
 
-    width: 200px;
-    background: Palette.alternate-background;
+    width: Theme.rail-width;
+    background: Theme.background;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.divider;
+    }
 
     VerticalLayout {
-        padding: 12px;
-        spacing: 4px;
+        padding: 8px;
+        padding-top: 14px;
+        spacing: 6px;
 
-        HorizontalLayout {
-            padding-bottom: 16px;
-            spacing: 8px;
-            Image {
-                source: @image-url("../assets/tray.png");
-                width: 24px;
-                height: 24px;
-            }
-            Text {
-                text: "OpenClips";
-                font-size: 18px;
-                font-weight: 700;
-                vertical-alignment: center;
+        Rectangle {
+            height: 44px;
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: 4px;
+                width: 32px;
+                height: 32px;
+                border-radius: 8px;
+                background: Theme.accent;
+                Icon {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    size: 16px;
+                    data: Icons.scissors;
+                    color: Theme.accent-text;
+                }
             }
         }
 
-        NavItem {
+        RailItem {
+            icon: Icons.house;
             label: "Home";
             active: root.current == NavPage.home;
             clicked => { root.selected(NavPage.home); }
         }
-        NavItem {
+        RailItem {
+            icon: Icons.film;
             label: "Clips";
             active: root.current == NavPage.clips || root.current == NavPage.player;
             clicked => { root.selected(NavPage.clips); }
         }
-        NavItem {
+        RailItem {
+            icon: Icons.gear;
             label: "Settings";
             active: root.current == NavPage.settings;
             clicked => { root.selected(NavPage.settings); }
         }
 
         Rectangle { }
+
+        VerticalLayout {
+            spacing: 6px;
+            alignment: end;
+            if root.recording-active: Rectangle {
+                height: 22px;
+                border-radius: 11px;
+                background: Theme.record.with-alpha(0.18);
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "REC";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.record;
+                }
+            }
+            Rectangle {
+                height: 8px;
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: root.buffer-active ? Theme.accent : Theme.text-faint;
+                }
+            }
+            Text {
+                text: root.storage-line;
+                horizontal-alignment: center;
+                font-size: 10px;
+                color: Theme.text-faint;
+                wrap: word-wrap;
+            }
+        }
     }
 }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -13,13 +13,14 @@ use crate::engine::{BufferState, Engine, EngineStatus, RecordingState, file_name
 use crate::error::AppError;
 use crate::games::GameService;
 use crate::hotkeys::{self, HotkeyAction, Hotkeys, PressedModifiers};
-use crate::library::{LibraryService, format_duration};
+use crate::library::{CardFilter, CardSort, LibraryService, format_duration, format_size};
 use crate::player::PlayerController;
 use crate::settings;
 use crate::shell;
 use openclips_capture::TrimJob;
 use openclips_core::config::GameProfile;
 use openclips_core::games::auto_capture;
+use openclips_core::library::ClipKind;
 use openclips_core::trim::{TrimMode, TrimRange, trimmed_path};
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
@@ -101,7 +102,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         log_dir: shared.paths.log_dir.display().to_string().into(),
     });
     window.set_startup_warning(ctx.startup_warning.into());
-    update_hotkey_hint(&window, &shared.config.borrow());
+    update_hotkey_labels(&window, &shared.config.borrow());
 
     wire_folders(&window, &shared);
     wire_window_lifecycle(&window, &tray);
@@ -132,16 +133,16 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
     })
 }
 
-fn update_hotkey_hint(window: &MainWindow, config: &Config) {
-    window.set_hotkey_hint(
-        format!(
-            "Press {} to save the last {} seconds, {} to start or stop the buffer, {} to start or stop a recording.",
-            config.hotkeys.save_replay,
-            config.replay.length_seconds,
-            config.hotkeys.toggle_replay_buffer,
-            config.hotkeys.toggle_recording
-        )
-        .into(),
+fn update_hotkey_labels(window: &MainWindow, config: &Config) {
+    let hotkeys = &config.hotkeys;
+    if let Some(primary) = hotkeys.primary_save() {
+        window.set_save_keys(settings::key_parts(primary.binding));
+        window.set_save_label(settings::save_length_label(primary.seconds).into());
+    }
+    window.set_buffer_keys(settings::key_parts(hotkeys.toggle_replay_buffer));
+    window.set_recording_keys(settings::key_parts(hotkeys.toggle_recording));
+    window.set_quality_label(
+        settings::quality_label(config.capture.fps, config.capture.bitrate_kbps).into(),
     );
 }
 
@@ -181,9 +182,9 @@ fn wire_actions(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
     tray.on_toggle_buffer(move || toggle_buffer(&s, &w));
 
     let (s, w) = (shared.clone(), window.as_weak());
-    window.on_save_clip(move || save_clip(&s, &w));
+    window.on_save_clip(move || save_clip(&s, &w, None));
     let (s, w) = (shared.clone(), window.as_weak());
-    tray.on_save_clip(move || save_clip(&s, &w));
+    tray.on_save_clip(move || save_clip(&s, &w, None));
 
     let (s, w) = (shared.clone(), window.as_weak());
     window.on_toggle_recording(move || toggle_recording(&s, &w));
@@ -201,7 +202,7 @@ fn wire_actions(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
 fn install_hotkeys(window: &MainWindow, shared: &SharedRef) {
     let (s, w) = (shared.clone(), window.as_weak());
     hotkeys::install_dispatch(move |action| match action {
-        HotkeyAction::SaveReplay => save_clip(&s, &w),
+        HotkeyAction::SaveReplay { index } => save_clip(&s, &w, Some(index)),
         HotkeyAction::ToggleReplayBuffer => toggle_buffer(&s, &w),
         HotkeyAction::ToggleRecording => toggle_recording(&s, &w),
     });
@@ -221,7 +222,7 @@ fn register_hotkeys(shared: &SharedRef) -> Option<String> {
                 hotkeys
                     .rejected
                     .iter()
-                    .map(|(action, reason)| format!("{action:?}: {reason}"))
+                    .map(|(action, reason)| format!("{}: {reason}", action.label()))
                     .collect::<Vec<_>>()
                     .join(". ")
             });
@@ -334,13 +335,38 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
             return;
         };
         let binding = hotkey.to_string().into();
-        match HotkeyAction::from_index(action) {
-            Some(HotkeyAction::SaveReplay) => state.set_hotkey_save_replay(binding),
-            Some(HotkeyAction::ToggleReplayBuffer) => state.set_hotkey_toggle_buffer(binding),
-            Some(HotkeyAction::ToggleRecording) => state.set_hotkey_toggle_recording(binding),
-            None => {}
+        match action {
+            0 => {
+                state.set_hotkey_toggle_buffer(binding);
+                state.set_hotkey_buffer_keys(settings::key_parts(hotkey));
+            }
+            1 => {
+                state.set_hotkey_toggle_recording(binding);
+                state.set_hotkey_recording_keys(settings::key_parts(hotkey));
+            }
+            a if a >= settings::SAVE_ACTION_BASE => {
+                settings::set_save_binding(
+                    &state,
+                    (a - settings::SAVE_ACTION_BASE) as usize,
+                    hotkey,
+                );
+            }
+            _ => {}
         }
         state.set_listening_action(-1);
+    });
+
+    let w = window.as_weak();
+    state.on_add_save_hotkey(move || {
+        if let Some(window) = w.upgrade() {
+            settings::add_save_hotkey(&window.global::<SettingsState>());
+        }
+    });
+    let w = window.as_weak();
+    state.on_remove_save_hotkey(move |index| {
+        if let Some(window) = w.upgrade() {
+            settings::remove_save_hotkey(&window.global::<SettingsState>(), index.max(0) as usize);
+        }
     });
 }
 
@@ -402,7 +428,7 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
         problems.push(problem);
     }
 
-    update_hotkey_hint(window, &next);
+    update_hotkey_labels(window, &next);
     if let Some(library) = shared.library.borrow_mut().as_mut() {
         library.set_dirs(&shared.paths, &next);
     }
@@ -535,10 +561,13 @@ fn toggle_recording(shared: &SharedRef, window: &Weak<MainWindow>) {
     });
 }
 
-fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>) {
+fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>, hotkey_index: Option<usize>) {
     let Some(strong) = window.upgrade() else {
         return;
     };
+    let length = hotkey_index
+        .and_then(|i| shared.config.borrow().hotkeys.save.get(i).copied())
+        .map(|s| Duration::from_secs(u64::from(s.seconds)));
     let slot = shared.engine.borrow();
     let Some(engine) = slot.as_ref() else {
         strong.set_capture_error("Capture is unavailable on this system.".into());
@@ -546,30 +575,33 @@ fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>) {
     };
     strong.set_save_status("Saving clip...".into());
     let weak = window.clone();
-    engine.save_clip(Box::new(move |result| {
-        let _ = weak.upgrade_in_event_loop(move |window| match result {
-            Ok(clip) => {
-                window.set_last_clip(clip.path.display().to_string().into());
-                window.invoke_library_changed();
-                if let Some(game) = &clip.game {
-                    window.invoke_clip_saved(
-                        clip.path.display().to_string().into(),
-                        game.clone().into(),
+    engine.save_clip(
+        length,
+        Box::new(move |result| {
+            let _ = weak.upgrade_in_event_loop(move |window| match result {
+                Ok(clip) => {
+                    window.set_last_clip(clip.path.display().to_string().into());
+                    window.invoke_library_changed();
+                    if let Some(game) = &clip.game {
+                        window.invoke_clip_saved(
+                            clip.path.display().to_string().into(),
+                            game.clone().into(),
+                        );
+                    }
+                    window.set_save_status(
+                        format!(
+                            "Saved {} ({:.1} s, {:.1} MB)",
+                            file_name_of(&clip.path),
+                            clip.duration.as_secs_f64(),
+                            clip.bytes as f64 / (1024.0 * 1024.0)
+                        )
+                        .into(),
                     );
                 }
-                window.set_save_status(
-                    format!(
-                        "Saved {} ({:.1} s, {:.1} MB)",
-                        file_name_of(&clip.path),
-                        clip.duration.as_secs_f64(),
-                        clip.bytes as f64 / (1024.0 * 1024.0)
-                    )
-                    .into(),
-                );
-            }
-            Err(err) => window.set_save_status(format!("Could not save clip: {err}").into()),
-        });
-    }));
+                Err(err) => window.set_save_status(format!("Could not save clip: {err}").into()),
+            });
+        }),
+    );
 }
 
 fn refresh_status(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
@@ -585,6 +617,7 @@ fn refresh_status(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
     let buffering = status.buffer == BufferState::Running;
     window.set_buffer_active(buffering);
     tray.set_buffer_active(buffering);
+    window.set_buffer_label(if buffering { "Buffer on" } else { "Buffer off" }.into());
     window.set_buffer_status(describe_buffer_state(&status).into());
     window.set_buffer_detail(describe_buffer(&status).into());
     window.set_encoder_name(format!("{} ({})", status.encoder.kind.label(), status.backend).into());
@@ -716,6 +749,19 @@ fn wire_library(window: &MainWindow, shared: &SharedRef) {
             open_clip(&window, &s, &id);
         }
     });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_edit_clip(move |id| {
+        if let Some(window) = w.upgrade() {
+            open_clip(&window, &s, &id);
+            window.global::<PlayerState>().set_editing(true);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    window.on_open_clip(move |id| {
+        if let Some(window) = w.upgrade() {
+            open_clip(&window, &s, &id);
+        }
+    });
 
     let (s, w) = (shared.clone(), window.as_weak());
     window.on_library_changed(move || {
@@ -761,32 +807,20 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
         );
     }
     let search = state.get_search();
+    let kind = match state.get_kind_index() {
+        1 => Some(ClipKind::Replay),
+        2 => Some(ClipKind::Recording),
+        _ => None,
+    };
     let cards: Vec<ClipCard> = library
-        .cards(filter.as_deref(), &search)
-        .into_iter()
-        .map(|c| {
-            let thumbnail = c
-                .thumbnail
-                .as_ref()
-                .and_then(|p| Image::load_from_path(p).ok());
-            let icon = shared
-                .games
-                .borrow()
-                .as_ref()
-                .and_then(|g| g.icon_for_name(&c.game, &shared.config.borrow().games))
-                .and_then(|p| Image::load_from_path(&p).ok());
-            ClipCard {
-                id: c.id.into(),
-                title: c.title.into(),
-                game: c.game.into(),
-                date: c.date.into(),
-                duration: c.duration.into(),
-                has_thumbnail: thumbnail.is_some(),
-                thumbnail: thumbnail.unwrap_or_default(),
-                has_icon: icon.is_some(),
-                icon: icon.unwrap_or_default(),
-            }
+        .cards(&CardFilter {
+            game: filter.as_deref(),
+            kind,
+            search: &search,
+            sort: CardSort::from_index(state.get_sort_index()),
         })
+        .into_iter()
+        .map(|c| to_card(shared, c))
         .collect();
     let total = cards.len();
     state.set_clips(ModelRc::new(VecModel::from(cards)));
@@ -798,6 +832,68 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
         }
         .into(),
     );
+
+    let recent: Vec<ClipCard> = library
+        .cards(&CardFilter::default())
+        .into_iter()
+        .take(4)
+        .map(|c| to_card(shared, c))
+        .collect();
+    window.set_recent_clips(ModelRc::new(VecModel::from(recent)));
+    update_storage(window, library.total_bytes(), &shared.clips_dir());
+}
+
+fn to_card(shared: &SharedRef, c: crate::library::CardData) -> ClipCard {
+    let thumbnail = c
+        .thumbnail
+        .as_ref()
+        .and_then(|p| Image::load_from_path(p).ok());
+    let icon = shared
+        .games
+        .borrow()
+        .as_ref()
+        .and_then(|g| g.icon_for_name(&c.game, &shared.config.borrow().games))
+        .and_then(|p| Image::load_from_path(&p).ok());
+    ClipCard {
+        id: c.id.into(),
+        title: c.title.into(),
+        game: c.game.into(),
+        date: c.date.into(),
+        duration: c.duration.into(),
+        size: c.size.into(),
+        kind: c.kind.into(),
+        has_thumbnail: thumbnail.is_some(),
+        thumbnail: thumbnail.unwrap_or_default(),
+        has_icon: icon.is_some(),
+        icon: icon.unwrap_or_default(),
+    }
+}
+
+fn update_storage(window: &MainWindow, used: u64, clips_dir: &Path) {
+    let settings = window.global::<SettingsState>();
+    match shell::disk_space(clips_dir) {
+        Some((free, total)) if total > 0 => {
+            window.set_storage_line(
+                format!("{} used\n{} free", format_size(used), format_size(free)).into(),
+            );
+            settings.set_storage_line(
+                format!(
+                    "{} of clips in this folder. {} free of {} on the drive.",
+                    format_size(used),
+                    format_size(free),
+                    format_size(total)
+                )
+                .into(),
+            );
+            settings.set_storage_fraction(((total - free) as f64 / total as f64) as f32);
+        }
+        _ => {
+            window.set_storage_line(format!("{} used", format_size(used)).into());
+            settings
+                .set_storage_line(format!("{} of clips in this folder.", format_size(used)).into());
+            settings.set_storage_fraction(0.0);
+        }
+    }
 }
 
 fn open_clip(window: &MainWindow, shared: &SharedRef, id: &str) {
@@ -861,10 +957,41 @@ fn wire_player(window: &MainWindow, shared: &SharedRef) {
             player.seek(seconds);
         }
     });
-    let s = shared.clone();
+    let (s, w) = (shared.clone(), window.as_weak());
     state.on_volume_changed(move |percent| {
+        if let Some(window) = w.upgrade() {
+            window.global::<PlayerState>().set_muted(false);
+        }
         if let Some(player) = s.player.borrow_mut().as_mut() {
             player.set_volume(percent);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_toggle_mute(move || {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<PlayerState>();
+        let muted = !state.get_muted();
+        state.set_muted(muted);
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            player.set_volume(if muted { 0.0 } else { state.get_volume() });
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_skip(move |delta| {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<PlayerState>();
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            let position = player
+                .position()
+                .map(|p| p.as_secs_f32())
+                .unwrap_or(state.get_position());
+            let target = (position + delta).clamp(0.0, state.get_duration().max(0.0));
+            player.seek(target);
+            state.set_position(target);
         }
     });
     let (s, w) = (shared.clone(), window.as_weak());
@@ -1212,13 +1339,21 @@ fn poll_games(shared: &SharedRef, window: &MainWindow) {
         };
         (active, auto, text)
     };
-    window.set_detected_game(
-        active
+    let name = active
+        .as_ref()
+        .map(|g| g.name.clone())
+        .unwrap_or_else(|| "No game detected".to_owned());
+    if window.get_detected_game() != name {
+        let icon = shared
+            .games
+            .borrow()
             .as_ref()
-            .map(|g| g.name.clone())
-            .unwrap_or_else(|| "No known game running".to_owned())
-            .into(),
-    );
+            .and_then(|g| g.icon_for_name(&name, &shared.config.borrow().games))
+            .and_then(|p| Image::load_from_path(&p).ok());
+        window.set_has_game_icon(icon.is_some());
+        window.set_game_icon(icon.unwrap_or_default());
+        window.set_detected_game(name.into());
+    }
     let state = window.global::<SettingsState>();
     if state.get_running_games() != running_text {
         state.set_running_games(running_text.into());
