@@ -22,6 +22,9 @@ tracing.workspace = true
 global-hotkey.workspace = true
 rfd.workspace = true
 trash.workspace = true
+ureq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 chrono.workspace = true
 
 [build-dependencies]

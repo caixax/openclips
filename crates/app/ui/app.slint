@@ -34,6 +34,7 @@ export component MainWindow inherits Window {
     in property <string> recording-status: "Not recording";
     in property <string> recording-message;
     in property <string> last-recording;
+    in property <string> detected-game;
 
     callback open-config-dir();
     callback open-clips-dir();
@@ -42,6 +43,7 @@ export component MainWindow inherits Window {
     callback toggle-recording();
     callback recording-finished();
     callback library-changed();
+    callback clip-saved(string, string);
     callback navigated(NavPage);
 
     in-out property <NavPage> page: NavPage.home;
@@ -69,6 +71,7 @@ export component MainWindow inherits Window {
                 recording-status: root.recording-status;
                 recording-message: root.recording-message;
                 last-recording: root.last-recording;
+                detected-game: root.detected-game;
                 open-config-dir => { root.open-config-dir(); }
                 open-clips-dir => { root.open-clips-dir(); }
                 toggle-buffer => { root.toggle-buffer(); }

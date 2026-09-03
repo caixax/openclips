@@ -72,11 +72,19 @@ component Card inherits Rectangle {
                 font-weight: 600;
                 overflow: elide;
             }
-            Text {
-                text: root.card.game + "  \u{00b7}  " + root.card.date;
-                font-size: 11px;
-                color: Palette.foreground.with-alpha(0.6);
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 6px;
+                if root.card.has-icon: Image {
+                    width: 14px;
+                    height: 14px;
+                    source: root.card.icon;
+                }
+                Text {
+                    text: root.card.game + "  \u{00b7}  " + root.card.date;
+                    font-size: 11px;
+                    color: Palette.foreground.with-alpha(0.6);
+                    overflow: elide;
+                }
             }
         }
     }

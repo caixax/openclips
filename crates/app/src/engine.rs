@@ -8,14 +8,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use openclips_capture::{
-    CaptureBackend, CaptureError, ClipWriter, FrameSink, MediaTools, Player, PlayerSink, Recorder,
-    RecordingSession,
+    CaptureBackend, CaptureError, ClipWriter, FrameSink, IconExtractor, MediaTools, Player,
+    PlayerSink, ProcessWatcher, Recorder, RecordingSession,
 };
 use openclips_core::capture::{
     AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo, audio_source_key, choose_encoder,
 };
 use openclips_core::clip::{ClipFile, LocalDateTime, clip_file_name, unique_path};
 use openclips_core::config::{AppPaths, Config, DisplaySelection};
+use openclips_core::games::{AutoCapture, DetectedGame};
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo, Timestamp};
 use openclips_core::replay::{ReplayBuffer, ReplayLimits, ReplayStats};
 use tracing::{error, info, warn};
@@ -172,7 +173,13 @@ pub struct Engine {
     active: EncoderInfo,
     /// Whether the user wants the replay buffer running.
     buffer_wanted: bool,
+    /// Whether the game watcher wants the buffer running.
+    auto_buffer: bool,
     recording_wanted: bool,
+    /// The recording was started by the game watcher and ends with the game.
+    auto_recording: bool,
+    /// The game that is currently driving naming and overrides.
+    active_game: Option<DetectedGame>,
     finishing: bool,
     /// A config change that needs a pipeline rebuild, deferred while a
     /// recording is active.
@@ -216,7 +223,10 @@ impl Engine {
             active: encoder.clone(),
             preferred: encoder,
             buffer_wanted: false,
+            auto_buffer: false,
             recording_wanted: false,
+            auto_recording: false,
+            active_game: None,
             finishing: false,
             restart_pending: false,
             unavailable_audio: HashSet::new(),
@@ -259,6 +269,105 @@ impl Engine {
         Ok(self.backend.create_player(sink)?)
     }
 
+    pub fn process_watcher(&self) -> Arc<dyn ProcessWatcher> {
+        self.backend.process_watcher()
+    }
+
+    pub fn icon_extractor(&self) -> Arc<dyn IconExtractor> {
+        self.backend.icon_extractor()
+    }
+
+    fn game_name(&self) -> String {
+        self.active_game
+            .as_ref()
+            .map(|g| g.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// Replay length with the active game's override applied.
+    fn effective_replay_length(&self) -> Duration {
+        self.active_game
+            .as_ref()
+            .and_then(|g| g.profile.as_ref())
+            .and_then(|p| p.replay_length_seconds)
+            .map(|s| Duration::from_secs(u64::from(s)))
+            .unwrap_or_else(|| self.config.replay_length())
+    }
+
+    fn effective_display(&self) -> DisplaySelection {
+        self.active_game
+            .as_ref()
+            .and_then(|g| g.profile.as_ref())
+            .and_then(|p| p.display.clone())
+            .unwrap_or_else(|| self.config.capture.display.clone())
+    }
+
+    fn output_dir(&self, base: PathBuf) -> PathBuf {
+        match self
+            .active_game
+            .as_ref()
+            .and_then(|g| g.profile.as_ref())
+            .and_then(|p| p.subfolder.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(sub) => base.join(sub),
+            None => base,
+        }
+    }
+
+    /// Applies the watcher's view: the active game (for naming and
+    /// overrides) and what capture should be doing in per game scope.
+    pub fn set_game_state(
+        &mut self,
+        active: Option<DetectedGame>,
+        auto: AutoCapture,
+    ) -> Result<(), AppError> {
+        let previous_display = self.effective_display();
+        let game_changed =
+            active.as_ref().map(|g| &g.exe) != self.active_game.as_ref().map(|g| &g.exe);
+        self.active_game = active;
+        if game_changed {
+            if let Some(game) = &self.active_game {
+                info!("active game: {} ({})", game.name, game.exe);
+            }
+            lock(&self.buffer).set_limits(ReplayLimits {
+                max_duration: self.effective_replay_length(),
+                max_bytes: self.config.replay_memory_cap_bytes(),
+            });
+            if self.effective_display() != previous_display
+                && self.backend.is_running()
+                && !self.recording_wanted
+            {
+                self.restart_capture()?;
+            }
+        }
+
+        let want_buffer = auto == AutoCapture::Buffer;
+        let want_recording = auto == AutoCapture::Recording;
+        if want_buffer != self.auto_buffer {
+            self.auto_buffer = want_buffer;
+            *lock(&self.sink.buffer_enabled) = self.buffer_wanted || self.auto_buffer;
+            if self.auto_buffer {
+                self.ensure_capture()?;
+            } else if !self.buffer_wanted {
+                lock(&self.buffer).clear();
+                self.release_capture_if_unused();
+            }
+        }
+        if want_recording && !self.recording_wanted {
+            self.auto_recording = true;
+            self.start_recording()?;
+        } else if !want_recording && self.auto_recording && self.recording_wanted {
+            self.auto_recording = false;
+            self.stop_recording(Box::new(|result| match result {
+                Ok(clip) => info!("game recording saved: {}", clip.path.display()),
+                Err(err) => warn!("game recording failed: {err}"),
+            }));
+        }
+        Ok(())
+    }
+
     pub fn start_buffer(&mut self) -> Result<(), AppError> {
         self.buffer_wanted = true;
         *lock(&self.sink.buffer_enabled) = true;
@@ -267,6 +376,7 @@ impl Engine {
 
     pub fn stop_buffer(&mut self) {
         self.buffer_wanted = false;
+        self.auto_buffer = false;
         *lock(&self.sink.buffer_enabled) = false;
         lock(&self.buffer).clear();
         self.release_capture_if_unused();
@@ -286,7 +396,7 @@ impl Engine {
     }
 
     pub fn is_buffering(&self) -> bool {
-        self.buffer_wanted && self.is_capturing()
+        (self.buffer_wanted || self.auto_buffer) && self.is_capturing()
     }
 
     /// Starts a session recording, starting capture first when needed. The
@@ -296,8 +406,12 @@ impl Engine {
             return Ok(());
         }
         self.ensure_capture()?;
-        let dir = self.config.recordings_dir(&self.paths);
-        let name = clip_file_name(&self.config.output.file_name_pattern, "", &now_local());
+        let dir = self.output_dir(self.config.recordings_dir(&self.paths));
+        let name = clip_file_name(
+            &self.config.output.file_name_pattern,
+            &self.game_name(),
+            &now_local(),
+        );
         let path = unique_path(&dir, &name);
         *lock(&self.sink.recording) = SinkRecording::Pending(path);
         self.recording_wanted = true;
@@ -311,6 +425,7 @@ impl Engine {
             return;
         }
         self.recording_wanted = false;
+        self.auto_recording = false;
         let state = std::mem::replace(&mut *lock(&self.sink.recording), SinkRecording::Idle);
         match state {
             SinkRecording::Active(session, _, _) => {
@@ -355,7 +470,7 @@ impl Engine {
     }
 
     fn release_capture_if_unused(&mut self) {
-        if !self.buffer_wanted && !self.recording_wanted {
+        if !self.buffer_wanted && !self.auto_buffer && !self.recording_wanted {
             self.backend.stop();
         }
     }
@@ -363,7 +478,7 @@ impl Engine {
     fn restart_capture(&mut self) -> Result<(), AppError> {
         self.backend.stop();
         lock(&self.buffer).clear();
-        if !self.buffer_wanted && !self.recording_wanted {
+        if !self.buffer_wanted && !self.auto_buffer && !self.recording_wanted {
             return Ok(());
         }
         self.start_capture()
@@ -400,7 +515,7 @@ impl Engine {
             buffer.clear_audio_tracks();
         }
 
-        let mut display = self.config.capture.display.clone();
+        let mut display = self.effective_display();
         if let DisplaySelection::Monitor(id) = &display
             && !self.monitors.iter().any(|m| &m.id == id)
         {
@@ -481,7 +596,10 @@ impl Engine {
         let hotkeys = previous.hotkeys_changed(&self.config);
 
         if previous.replay_limits_changed(&self.config) {
-            lock(&self.buffer).set_limits(Self::limits(&self.config));
+            lock(&self.buffer).set_limits(ReplayLimits {
+                max_duration: self.effective_replay_length(),
+                max_bytes: self.config.replay_memory_cap_bytes(),
+            });
         }
         if previous.capture.encoder != self.config.capture.encoder
             && let Some(encoder) = choose_encoder(
@@ -587,7 +705,7 @@ impl Engine {
             audio_tracks: buffer.audio_tracks().len(),
             encoder: self.active.clone(),
             backend: self.backend.name(),
-            replay_length: self.config.replay_length(),
+            replay_length: self.effective_replay_length(),
             notice: self.notice.clone(),
         }
     }
@@ -595,7 +713,7 @@ impl Engine {
     /// Snapshots the buffer immediately and writes the clip on a worker
     /// thread so the hotkey never blocks the UI or the capture.
     pub fn save_clip(&self, done: SaveCallback) {
-        let wanted = self.config.replay_length();
+        let wanted = self.effective_replay_length();
         let snapshot = lock(&self.buffer).snapshot_last(wanted);
         let Some(snapshot) = snapshot else {
             done(Err(CaptureError::EmptyBuffer.to_string()));
@@ -609,12 +727,18 @@ impl Engine {
             );
         }
 
-        let file_name = clip_file_name(&self.config.output.file_name_pattern, "", &now_local());
-        let path = unique_path(&self.clips_dir(), &file_name);
+        let game = self.game_name();
+        let file_name = clip_file_name(&self.config.output.file_name_pattern, &game, &now_local());
+        let path = unique_path(&self.output_dir(self.clips_dir()), &file_name);
         let writer = self.writer.clone();
+        let game = (!game.is_empty()).then_some(game);
         spawn_named("clip-writer", move || {
             let result = writer
                 .write_clip(&snapshot, &path)
+                .map(|mut clip| {
+                    clip.game = game;
+                    clip
+                })
                 .map_err(|e| e.to_string());
             if let Err(err) = &result {
                 error!("{err}");

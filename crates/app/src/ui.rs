@@ -11,12 +11,15 @@ use tracing::{error, info, warn};
 
 use crate::engine::{BufferState, Engine, EngineStatus, RecordingState, file_name_of};
 use crate::error::AppError;
+use crate::games::GameService;
 use crate::hotkeys::{self, HotkeyAction, Hotkeys, PressedModifiers};
 use crate::library::{LibraryService, format_duration};
 use crate::player::PlayerController;
 use crate::settings;
 use crate::shell;
 use openclips_capture::TrimJob;
+use openclips_core::config::GameProfile;
+use openclips_core::games::auto_capture;
 use openclips_core::trim::{TrimMode, TrimRange, trimmed_path};
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
@@ -57,6 +60,7 @@ struct Shared {
     hotkeys: RefCell<Option<Hotkeys>>,
     library: RefCell<Option<LibraryService>>,
     player: RefCell<Option<PlayerController>>,
+    games: RefCell<Option<GameService>>,
     ticks: RefCell<u32>,
 }
 
@@ -83,9 +87,11 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         hotkeys: RefCell::new(None),
         library: RefCell::new(None),
         player: RefCell::new(None),
+        games: RefCell::new(None),
         ticks: RefCell::new(0),
     });
     init_library_and_player(&window, &shared);
+    init_games(&shared);
 
     window.set_info(AppInfo {
         version: APP_VERSION.into(),
@@ -103,12 +109,19 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
     wire_settings(&window, &shared);
     wire_library(&window, &shared);
     wire_player(&window, &shared);
+    wire_games(&window, &shared);
     install_hotkeys(&window, &shared);
     let status_timer = start_status_timer(&window, &tray, &shared);
 
-    if shared.config.borrow().replay.start_on_launch {
+    let start_now = {
+        let config = shared.config.borrow();
+        config.replay.start_on_launch
+            && config.games.scope == openclips_core::config::CaptureScope::Global
+    };
+    if start_now {
         run_engine(&shared, &window, |e| e.start_buffer());
     }
+    poll_games(&shared, &window);
     refresh_status(&window, &tray, &shared);
 
     Ok(App {
@@ -235,6 +248,7 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         &audio_devices,
         &shared.default_clips_dir(),
     );
+    refresh_game_rows(window, shared);
 
     let (s, w) = (shared.clone(), window.as_weak());
     state.on_save(move || {
@@ -256,6 +270,7 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
                 &audio_devices,
                 &s.default_clips_dir(),
             );
+            refresh_game_rows(&window, &s);
             state.set_message("".into());
         }
     });
@@ -398,6 +413,7 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
         &audio_devices,
         &shared.default_clips_dir(),
     );
+    refresh_game_rows(window, shared);
 
     if problems.is_empty() {
         state.set_message_is_error(false);
@@ -423,6 +439,7 @@ fn start_status_timer(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) 
         };
         if tick.is_multiple_of(MONITOR_REFRESH_TICKS) {
             poll_monitors(&s, &window);
+            poll_games(&s, &window);
         }
         refresh_status(&window, &tray, &s);
         let changed = s.library.borrow_mut().as_mut().is_some_and(|l| l.poll());
@@ -488,6 +505,12 @@ fn toggle_recording(shared: &SharedRef, window: &Weak<MainWindow>) {
                     Ok(clip) => {
                         window.set_last_recording(clip.path.display().to_string().into());
                         window.invoke_library_changed();
+                        if let Some(game) = &clip.game {
+                            window.invoke_clip_saved(
+                                clip.path.display().to_string().into(),
+                                game.clone().into(),
+                            );
+                        }
                         window.set_recording_message(
                             format!(
                                 "Saved {} ({}, {:.1} MB)",
@@ -523,6 +546,12 @@ fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>) {
             Ok(clip) => {
                 window.set_last_clip(clip.path.display().to_string().into());
                 window.invoke_library_changed();
+                if let Some(game) = &clip.game {
+                    window.invoke_clip_saved(
+                        clip.path.display().to_string().into(),
+                        game.clone().into(),
+                    );
+                }
                 window.set_save_status(
                     format!(
                         "Saved {} ({:.1} s, {:.1} MB)",
@@ -726,6 +755,12 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
                 .thumbnail
                 .as_ref()
                 .and_then(|p| Image::load_from_path(p).ok());
+            let icon = shared
+                .games
+                .borrow()
+                .as_ref()
+                .and_then(|g| g.icon_for_name(&c.game, &shared.config.borrow().games))
+                .and_then(|p| Image::load_from_path(&p).ok());
             ClipCard {
                 id: c.id.into(),
                 title: c.title.into(),
@@ -734,6 +769,8 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
                 duration: c.duration.into(),
                 has_thumbnail: thumbnail.is_some(),
                 thumbnail: thumbnail.unwrap_or_default(),
+                has_icon: icon.is_some(),
+                icon: icon.unwrap_or_default(),
             }
         })
         .collect();
@@ -1127,4 +1164,256 @@ fn save_trim(window: &MainWindow, shared: &SharedRef) {
         state.set_trim_busy(false);
         state.set_trim_message(format!("Could not start the trim: {err}").into());
     }
+}
+
+fn init_games(shared: &SharedRef) {
+    let engine = shared.engine.borrow();
+    let Some(engine) = engine.as_ref() else {
+        return;
+    };
+    let service = GameService::new(
+        &shared.paths,
+        engine.process_watcher(),
+        engine.icon_extractor(),
+    );
+    *shared.games.borrow_mut() = Some(service);
+}
+
+/// Polls the process list and pushes the result into the engine and the UI.
+fn poll_games(shared: &SharedRef, window: &MainWindow) {
+    let (active, auto, running_text) = {
+        let mut games = shared.games.borrow_mut();
+        let Some(games) = games.as_mut() else {
+            return;
+        };
+        let config = shared.config.borrow();
+        games.refresh(&config.games);
+        let active = games.active().cloned();
+        let auto = auto_capture(config.games.scope, active.as_ref());
+        let names: Vec<String> = games.detected().iter().map(|g| g.name.clone()).collect();
+        let text = if names.is_empty() {
+            "Running now: no known game".to_owned()
+        } else {
+            format!("Running now: {}", names.join(", "))
+        };
+        (active, auto, text)
+    };
+    window.set_detected_game(
+        active
+            .as_ref()
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "No known game running".to_owned())
+            .into(),
+    );
+    let state = window.global::<SettingsState>();
+    if state.get_running_games() != running_text {
+        state.set_running_games(running_text.into());
+        refresh_running_known(window, shared);
+    }
+    run_engine(shared, window, |e| e.set_game_state(active, auto));
+}
+
+fn refresh_running_known(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<SettingsState>();
+    let games = shared.games.borrow();
+    let Some(games) = games.as_ref() else {
+        return;
+    };
+    let configured: Vec<String> = state
+        .get_game_profiles()
+        .iter()
+        .map(|r| r.exe.to_lowercase())
+        .collect();
+    let names: Vec<SharedString> = games
+        .detected()
+        .iter()
+        .filter(|g| !configured.contains(&g.exe))
+        .map(|g| SharedString::from(format!("{} ({})", g.name, g.exe)))
+        .collect();
+    state.set_running_known(ModelRc::new(VecModel::from(names)));
+    state.set_running_known_index(0);
+}
+
+fn refresh_game_rows(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<SettingsState>();
+    let monitors = current_monitors(shared);
+    let profiles = shared.config.borrow().games.profiles.clone();
+    let games = shared.games.borrow();
+    settings::set_game_profiles(&state, &profiles, &monitors, |exe| {
+        games.as_ref().and_then(|g| g.cached_icon(exe))
+    });
+    drop(games);
+    refresh_running_known(window, shared);
+}
+
+/// Replaces the rows with an edited list, keeping icons.
+fn set_game_rows(window: &MainWindow, shared: &SharedRef, profiles: &[GameProfile]) {
+    let state = window.global::<SettingsState>();
+    let monitors = current_monitors(shared);
+    let games = shared.games.borrow();
+    settings::set_game_profiles(&state, profiles, &monitors, |exe| {
+        games.as_ref().and_then(|g| g.cached_icon(exe))
+    });
+    drop(games);
+    refresh_running_known(window, shared);
+}
+
+fn wire_games(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<SettingsState>();
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_add_running_game(move || {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<SettingsState>();
+        let index = state.get_running_known_index().max(0) as usize;
+        let monitors = current_monitors(&s);
+        let mut profiles = settings::collect_game_profiles(&state, &monitors);
+        let configured: Vec<String> = profiles.iter().map(|p| p.exe.clone()).collect();
+        let candidate = s.games.borrow().as_ref().and_then(|g| {
+            g.detected()
+                .iter()
+                .filter(|d| !configured.contains(&d.exe))
+                .nth(index)
+                .cloned()
+        });
+        let Some(game) = candidate else {
+            return;
+        };
+        profiles.push(GameProfile {
+            exe: game.exe.clone(),
+            name: game.name.clone(),
+            ..GameProfile::default()
+        });
+        set_game_rows(&window, &s, &profiles);
+        state.set_games_message(format!("Added {}. Save to apply.", game.name).into());
+    });
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_add_game(move || {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<SettingsState>();
+        let exe = state.get_new_game_exe().trim().to_lowercase();
+        if exe.is_empty() {
+            state.set_games_message("Enter the executable name, for example game.exe.".into());
+            return;
+        }
+        let exe = if exe.ends_with(".exe") {
+            exe
+        } else {
+            format!("{exe}.exe")
+        };
+        let monitors = current_monitors(&s);
+        let mut profiles = settings::collect_game_profiles(&state, &monitors);
+        if profiles.iter().any(|p| p.exe == exe) {
+            state.set_games_message(format!("{exe} is already in the list.").into());
+            return;
+        }
+        let name = state.get_new_game_name().trim().to_owned();
+        let name = if name.is_empty() {
+            s.games
+                .borrow()
+                .as_ref()
+                .and_then(|g| g.database().lookup(&exe).map(str::to_owned))
+                .unwrap_or_default()
+        } else {
+            name
+        };
+        profiles.push(GameProfile {
+            exe: exe.clone(),
+            name,
+            ..GameProfile::default()
+        });
+        set_game_rows(&window, &s, &profiles);
+        state.set_new_game_exe("".into());
+        state.set_new_game_name("".into());
+        state.set_games_message(format!("Added {exe}. Save to apply.").into());
+    });
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_remove_game(move |exe| {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<SettingsState>();
+        let monitors = current_monitors(&s);
+        let mut profiles = settings::collect_game_profiles(&state, &monitors);
+        profiles.retain(|p| p.exe != exe.as_str());
+        set_game_rows(&window, &s, &profiles);
+        state.set_games_message("Removed. Save to apply.".into());
+    });
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_suggest_steam_names(move || {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let state = window.global::<SettingsState>();
+        let monitors = current_monitors(&s);
+        let profiles = settings::collect_game_profiles(&state, &monitors);
+        let missing: Vec<String> = profiles
+            .iter()
+            .filter(|p| p.name.trim().is_empty())
+            .map(|p| p.exe.clone())
+            .collect();
+        if missing.is_empty() {
+            state.set_games_message("Every game in the list already has a name.".into());
+            return;
+        }
+        state.set_steam_busy(true);
+        state.set_games_message("Contacting Steam...".into());
+        let cache = s.paths.cache_dir.join("steam_apps.json");
+        let weak = window.as_weak();
+        std::thread::spawn(move || {
+            let result = crate::steam::app_names(&cache).map(|names| {
+                missing
+                    .iter()
+                    .filter_map(|exe| {
+                        crate::steam::suggest_name(exe, &names)
+                            .map(|name| (exe.clone(), name.clone()))
+                    })
+                    .collect::<Vec<(String, String)>>()
+            });
+            let _ = weak.upgrade_in_event_loop(move |window| {
+                let state = window.global::<SettingsState>();
+                state.set_steam_busy(false);
+                match result {
+                    Ok(found) if found.is_empty() => {
+                        state.set_games_message("Steam had no matching names.".into());
+                    }
+                    Ok(found) => {
+                        let rows = state.get_game_profiles();
+                        for i in 0..rows.row_count() {
+                            if let Some(mut row) = rows.row_data(i)
+                                && let Some((_, name)) =
+                                    found.iter().find(|(exe, _)| *exe == row.exe.to_lowercase())
+                            {
+                                row.name = name.clone().into();
+                                rows.set_row_data(i, row);
+                            }
+                        }
+                        state.set_games_message(
+                            format!("Filled {} name(s) from Steam. Save to apply.", found.len())
+                                .into(),
+                        );
+                    }
+                    Err(err) => state.set_games_message(err.into()),
+                }
+            });
+        });
+    });
+
+    let (s, w) = (shared.clone(), window.as_weak());
+    window.on_clip_saved(move |path, game| {
+        if let Some(window) = w.upgrade() {
+            if let Some(library) = s.library.borrow_mut().as_mut() {
+                library.refresh();
+                library.tag_game(std::path::Path::new(path.as_str()), &game);
+            }
+            refresh_library_ui(&window, &s);
+        }
+    });
 }

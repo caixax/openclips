@@ -224,6 +224,20 @@ impl LibraryService {
             .collect()
     }
 
+    /// Records the game of a freshly written file, once it is indexed.
+    pub fn tag_game(&mut self, path: &std::path::Path, game: &str) {
+        let id = self
+            .library
+            .clips
+            .iter()
+            .find(|c| c.path == path)
+            .map(|c| c.id.clone());
+        if let Some(id) = id {
+            self.library.set_game(&id, Some(game.to_owned()));
+            self.save();
+        }
+    }
+
     pub fn rename(&mut self, id: &str, title: &str) -> Result<(), String> {
         let (old, new) = self
             .library

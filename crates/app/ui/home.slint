@@ -88,6 +88,7 @@ export component HomePage inherits ScrollView {
     in property <string> recording-status;
     in property <string> recording-message;
     in property <string> last-recording;
+    in property <string> detected-game;
 
     callback open-config-dir();
     callback open-clips-dir();
@@ -120,6 +121,7 @@ export component HomePage inherits ScrollView {
             StatusLine { active: root.buffer-active; text: root.buffer-status; }
             InfoRow { label: "Buffer"; value: root.buffer-detail; }
             InfoRow { label: "Encoder"; value: root.encoder-name; }
+            InfoRow { label: "Game"; value: root.detected-game; }
             Text {
                 text: root.hotkey-hint;
                 color: Palette.foreground.with-alpha(0.6);

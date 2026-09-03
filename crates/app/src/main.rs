@@ -2,11 +2,13 @@
 
 mod engine;
 mod error;
+mod games;
 mod hotkeys;
 mod library;
 mod player;
 mod settings;
 mod shell;
+mod steam;
 mod ui;
 
 use std::process::ExitCode;

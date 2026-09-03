@@ -1,5 +1,5 @@
 import { Palette, Button, ComboBox, SpinBox, LineEdit, CheckBox, ScrollView, Slider } from "std-widgets.slint";
-import { AudioSourceRow } from "types.slint";
+import { AudioSourceRow, GameProfileRow } from "types.slint";
 
 export global SettingsState {
     in-out property <[string]> display-names: ["Primary display"];
@@ -25,6 +25,17 @@ export global SettingsState {
     in-out property <int> audio-bitrate-kbps: 160;
     in-out property <[AudioSourceRow]> audio-sources: [];
 
+    in-out property <int> games-scope-index: 0;
+    in-out property <[GameProfileRow]> game-profiles: [];
+    in-out property <[string]> profile-display-names: ["Use the global display"];
+    in-out property <string> running-games;
+    in-out property <[string]> running-known: [];
+    in-out property <int> running-known-index: 0;
+    in-out property <string> new-game-exe;
+    in-out property <string> new-game-name;
+    in-out property <string> games-message;
+    in-out property <bool> steam-busy: false;
+
     in-out property <string> hotkey-save-replay;
     in-out property <string> hotkey-toggle-buffer;
     in-out property <string> hotkey-toggle-recording;
@@ -39,6 +50,10 @@ export global SettingsState {
     callback refresh-displays();
     callback refresh-audio-devices();
     callback key-captured(int, string, bool, bool, bool, bool);
+    callback add-running-game();
+    callback add-game();
+    callback remove-game(string);
+    callback suggest-steam-names();
 }
 
 component Field inherits HorizontalLayout {
@@ -261,6 +276,118 @@ export component SettingsPage inherits ScrollView {
                     text: "Refresh devices";
                     clicked => { SettingsState.refresh-audio-devices(); }
                 }
+            }
+        }
+
+        Section {
+            heading: "Games";
+            Field {
+                label: "Capture";
+                ComboBox {
+                    width: 360px;
+                    model: ["Always capture the selected display", "Only while a known game is running"];
+                    current-index <=> SettingsState.games-scope-index;
+                }
+            }
+            Hint { text: SettingsState.running-games; }
+            for profile in SettingsState.game-profiles: HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    if profile.has-icon: Image {
+                        width: 24px;
+                        height: 24px;
+                        x: 2px;
+                        y: 2px;
+                        source: profile.icon;
+                    }
+                }
+                VerticalLayout {
+                    width: 220px;
+                    Text {
+                        text: profile.name == "" ? profile.exe : profile.name;
+                        font-size: 13px;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: profile.exe;
+                        font-size: 11px;
+                        color: Palette.foreground.with-alpha(0.6);
+                        overflow: elide;
+                    }
+                }
+                ComboBox {
+                    width: 150px;
+                    model: ["Replay buffer", "Full recording", "Do nothing"];
+                    current-index <=> profile.action-index;
+                }
+                SpinBox {
+                    width: 110px;
+                    value <=> profile.replay-seconds;
+                    minimum: 0;
+                    maximum: 1200;
+                }
+                LineEdit {
+                    width: 130px;
+                    text <=> profile.subfolder;
+                    placeholder-text: "Subfolder";
+                }
+                ComboBox {
+                    width: 170px;
+                    model: SettingsState.profile-display-names;
+                    current-index <=> profile.display-index;
+                }
+                Button {
+                    text: "Remove";
+                    clicked => { SettingsState.remove-game(profile.exe); }
+                }
+            }
+            if SettingsState.game-profiles.length > 0: Hint { text: "Buffer length 0 keeps the global setting. Subfolder is created inside the clips folder."; }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                ComboBox {
+                    width: 300px;
+                    model: SettingsState.running-known;
+                    current-index <=> SettingsState.running-known-index;
+                    enabled: SettingsState.running-known.length > 0;
+                }
+                Button {
+                    text: "Add running game";
+                    enabled: SettingsState.running-known.length > 0;
+                    clicked => { SettingsState.add-running-game(); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                LineEdit {
+                    width: 200px;
+                    text <=> SettingsState.new-game-exe;
+                    placeholder-text: "game.exe";
+                }
+                LineEdit {
+                    width: 200px;
+                    text <=> SettingsState.new-game-name;
+                    placeholder-text: "Display name (optional)";
+                }
+                Button {
+                    text: "Add";
+                    clicked => { SettingsState.add-game(); }
+                }
+                Button {
+                    text: SettingsState.steam-busy ? "Asking Steam..." : "Suggest names from Steam";
+                    enabled: !SettingsState.steam-busy;
+                    clicked => { SettingsState.suggest-steam-names(); }
+                }
+            }
+            Hint { text: "Names come from the bundled database. The Steam lookup is optional and only runs when you press the button; it fills empty names for the executables above."; }
+            if SettingsState.games-message != "": Text {
+                text: SettingsState.games-message;
+                font-size: 12px;
+                wrap: word-wrap;
             }
         }
 
