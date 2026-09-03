@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AudioConfig, CaptureConfig, DisplaySelection, EncoderPreference};
+use crate::config::{AudioConfig, CaptureApi, CaptureConfig, DisplaySelection, EncoderPreference};
 
 /// A physical display as reported by the backend. `id` is stable across
 /// sessions on the same machine and is what the config stores.
@@ -197,6 +197,7 @@ pub struct CaptureSettings {
     /// precise at a small bitrate cost.
     pub keyframe_interval: u32,
     pub show_cursor: bool,
+    pub api: CaptureApi,
     /// Optional directory for backend scratch files, for example a RAM disk.
     pub temp_dir: Option<PathBuf>,
     pub audio_tracks: Vec<AudioTrackPlan>,
@@ -217,6 +218,7 @@ impl CaptureSettings {
             bitrate_kbps: config.bitrate_kbps,
             keyframe_interval: config.fps.max(1),
             show_cursor: config.show_cursor,
+            api: config.api,
             temp_dir,
             audio_tracks: plan_audio_tracks(audio),
             audio_bitrate_kbps: audio.bitrate_kbps,

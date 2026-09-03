@@ -80,6 +80,26 @@ pub enum EncoderPreference {
     Software,
 }
 
+/// Which Windows screen capture API drives the source. Desktop duplication
+/// is the fast default; Windows Graphics Capture is the fallback when a
+/// game's presentation mode leaves duplication with black frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureApi {
+    #[default]
+    DesktopDuplication,
+    GraphicsCapture,
+}
+
+impl CaptureApi {
+    pub const fn label(self) -> &'static str {
+        match self {
+            CaptureApi::DesktopDuplication => "Desktop Duplication (default)",
+            CaptureApi::GraphicsCapture => "Windows Graphics Capture",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
@@ -88,6 +108,7 @@ pub struct CaptureConfig {
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub show_cursor: bool,
+    pub api: CaptureApi,
 }
 
 impl Default for CaptureConfig {
@@ -98,6 +119,7 @@ impl Default for CaptureConfig {
             fps: 60,
             bitrate_kbps: 20_000,
             show_cursor: false,
+            api: CaptureApi::default(),
         }
     }
 }

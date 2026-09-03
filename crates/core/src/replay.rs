@@ -25,7 +25,16 @@ pub struct ReplayStats {
     pub audio_packets: usize,
     /// Footage available from the oldest keyframe to the newest frame.
     pub duration: Duration,
+    /// True when recent keyframes are so small that the picture is almost
+    /// certainly black or empty, which points at a capture problem.
+    pub looks_blank: bool,
 }
+
+/// Keyframes of a real picture at HD sizes are tens to hundreds of
+/// kilobytes; a flat black frame encodes to a few kilobytes at most.
+pub const BLANK_KEYFRAME_MAX_BYTES: usize = 12 * 1024;
+/// Number of consecutive keyframes that must look blank before flagging.
+pub const BLANK_KEYFRAMES_REQUIRED: usize = 3;
 
 /// One audio track's worth of packets covering a snapshot.
 #[derive(Debug, Clone)]
@@ -174,6 +183,7 @@ impl ReplayBuffer {
             keyframes: self.frames.iter().filter(|f| f.keyframe).count(),
             audio_packets: self.audio.iter().map(|t| t.packets.len()).sum(),
             duration: self.span(),
+            looks_blank: self.looks_blank(),
         }
     }
 
@@ -218,6 +228,28 @@ impl ReplayBuffer {
             audio,
             duration,
         })
+    }
+
+    /// The last few keyframes are all tiny, at a resolution where a real
+    /// picture never is.
+    fn looks_blank(&self) -> bool {
+        let big_enough = self
+            .stream
+            .as_ref()
+            .is_some_and(|s| s.width * s.height >= 640 * 360);
+        if !big_enough {
+            return false;
+        }
+        let recent: Vec<usize> = self
+            .frames
+            .iter()
+            .rev()
+            .filter(|f| f.keyframe)
+            .take(BLANK_KEYFRAMES_REQUIRED)
+            .map(|f| f.size())
+            .collect();
+        recent.len() == BLANK_KEYFRAMES_REQUIRED
+            && recent.iter().all(|size| *size <= BLANK_KEYFRAME_MAX_BYTES)
     }
 
     fn span(&self) -> Duration {
@@ -463,6 +495,33 @@ mod tests {
         });
         let stats = buffer.stats();
         assert!(stats.duration <= Duration::from_secs(6), "{stats:?}");
+    }
+
+    #[test]
+    fn tiny_keyframes_flag_a_blank_capture() {
+        let mut blank = buffer(30, usize::MAX);
+        for i in 0..FPS * 4 {
+            blank.push(frame(i, 2_000));
+        }
+        assert!(blank.stats().looks_blank, "four tiny keyframes look blank");
+
+        let mut real = buffer(30, usize::MAX);
+        for i in 0..FPS * 4 {
+            let size = if i.is_multiple_of(GOP) {
+                150_000
+            } else {
+                2_000
+            };
+            real.push(frame(i, size));
+        }
+        assert!(!real.stats().looks_blank, "real keyframes are large");
+
+        let mut short = buffer(30, usize::MAX);
+        fill(&mut short, FPS, 2_000);
+        assert!(
+            !short.stats().looks_blank,
+            "one keyframe is not enough evidence"
+        );
     }
 
     #[test]
