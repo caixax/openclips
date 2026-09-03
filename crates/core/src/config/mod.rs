@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::capture::{AudioDeviceKind, DEFAULT_AUDIO_DEVICE_ID};
 use crate::error::{CoreError, Result};
 
 pub use hotkey::{Hotkey, Key, Modifiers};
@@ -32,6 +33,7 @@ pub struct Config {
     pub replay: ReplayConfig,
     pub recording: RecordingConfig,
     pub output: OutputConfig,
+    pub audio: AudioConfig,
     pub hotkeys: HotkeyConfig,
 }
 
@@ -44,6 +46,7 @@ impl Default for Config {
             replay: ReplayConfig::default(),
             recording: RecordingConfig::default(),
             output: OutputConfig::default(),
+            audio: AudioConfig::default(),
             hotkeys: HotkeyConfig::default(),
         }
     }
@@ -147,6 +150,73 @@ impl Default for OutputConfig {
             clips_dir: None,
             file_name_pattern: "{game} {date} {time}".to_owned(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSourceConfig {
+    pub id: String,
+    /// Last known display name, shown when the device is not connected.
+    pub name: String,
+    pub kind: AudioDeviceKind,
+    pub enabled: bool,
+    /// Linear gain, 1.0 is unity, up to 2.0.
+    pub volume: f32,
+    pub muted: bool,
+}
+
+impl Default for AudioSourceConfig {
+    fn default() -> Self {
+        Self {
+            id: DEFAULT_AUDIO_DEVICE_ID.to_owned(),
+            name: "Default output".to_owned(),
+            kind: AudioDeviceKind::Output,
+            enabled: true,
+            volume: 1.0,
+            muted: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    pub enabled: bool,
+    /// Keep microphones on a second track instead of mixing everything.
+    pub separate_tracks: bool,
+    pub bitrate_kbps: u32,
+    pub sources: Vec<AudioSourceConfig>,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            separate_tracks: false,
+            bitrate_kbps: 160,
+            sources: vec![AudioSourceConfig::default()],
+        }
+    }
+}
+
+impl AudioConfig {
+    /// The parts of the audio setup that require rebuilding the pipeline.
+    /// Volume and mute are applied live and are deliberately excluded.
+    pub fn topology(&self) -> Vec<(bool, bool, u32, String, AudioDeviceKind)> {
+        self.sources
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| {
+                (
+                    self.enabled,
+                    self.separate_tracks,
+                    self.bitrate_kbps,
+                    s.id.clone(),
+                    s.kind,
+                )
+            })
+            .collect()
     }
 }
 
@@ -261,6 +331,20 @@ impl Config {
                 reason: "must be greater than zero".to_owned(),
             });
         }
+        for source in &self.audio.sources {
+            if !(0.0..=2.0).contains(&source.volume) {
+                return Err(CoreError::InvalidConfig {
+                    field: "audio.sources.volume",
+                    reason: format!("{} must be between 0.0 and 2.0", source.name),
+                });
+            }
+        }
+        if self.audio.bitrate_kbps == 0 || self.audio.bitrate_kbps > 1024 {
+            return Err(CoreError::InvalidConfig {
+                field: "audio.bitrate_kbps",
+                reason: "must be between 1 and 1024".to_owned(),
+            });
+        }
         let bindings = self.hotkeys.all();
         for (i, (name_a, a)) in bindings.iter().enumerate() {
             for (name_b, b) in &bindings[i + 1..] {
@@ -293,7 +377,13 @@ impl Config {
     /// True when moving from `self` to `next` requires the capture pipeline
     /// to be rebuilt (anything the encoder or the source is configured with).
     pub fn capture_restart_needed(&self, next: &Config) -> bool {
-        self.capture != next.capture || self.replay.temp_dir != next.replay.temp_dir
+        self.capture != next.capture
+            || self.replay.temp_dir != next.replay.temp_dir
+            || self.audio.topology() != next.audio.topology()
+    }
+
+    pub fn audio_levels_changed(&self, next: &Config) -> bool {
+        self.audio.sources != next.audio.sources
     }
 
     pub fn hotkeys_changed(&self, next: &Config) -> bool {
@@ -417,6 +507,41 @@ mod tests {
         let mut next = base.clone();
         next.hotkeys.save_replay = "F9".parse().expect("valid");
         assert!(base.hotkeys_changed(&next));
+    }
+
+    #[test]
+    fn audio_volume_changes_do_not_restart_capture() {
+        let base = Config::default();
+        let mut next = base.clone();
+        next.audio.sources[0].volume = 0.5;
+        next.audio.sources[0].muted = true;
+        assert!(!base.capture_restart_needed(&next));
+        assert!(base.audio_levels_changed(&next));
+
+        let mut next = base.clone();
+        next.audio.separate_tracks = true;
+        assert!(base.capture_restart_needed(&next));
+
+        let mut next = base.clone();
+        next.audio.sources[0].enabled = false;
+        assert!(base.capture_restart_needed(&next));
+    }
+
+    #[test]
+    fn audio_config_round_trips() {
+        let mut config = Config::default();
+        config.audio.sources.push(AudioSourceConfig {
+            id: "{0.0.1.00000000}.{abc}".to_owned(),
+            name: "Microphone".to_owned(),
+            kind: AudioDeviceKind::Input,
+            enabled: true,
+            volume: 1.5,
+            muted: false,
+        });
+        let text = toml::to_string_pretty(&config).expect("serialize");
+        assert!(text.contains("kind = \"input\""), "{text}");
+        let back: Config = toml::from_str(&text).expect("deserialize");
+        assert_eq!(back, config);
     }
 
     #[test]

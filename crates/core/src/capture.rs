@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use crate::config::{CaptureConfig, DisplaySelection, EncoderPreference};
+use serde::{Deserialize, Serialize};
+
+use crate::config::{AudioConfig, CaptureConfig, DisplaySelection, EncoderPreference};
 
 /// A physical display as reported by the backend. `id` is stable across
 /// sessions on the same machine and is what the config stores.
@@ -83,8 +85,109 @@ pub fn choose_encoder(
         .find_map(|kind| available.iter().find(|e| e.kind == *kind))
 }
 
-/// Everything a backend needs to start producing frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioDeviceKind {
+    /// A playback device captured through loopback (game and desktop sound).
+    Output,
+    /// A recording device such as a microphone.
+    Input,
+}
+
+impl AudioDeviceKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            AudioDeviceKind::Output => "Output",
+            AudioDeviceKind::Input => "Input",
+        }
+    }
+}
+
+/// Identifier of the system default device of a kind. Backends resolve it
+/// at start so that the capture follows the default when it changes.
+pub const DEFAULT_AUDIO_DEVICE_ID: &str = "default";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub kind: AudioDeviceKind,
+}
+
+/// One device feeding a track, with its mix level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioSourceSettings {
+    pub id: String,
+    pub kind: AudioDeviceKind,
+    pub volume: f32,
+    pub muted: bool,
+}
+
+impl AudioSourceSettings {
+    /// Key used to address the source at runtime, unique per kind and id.
+    pub fn key(&self) -> String {
+        audio_source_key(self.kind, &self.id)
+    }
+}
+
+pub fn audio_source_key(kind: AudioDeviceKind, id: &str) -> String {
+    format!("{}:{}", kind.label().to_ascii_lowercase(), id)
+}
+
+/// A set of sources mixed into one encoded track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioTrackPlan {
+    pub label: String,
+    pub sources: Vec<AudioSourceSettings>,
+}
+
+/// Groups the enabled sources into tracks: one mixed track, or when
+/// `separate_tracks` is set, outputs and inputs on their own tracks.
+pub fn plan_audio_tracks(audio: &AudioConfig) -> Vec<AudioTrackPlan> {
+    if !audio.enabled {
+        return Vec::new();
+    }
+    let sources: Vec<AudioSourceSettings> = audio
+        .sources
+        .iter()
+        .filter(|s| s.enabled)
+        .map(|s| AudioSourceSettings {
+            id: s.id.clone(),
+            kind: s.kind,
+            volume: s.volume,
+            muted: s.muted,
+        })
+        .collect();
+    if sources.is_empty() {
+        return Vec::new();
+    }
+    if !audio.separate_tracks {
+        return vec![AudioTrackPlan {
+            label: "Audio".to_owned(),
+            sources,
+        }];
+    }
+    let (outputs, inputs): (Vec<_>, Vec<_>) = sources
+        .into_iter()
+        .partition(|s| s.kind == AudioDeviceKind::Output);
+    let mut tracks = Vec::new();
+    if !outputs.is_empty() {
+        tracks.push(AudioTrackPlan {
+            label: "Desktop".to_owned(),
+            sources: outputs,
+        });
+    }
+    if !inputs.is_empty() {
+        tracks.push(AudioTrackPlan {
+            label: "Microphone".to_owned(),
+            sources: inputs,
+        });
+    }
+    tracks
+}
+
+/// Everything a backend needs to start producing frames.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CaptureSettings {
     pub display: DisplaySelection,
     pub encoder: EncoderInfo,
@@ -96,11 +199,14 @@ pub struct CaptureSettings {
     pub show_cursor: bool,
     /// Optional directory for backend scratch files, for example a RAM disk.
     pub temp_dir: Option<PathBuf>,
+    pub audio_tracks: Vec<AudioTrackPlan>,
+    pub audio_bitrate_kbps: u32,
 }
 
 impl CaptureSettings {
     pub fn from_config(
         config: &CaptureConfig,
+        audio: &AudioConfig,
         encoder: EncoderInfo,
         temp_dir: Option<PathBuf>,
     ) -> Self {
@@ -112,6 +218,8 @@ impl CaptureSettings {
             keyframe_interval: config.fps.max(1),
             show_cursor: config.show_cursor,
             temp_dir,
+            audio_tracks: plan_audio_tracks(audio),
+            audio_bitrate_kbps: audio.bitrate_kbps,
         }
     }
 }
@@ -119,6 +227,70 @@ impl CaptureSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AudioSourceConfig;
+
+    fn source(id: &str, kind: AudioDeviceKind, enabled: bool) -> AudioSourceConfig {
+        AudioSourceConfig {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            kind,
+            enabled,
+            volume: 1.0,
+            muted: false,
+        }
+    }
+
+    #[test]
+    fn plans_one_mixed_track_by_default() {
+        let audio = AudioConfig {
+            sources: vec![
+                source("spk", AudioDeviceKind::Output, true),
+                source("mic", AudioDeviceKind::Input, true),
+                source("off", AudioDeviceKind::Input, false),
+            ],
+            ..AudioConfig::default()
+        };
+        let tracks = plan_audio_tracks(&audio);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].sources.len(), 2);
+    }
+
+    #[test]
+    fn plans_separate_tracks_by_kind() {
+        let audio = AudioConfig {
+            separate_tracks: true,
+            sources: vec![
+                source("spk", AudioDeviceKind::Output, true),
+                source("mic", AudioDeviceKind::Input, true),
+            ],
+            ..AudioConfig::default()
+        };
+        let tracks = plan_audio_tracks(&audio);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].label, "Desktop");
+        assert_eq!(tracks[1].label, "Microphone");
+
+        let only_mic = AudioConfig {
+            separate_tracks: true,
+            sources: vec![source("mic", AudioDeviceKind::Input, true)],
+            ..AudioConfig::default()
+        };
+        assert_eq!(plan_audio_tracks(&only_mic).len(), 1);
+    }
+
+    #[test]
+    fn disabled_audio_plans_nothing() {
+        let audio = AudioConfig {
+            enabled: false,
+            ..AudioConfig::default()
+        };
+        assert!(plan_audio_tracks(&audio).is_empty());
+        let none = AudioConfig {
+            sources: vec![],
+            ..AudioConfig::default()
+        };
+        assert!(plan_audio_tracks(&none).is_empty());
+    }
 
     fn enc(kind: EncoderKind) -> EncoderInfo {
         EncoderInfo {

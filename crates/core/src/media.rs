@@ -85,3 +85,35 @@ impl EncodedFrame {
         self.data.len()
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AudioCodec {
+    Aac,
+}
+
+/// Static properties of one encoded audio track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioTrackInfo {
+    pub index: u32,
+    pub label: String,
+    pub codec: AudioCodec,
+    pub sample_rate: u32,
+    pub channels: u32,
+    /// Decoder configuration (AudioSpecificConfig for AAC).
+    pub codec_data: Arc<[u8]>,
+}
+
+/// One encoded audio frame. Every packet can start decoding.
+#[derive(Debug, Clone)]
+pub struct AudioPacket {
+    pub track: u32,
+    pub pts: Timestamp,
+    pub duration: Option<Duration>,
+    pub data: Arc<[u8]>,
+}
+
+impl AudioPacket {
+    pub fn size(&self) -> usize {
+        self.data.len()
+    }
+}
