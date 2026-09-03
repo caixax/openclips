@@ -22,7 +22,7 @@ features land.
 | --- | --- |
 | Workspace, config file, logging, tray app skeleton | Done (Sprint 0) |
 | Rolling replay buffer with GPU encode and Alt+8 save | Done (Sprint 1) |
-| Display selection, buffer length, hotkey rebinding, full session recording | Planned (Sprint 2) |
+| Display selection, buffer length, hotkey rebinding, full session recording | Done (Sprint 2) |
 | Multi source audio (desktop loopback and microphones) | Planned (Sprint 3) |
 | Clip library with thumbnails and playback | Planned (Sprint 4) |
 | Trim editor (stream copy and frame accurate) | Planned (Sprint 5) |
@@ -30,11 +30,15 @@ features land.
 | Fullscreen reliability pass, installer, launch on startup | Planned (Sprint 7) |
 | Linux backend (PipeWire and desktop portal) | Future |
 
-What works today: the app starts capturing the primary display into memory
-as soon as it launches, `Alt+8` writes the last 30 seconds to
-`Videos\OpenClips`, `Alt+9` starts or stops the buffer, and the tray menu
-offers the same actions. Clips are video only until Sprint 3. Settings can be
-changed by editing the config file (see below).
+What works today: the app starts capturing the selected display into memory
+as soon as it launches, `Alt+8` writes the last N seconds to
+`Videos\OpenClips`, `Alt+9` starts or stops the buffer, `Alt+0` starts or
+stops a full session recording (written to a `Recordings` subfolder), and
+the tray menu offers the same actions. The Settings page covers display,
+encoder, frame rate, bitrate, buffer length (seconds or minutes), memory
+cap, output folders, hotkey rebinding and start up behaviour. Displays are
+re-enumerated while the app runs, and a capture of a display that goes away
+moves to the primary display. Clips are video only until Sprint 3.
 
 ## Building
 
@@ -170,6 +174,13 @@ pipeline muxes them into an MP4 on a worker thread:
 ```text
 appsrc -> h264parse -> mp4mux -> filesink
 ```
+
+A session recording taps the same encoded stream: a long lived
+`appsrc -> h264parse -> mp4mux -> filesink` pipeline receives every frame
+from the next keyframe on. The file is written as fragmented MP4 and
+finalised into a regular MP4 when the recording stops, so a crash mid
+recording leaves a playable file behind. Capture runs whenever the buffer or
+a recording needs it and stops when neither does.
 
 Encoders are tried in order (NVENC, Quick Sync, AMF, Media Foundation, x264)
 and the first one that delivers a frame wins. A fallback is reported in the
