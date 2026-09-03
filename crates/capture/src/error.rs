@@ -47,4 +47,10 @@ pub enum CaptureError {
 
     #[error("the replay buffer is empty, nothing to save")]
     EmptyBuffer,
+
+    #[error("could not read {path}: {reason}")]
+    Media { path: PathBuf, reason: String },
+
+    #[error("playback failed: {0}")]
+    Playback(String),
 }

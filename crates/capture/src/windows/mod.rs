@@ -4,9 +4,11 @@
 
 mod audio;
 mod encoders;
+mod media;
 mod monitors;
 mod mux;
 mod pipeline;
+mod player;
 mod props;
 mod recording;
 
@@ -16,7 +18,9 @@ use gstreamer as gst;
 use openclips_core::capture::{AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo};
 use tracing::{info, warn};
 
-use crate::backend::{CaptureBackend, ClipWriter, FrameSink, Recorder};
+use crate::backend::{
+    CaptureBackend, ClipWriter, FrameSink, MediaTools, Player, PlayerSink, Recorder,
+};
 use crate::error::CaptureError;
 
 const START_ATTEMPTS: u32 = 3;
@@ -149,6 +153,14 @@ impl CaptureBackend for WindowsBackend {
 
     fn recorder(&self) -> Arc<dyn Recorder> {
         self.recorder.clone()
+    }
+
+    fn media_tools(&self) -> Arc<dyn MediaTools> {
+        Arc::new(media::GstMediaTools)
+    }
+
+    fn create_player(&self, sink: Arc<dyn PlayerSink>) -> Result<Box<dyn Player>, CaptureError> {
+        Ok(Box::new(player::GstPlayer::new(sink)?))
     }
 }
 

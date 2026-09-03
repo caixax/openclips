@@ -16,7 +16,10 @@ pub mod platform;
 #[cfg(windows)]
 mod windows;
 
-pub use backend::{CaptureBackend, ClipWriter, FrameSink, Recorder, RecordingSession};
+pub use backend::{
+    CaptureBackend, ClipWriter, FrameSink, MediaInfo, MediaTools, Player, PlayerSink, Recorder,
+    RecordingSession, VideoFrame,
+};
 pub use error::CaptureError;
 
 /// Creates the capture backend for the current platform. Initializes the

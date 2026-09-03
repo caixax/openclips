@@ -5,8 +5,61 @@ use openclips_core::capture::{AudioDeviceInfo, CaptureSettings, EncoderInfo, Mon
 use openclips_core::clip::ClipFile;
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo};
 use openclips_core::replay::ReplaySnapshot;
+use std::time::Duration;
 
 use crate::error::CaptureError;
+
+/// Static facts about a media file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaInfo {
+    pub duration: Duration,
+    pub width: u32,
+    pub height: u32,
+    pub has_audio: bool,
+}
+
+/// Reads files back: metadata for the library and thumbnails for the
+/// gallery. Thread safe so the library can work in the background.
+pub trait MediaTools: Send + Sync {
+    fn probe(&self, path: &Path) -> Result<MediaInfo, CaptureError>;
+
+    /// Writes a PNG of the frame at `at`, scaled down to `max_width`.
+    fn thumbnail(
+        &self,
+        path: &Path,
+        output: &Path,
+        at: Duration,
+        max_width: u32,
+    ) -> Result<(), CaptureError>;
+}
+
+/// A decoded video frame ready for display, tightly packed RGBA.
+#[derive(Debug, Clone)]
+pub struct VideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Receives playback output. Called from player threads.
+pub trait PlayerSink: Send + Sync + 'static {
+    fn on_frame(&self, frame: VideoFrame);
+    fn on_finished(&self);
+    fn on_error(&self, message: String);
+}
+
+/// In app playback of a clip file with audio.
+pub trait Player: Send {
+    fn load(&mut self, path: &Path) -> Result<(), CaptureError>;
+    fn play(&mut self);
+    fn pause(&mut self);
+    fn seek(&mut self, position: Duration);
+    fn set_volume(&mut self, volume: f64);
+    fn stop(&mut self);
+    fn position(&self) -> Option<Duration>;
+    fn duration(&self) -> Option<Duration>;
+    fn is_playing(&self) -> bool;
+}
 
 /// Receives the output of a running capture. Called from backend threads, so
 /// implementations must be cheap and must not block for long.
@@ -76,4 +129,8 @@ pub trait CaptureBackend: Send {
 
     /// A thread safe factory for full session recordings.
     fn recorder(&self) -> Arc<dyn Recorder>;
+
+    fn media_tools(&self) -> Arc<dyn MediaTools>;
+
+    fn create_player(&self, sink: Arc<dyn PlayerSink>) -> Result<Box<dyn Player>, CaptureError>;
 }
