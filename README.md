@@ -28,13 +28,16 @@ below is kept current as features land.
 | Trim editor (stream copy and frame accurate) | Done (Sprint 5) |
 | Game detection, per game profiles, bundled games database | Done (Sprint 6) |
 | Fullscreen reliability pass, installer, launch on startup | Done (Sprint 7) |
+| Dark icon rail UI, quality presets, player controls, any number of save hotkeys | Done (Sprint 8) |
 | Linux backend (PipeWire and desktop portal) | Future |
 
 What works today: the app starts capturing the selected display into memory
-as soon as it launches, `Alt+8` writes the last N seconds to
+as soon as it launches, `Alt+8` writes everything the buffer holds to
 `Videos\OpenClips`, `Alt+9` starts or stops the buffer, `Alt+0` starts or
 stops a full session recording (written to a `Recordings` subfolder), and
-the tray menu offers the same actions. The Settings page covers display,
+the tray menu offers the same actions. Settings can add any number of extra
+save hotkeys, each with its own length, so one key saves the last 15
+seconds and another the last two minutes. The Settings page covers display,
 encoder, frame rate, bitrate, buffer length (seconds or minutes), memory
 cap, output folders, hotkey rebinding and start up behaviour. Displays are
 re-enumerated while the app runs, and a capture of a display that goes away
@@ -178,13 +181,22 @@ action = "buffer"         # buffer, recording or ignore
 # display = { kind = "primary" }
 
 [hotkeys]
-save_replay = "Alt+8"
 toggle_replay_buffer = "Alt+9"
 toggle_recording = "Alt+0"
+
+# Any number of save hotkeys. seconds = 0 saves the whole buffer.
+[[hotkeys.save]]
+binding = "Alt+8"
+seconds = 0
+
+[[hotkeys.save]]
+binding = "Alt+F1"
+seconds = 15
 ```
 
 Hotkeys are written as `Modifier+Key`, for example `Ctrl+Shift+F9`,
-`Alt+Numpad5` or `PrintScreen`.
+`Alt+Numpad5` or `PrintScreen`. A `save_replay` key from older config
+files is migrated into the `save` list on load.
 
 ## Architecture
 
@@ -318,6 +330,8 @@ renames such files (once they are older than a minute) to
   later, trimming.
 - **Slint** for the UI and the tray icon. Slint is used under its
   royalty free desktop license.
+- **Font Awesome Free** icons (CC BY 4.0), embedded as path data in
+  `crates/app/ui/icons.slint`. See `crates/app/assets/icons`.
 
 ## License
 
