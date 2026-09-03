@@ -30,7 +30,8 @@ impl Recorder for Mp4Recorder {
         audio: &[AudioTrackInfo],
         path: &Path,
     ) -> Result<Box<dyn RecordingSession>, CaptureError> {
-        Mp4Session::open(stream, audio, path).map(|s| Box::new(s) as Box<dyn RecordingSession>)
+        Mp4Session::open(stream, audio, path, true)
+            .map(|s| Box::new(s) as Box<dyn RecordingSession>)
     }
 }
 
@@ -53,10 +54,14 @@ pub struct Mp4Session {
 }
 
 impl Mp4Session {
-    fn open(
+    /// Opens the muxer. Fragmented output survives a crash and is finalised
+    /// into a plain MP4 on `finish`; plain output is smaller and is what the
+    /// trimmer uses because it always finishes.
+    pub(super) fn open(
         stream: &StreamInfo,
         tracks: &[AudioTrackInfo],
         path: &Path,
+        fragmented: bool,
     ) -> Result<Self, CaptureError> {
         let fail = |reason: String| CaptureError::ClipWrite {
             path: path.to_path_buf(),
@@ -77,10 +82,12 @@ impl Mp4Session {
             .build()
             .map_err(|e| fail(e.to_string()))?;
         let mux = gst::ElementFactory::make("mp4mux")
-            .property("fragment-duration", FRAGMENT_MS)
             .build()
             .map_err(|e| fail(e.to_string()))?;
-        mux.set_property_from_str("fragment-mode", "first-moov-then-finalise");
+        if fragmented {
+            mux.set_property("fragment-duration", FRAGMENT_MS);
+            mux.set_property_from_str("fragment-mode", "first-moov-then-finalise");
+        }
         let filesink = gst::ElementFactory::make("filesink")
             .property("location", partial.to_string_lossy().as_ref())
             .build()
@@ -117,7 +124,7 @@ impl Mp4Session {
             .map_err(|_| fail("could not start the recording muxer".to_owned()))?;
 
         info!(
-            "recording started: {} ({} audio track(s))",
+            "writing {} ({} audio track(s), fragmented={fragmented})",
             path.display(),
             audio.len()
         );
@@ -213,7 +220,7 @@ impl RecordingSession for Mp4Session {
         let bytes = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         let duration = self.duration();
         info!(
-            "recording finished: {} ({:.1} s, {} frames, {} bytes)",
+            "wrote {} ({:.1} s, {} frames, {} bytes)",
             self.path.display(),
             duration.as_secs_f64(),
             self.frames,

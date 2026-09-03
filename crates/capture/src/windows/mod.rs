@@ -11,6 +11,7 @@ mod pipeline;
 mod player;
 mod props;
 mod recording;
+mod trim;
 
 use std::sync::Arc;
 

@@ -9,8 +9,9 @@ use gstreamer::prelude::*;
 use gstreamer_pbutils as gst_pbutils;
 
 use super::encoders::wait_until_done;
-use crate::backend::{MediaInfo, MediaTools};
+use crate::backend::{MediaInfo, MediaTools, TrimJob};
 use crate::error::CaptureError;
+use openclips_core::clip::ClipFile;
 
 const PROBE_TIMEOUT_SECONDS: u64 = 15;
 const THUMBNAIL_TIMEOUT_SECONDS: u64 = 30;
@@ -60,6 +61,14 @@ impl MediaTools for GstMediaTools {
             height,
             has_audio: !info.audio_streams().is_empty(),
         })
+    }
+
+    fn keyframes(&self, path: &Path) -> Result<Vec<Duration>, CaptureError> {
+        super::trim::keyframes(path)
+    }
+
+    fn trim(&self, job: &TrimJob) -> Result<ClipFile, CaptureError> {
+        super::trim::trim(job)
     }
 
     fn thumbnail(

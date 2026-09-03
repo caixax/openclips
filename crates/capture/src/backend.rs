@@ -1,10 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use openclips_core::capture::{AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo};
 use openclips_core::clip::ClipFile;
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo};
 use openclips_core::replay::ReplaySnapshot;
+use openclips_core::trim::{TrimMode, TrimRange};
 use std::time::Duration;
 
 use crate::error::CaptureError;
@@ -18,8 +19,21 @@ pub struct MediaInfo {
     pub has_audio: bool,
 }
 
+/// A cut to perform on a clip file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrimJob {
+    pub input: PathBuf,
+    pub output: PathBuf,
+    pub range: TrimRange,
+    pub mode: TrimMode,
+    /// Used by the re-encode path only.
+    pub video_bitrate_kbps: u32,
+    pub audio_bitrate_kbps: u32,
+}
+
 /// Reads files back: metadata for the library and thumbnails for the
-/// gallery. Thread safe so the library can work in the background.
+/// gallery, and cuts them for the editor. Thread safe so the library can
+/// work in the background.
 pub trait MediaTools: Send + Sync {
     fn probe(&self, path: &Path) -> Result<MediaInfo, CaptureError>;
 
@@ -31,6 +45,11 @@ pub trait MediaTools: Send + Sync {
         at: Duration,
         max_width: u32,
     ) -> Result<(), CaptureError>;
+
+    /// Keyframe timestamps of the video stream, sorted.
+    fn keyframes(&self, path: &Path) -> Result<Vec<Duration>, CaptureError>;
+
+    fn trim(&self, job: &TrimJob) -> Result<ClipFile, CaptureError>;
 }
 
 /// A decoded video frame ready for display, tightly packed RGBA.
