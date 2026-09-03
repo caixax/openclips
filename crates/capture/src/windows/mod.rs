@@ -7,6 +7,7 @@ mod monitors;
 mod mux;
 mod pipeline;
 mod props;
+mod recording;
 
 use std::sync::Arc;
 
@@ -14,13 +15,14 @@ use gstreamer as gst;
 use openclips_core::capture::{CaptureSettings, EncoderInfo, MonitorInfo};
 use tracing::info;
 
-use crate::backend::{CaptureBackend, ClipWriter, FrameSink};
+use crate::backend::{CaptureBackend, ClipWriter, FrameSink, Recorder};
 use crate::error::CaptureError;
 
 pub struct WindowsBackend {
     encoders: Vec<EncoderInfo>,
     capture: Option<pipeline::CapturePipeline>,
     writer: Arc<mux::Mp4Writer>,
+    recorder: Arc<recording::Mp4Recorder>,
 }
 
 impl WindowsBackend {
@@ -58,6 +60,7 @@ impl WindowsBackend {
             encoders,
             capture: None,
             writer: Arc::new(mux::Mp4Writer),
+            recorder: Arc::new(recording::Mp4Recorder),
         })
     }
 }
@@ -100,6 +103,10 @@ impl CaptureBackend for WindowsBackend {
 
     fn clip_writer(&self) -> Arc<dyn ClipWriter> {
         self.writer.clone()
+    }
+
+    fn recorder(&self) -> Arc<dyn Recorder> {
+        self.recorder.clone()
     }
 }
 

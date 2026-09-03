@@ -24,6 +24,22 @@ pub trait ClipWriter: Send + Sync {
     fn write_clip(&self, snapshot: &ReplaySnapshot, path: &Path) -> Result<ClipFile, CaptureError>;
 }
 
+/// Opens streaming recordings that receive frames as they are captured.
+pub trait Recorder: Send + Sync {
+    fn start(
+        &self,
+        stream: &StreamInfo,
+        path: &Path,
+    ) -> Result<Box<dyn RecordingSession>, CaptureError>;
+}
+
+/// One recording in progress. The first pushed frame must be a keyframe.
+pub trait RecordingSession: Send {
+    fn push(&mut self, frame: &EncodedFrame) -> Result<(), CaptureError>;
+    fn finish(self: Box<Self>) -> Result<ClipFile, CaptureError>;
+    fn path(&self) -> &Path;
+}
+
 /// The platform abstraction. One implementation per operating system.
 pub trait CaptureBackend: Send {
     fn name(&self) -> &'static str;
@@ -45,4 +61,7 @@ pub trait CaptureBackend: Send {
 
     /// A thread safe writer that can be used while capture is running.
     fn clip_writer(&self) -> Arc<dyn ClipWriter>;
+
+    /// A thread safe factory for full session recordings.
+    fn recorder(&self) -> Arc<dyn Recorder>;
 }

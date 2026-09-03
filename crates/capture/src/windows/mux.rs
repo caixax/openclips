@@ -11,7 +11,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use openclips_core::clip::ClipFile;
-use openclips_core::media::EncodedFrame;
+use openclips_core::media::{EncodedFrame, StreamInfo};
 use openclips_core::replay::ReplaySnapshot;
 use tracing::info;
 
@@ -68,16 +68,7 @@ impl ClipWriter for Mp4Writer {
 
 fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
     let stream = &snapshot.stream;
-    let caps = gst::Caps::builder("video/x-h264")
-        .field("stream-format", "byte-stream")
-        .field("alignment", "au")
-        .field("width", stream.width.max(1) as i32)
-        .field("height", stream.height.max(1) as i32)
-        .field(
-            "framerate",
-            gst::Fraction::new(stream.fps_num.max(1) as i32, stream.fps_den.max(1) as i32),
-        )
-        .build();
+    let caps = h264_caps(stream);
     let appsrc = gst_app::AppSrc::builder()
         .caps(&caps)
         .format(gst::Format::Time)
@@ -122,7 +113,20 @@ fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
     outcome
 }
 
-fn to_buffer(frame: &EncodedFrame, origin_ns: u64, duration_ns: u64) -> gst::Buffer {
+pub(super) fn h264_caps(stream: &StreamInfo) -> gst::Caps {
+    gst::Caps::builder("video/x-h264")
+        .field("stream-format", "byte-stream")
+        .field("alignment", "au")
+        .field("width", stream.width.max(1) as i32)
+        .field("height", stream.height.max(1) as i32)
+        .field(
+            "framerate",
+            gst::Fraction::new(stream.fps_num.max(1) as i32, stream.fps_den.max(1) as i32),
+        )
+        .build()
+}
+
+pub(super) fn to_buffer(frame: &EncodedFrame, origin_ns: u64, duration_ns: u64) -> gst::Buffer {
     let mut buffer = gst::Buffer::from_slice(frame.data.clone());
     if let Some(b) = buffer.get_mut() {
         b.set_pts(gst::ClockTime::from_nseconds(
