@@ -1,0 +1,123 @@
+name: Release
+
+# Started by hand from the Actions tab. Picks the next version, commits and
+# tags it, builds the installer and the portable zip, and publishes a
+# GitHub release that the app's updater picks up on its next start.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Part of the version to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Exact version to release instead (for example 1.2.0)
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  GSTREAMER_VERSION: 1.28.6
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Pick the version
+        id: version
+        shell: pwsh
+        run: |
+          $toml = Get-Content Cargo.toml -Raw
+          $current = [regex]::Match($toml, '(?m)^version = "([^"]+)"').Groups[1].Value
+          $parts = $current.Split('.') | ForEach-Object { [int]$_ }
+          $requested = "${{ github.event.inputs.version }}".Trim()
+          if ($requested) {
+            if ($requested -notmatch '^\d+\.\d+\.\d+$') { throw "version must look like 1.2.3" }
+            $next = $requested
+          } else {
+            switch ("${{ github.event.inputs.bump }}") {
+              "major" { $parts[0]++; $parts[1] = 0; $parts[2] = 0 }
+              "minor" { $parts[1]++; $parts[2] = 0 }
+              default { $parts[2]++ }
+            }
+            $next = "$($parts[0]).$($parts[1]).$($parts[2])"
+          }
+          if (git tag --list "v$next") { throw "tag v$next already exists" }
+          $toml = [regex]::Replace($toml, '(?m)^version = "[^"]+"', "version = `"$next`"", 1)
+          Set-Content Cargo.toml $toml -NoNewline -Encoding utf8
+          cargo update --workspace --offline 2>$null; if ($LASTEXITCODE -ne 0) { cargo update --workspace }
+          "version=$next" | Out-File -Append $env:GITHUB_OUTPUT
+          Write-Host "Releasing $current -> $next"
+
+      - name: Cache GStreamer installer
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: gstreamer-installer.exe
+          key: gstreamer-msvc-x86_64-${{ env.GSTREAMER_VERSION }}
+
+      - name: Download GStreamer installer
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
+          Invoke-WebRequest -Uri $url -OutFile gstreamer-installer.exe
+
+      - name: Install GStreamer (runtime and development)
+        shell: pwsh
+        run: |
+          Start-Process -FilePath .\gstreamer-installer.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/TYPE=devel" -Wait
+          "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build the portable zip and the installer
+        shell: pwsh
+        run: powershell -File scripts/package.ps1 -BundleRuntime -Installer
+
+      - name: Write checksums
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem dist -File | Where-Object { $_.Extension -in ".exe", ".zip" } | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          }
+          Set-Content dist/SHA256SUMS.txt ($lines -join "`n") -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Commit and tag
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: release v$v"
+          git tag "v$v"
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin "v$v"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: OpenClips v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/OpenClips-${{ steps.version.outputs.version }}-setup.exe
+            dist/OpenClips-${{ steps.version.outputs.version }}-win64.zip
+            dist/SHA256SUMS.txt
