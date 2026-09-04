@@ -58,6 +58,61 @@ impl Default for Config {
     }
 }
 
+/// The interface language. English is the source language; the others are
+/// translated from it. Every variant renders with the default "Segoe UI"
+/// font (Latin and Cyrillic).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    English,
+    Spanish,
+    French,
+    German,
+    Russian,
+    Portuguese,
+    Italian,
+}
+
+impl Language {
+    /// All languages in menu order, English first.
+    pub const ALL: [Language; 7] = [
+        Language::English,
+        Language::Spanish,
+        Language::French,
+        Language::German,
+        Language::Russian,
+        Language::Portuguese,
+        Language::Italian,
+    ];
+
+    /// The lower case code used as the translation catalog file name.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Language::English => "en",
+            Language::Spanish => "es",
+            Language::French => "fr",
+            Language::German => "de",
+            Language::Russian => "ru",
+            Language::Portuguese => "pt",
+            Language::Italian => "it",
+        }
+    }
+
+    /// The language's own name, for the settings menu.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Language::English => "English",
+            Language::Spanish => "Español",
+            Language::French => "Français",
+            Language::German => "Deutsch",
+            Language::Russian => "Русский",
+            Language::Portuguese => "Português",
+            Language::Italian => "Italiano",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
@@ -67,6 +122,8 @@ pub struct GeneralConfig {
     pub clip_sound: bool,
     /// Short UI fades. Off makes every change instant.
     pub animations: bool,
+    /// Interface language.
+    pub language: Language,
 }
 
 /// Automatic updates from GitHub releases, checked once at start.
