@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, Result};
 
 /// GitHub repository (`owner/name`) whose releases carry the installer.
-pub const GITHUB_REPO: &str = "openclips/openclips";
+pub const GITHUB_REPO: &str = "caixax/openclips";
 
 /// File name the app stores next to a downloaded installer.
 pub const PENDING_FILE_NAME: &str = "pending.json";
