@@ -9,6 +9,9 @@ this machine is copied next to the executable so the zip runs on a PC
 without GStreamer installed (the app looks for gstreamer\bin beside the
 executable first).
 
+.PARAMETER Installer
+Also compiles packaging\openclips.nsi with makensis (NSIS 3 must be installed).
+
 .PARAMETER BundleRuntime
 Copy the GStreamer runtime (bin and plugins) into the staged folder.
 
@@ -18,6 +21,7 @@ GSTREAMER_1_0_ROOT_MSVC_X86_64 or C:\Program Files\gstreamer\1.0\msvc_x86_64.
 #>
 param(
     [switch]$BundleRuntime,
+    [switch]$Installer,
     [string]$GStreamerRoot = ""
 )
 
@@ -70,3 +74,16 @@ if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
 Write-Host "Staged $stage"
 Write-Host "Wrote $zip"
+
+if ($Installer) {
+    $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+    if (-not $makensis) {
+        $candidate = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+        if (Test-Path $candidate) { $makensis = $candidate } else { throw "makensis was not found; install NSIS 3" }
+    } else {
+        $makensis = $makensis.Source
+    }
+    & $makensis "/DVERSION=$version" (Join-Path $repo "packaging\openclips.nsi")
+    if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+    Write-Host "Wrote $(Join-Path $repo "dist\OpenClips-$version-setup.exe")"
+}
