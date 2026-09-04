@@ -42,9 +42,7 @@ pub fn open_url(url: &str) {
 /// Opens the file manager with `path` selected.
 pub fn reveal_file(path: &Path) {
     let result = if cfg!(target_os = "windows") {
-        Command::new("explorer.exe")
-            .arg(format!("/select,{}", path.display()))
-            .spawn()
+        explorer_select(path)
     } else if cfg!(target_os = "macos") {
         Command::new("open").arg("-R").arg(path).spawn()
     } else {
@@ -82,4 +80,22 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
 #[cfg(not(windows))]
 pub fn disk_space(_path: &Path) -> Option<(u64, u64)> {
     None
+}
+
+/// `explorer /select,"<path>"` must arrive as one raw argument; the default
+/// quoting turns it into `"/select,C:\..."`, which Explorer ignores and
+/// opens Documents instead.
+#[cfg(windows)]
+fn explorer_select(path: &Path) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    Command::new("explorer.exe")
+        .raw_arg(format!("/select,\"{}\"", path.display()))
+        .spawn()
+}
+
+#[cfg(not(windows))]
+fn explorer_select(path: &Path) -> std::io::Result<std::process::Child> {
+    Command::new("xdg-open")
+        .arg(path.parent().unwrap_or(path))
+        .spawn()
 }

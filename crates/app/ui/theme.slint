@@ -20,4 +20,9 @@ export global Theme {
     out property <length> rail-width: 68px;
     out property <length> topbar-height: 56px;
     out property <length> page-padding: 28px;
+
+    /// Set from the app; off turns every animation into an instant change.
+    in-out property <bool> animations: true;
+    out property <duration> quick: root.animations ? 120ms : 0ms;
+    out property <duration> slow: root.animations ? 220ms : 0ms;
 }

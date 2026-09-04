@@ -13,6 +13,7 @@ component RailItem inherits Rectangle {
     height: 52px;
     border-radius: Theme.radius-small;
     background: root.active ? Theme.surface-hover : (touch.has-hover ? Theme.surface-raised : transparent);
+    animate background { duration: Theme.quick; }
 
     touch := TouchArea {
         clicked => { root.clicked(); }

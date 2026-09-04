@@ -1,34 +1,18 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icons.slint";
-import { SectionCard, SettingRow, TextButton, Notice, Badge, KeyPill } from "widgets.slint";
-import { AppInfo, ClipCard } from "types.slint";
-
-component StatRow inherits HorizontalLayout {
-    in property <string> label;
-    in property <string> value;
-    spacing: 12px;
-    Text {
-        text: root.label;
-        width: 120px;
-        color: Theme.text-muted;
-        font-size: 13px;
-    }
-    Text {
-        text: root.value;
-        font-size: 13px;
-        color: Theme.text;
-        wrap: word-wrap;
-        horizontal-stretch: 1;
-    }
-}
+import { TextButton, Notice, KeyPill } from "widgets.slint";
+import { ClipCard } from "types.slint";
 
 component RecentCard inherits Rectangle {
     in property <ClipCard> card;
     callback clicked();
     border-radius: Theme.radius-small;
-    background: touch.has-hover ? Theme.surface-hover : Theme.surface-raised;
+    background: touch.has-hover ? Theme.surface-hover : Theme.surface;
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.border : transparent;
     clip: true;
+    animate background, border-color { duration: Theme.quick; }
     touch := TouchArea { clicked => { root.clicked(); } }
     VerticalLayout {
         Rectangle {
@@ -39,6 +23,13 @@ component RecentCard inherits Rectangle {
                 height: parent.height;
                 source: root.card.thumbnail;
                 image-fit: cover;
+            }
+            if !root.card.has-thumbnail: Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                size: 20px;
+                data: Icons.clapperboard;
+                color: Theme.text-faint;
             }
             Rectangle {
                 x: parent.width - self.width - 6px;
@@ -60,191 +51,149 @@ component RecentCard inherits Rectangle {
         VerticalLayout {
             padding: 8px;
             spacing: 2px;
-            Text { text: root.card.title; font-size: 12px; font-weight: 600; color: Theme.text; overflow: elide; }
-            Text { text: root.card.game + "  \u{00b7}  " + root.card.date; font-size: 10px; color: Theme.text-muted; overflow: elide; }
+            Text { text: root.card.title; font-size: 11px; font-weight: 600; color: Theme.text; overflow: elide; }
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+                if root.card.has-icon: Image { width: 11px; height: 11px; source: root.card.icon; }
+                Text { text: root.card.game + "  \u{00b7}  " + root.card.date; font-size: 10px; color: Theme.text-muted; overflow: elide; }
+            }
         }
     }
 }
 
 export component HomePage inherits ScrollView {
-    in property <AppInfo> info;
     in property <string> startup-warning;
     in property <bool> buffer-active;
     in property <string> buffer-status;
     in property <string> buffer-detail;
-    in property <string> encoder-name;
     in property <string> capture-error;
     in property <string> capture-notice;
     in property <string> save-status;
-    in property <string> last-clip;
     in property <bool> recording-active;
     in property <string> recording-status;
     in property <string> recording-message;
-    in property <string> last-recording;
     in property <string> detected-game;
     in property <[string]> save-keys;
     in property <string> save-label;
-    in property <[string]> buffer-keys;
-    in property <[string]> recording-keys;
     in property <[ClipCard]> recent;
 
-    callback open-config-dir();
-    callback open-clips-dir();
     callback toggle-buffer();
     callback save-clip();
     callback toggle-recording();
     callback open-clip(string);
     callback show-clips();
 
+    property <length> gap: 12px;
+    property <length> min-card-width: 170px;
+
     VerticalLayout {
         padding: Theme.page-padding;
-        spacing: 18px;
+        padding-top: 20px;
+        spacing: 16px;
         alignment: start;
-
-        VerticalLayout {
-            spacing: 4px;
-            Text { text: "Capture"; font-size: 24px; font-weight: 700; color: Theme.text; }
-            Text {
-                text: "Everything stays on this PC. Press a hotkey while you play and the last moments land in your clips folder.";
-                font-size: 13px;
-                color: Theme.text-muted;
-                wrap: word-wrap;
-            }
-        }
 
         if root.startup-warning != "": Notice { message: root.startup-warning; kind: 1; }
         if root.capture-error != "": Notice { message: root.capture-error; kind: 2; }
         if root.capture-notice != "": Notice { message: root.capture-notice; kind: 1; }
 
-        HorizontalLayout {
-            spacing: 16px;
-
-            SectionCard {
-                heading: "Replay buffer";
-                subtitle: "Keeps the last moments in memory. Nothing touches the disk until you save.";
-                horizontal-stretch: 1;
-                HorizontalLayout {
-                    spacing: 10px;
-                    Rectangle {
-                        y: (parent.height - self.height) / 2;
-                        width: 10px;
-                        height: 10px;
-                        border-radius: 5px;
-                        background: root.buffer-active ? Theme.accent : Theme.text-faint;
-                    }
-                    Text { text: root.buffer-status; font-size: 15px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
-                }
-                StatRow { label: "Buffer"; value: root.buffer-detail; }
-                StatRow { label: "Encoder"; value: root.encoder-name; }
-                StatRow { label: "Game"; value: root.detected-game; }
-                HorizontalLayout {
-                    spacing: 10px;
-                    alignment: start;
-                    KeyPill { keys: root.save-keys; }
-                    Text { text: root.save-label; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-                    TextButton {
-                        text: root.buffer-active ? "Stop buffer" : "Start buffer";
-                        icon: root.buffer-active ? Icons.stop : Icons.play;
-                        has-icon: true;
-                        clicked => { root.toggle-buffer(); }
-                    }
-                    TextButton {
-                        text: "Save clip now";
-                        icon: Icons.scissors;
-                        has-icon: true;
-                        kind: 1;
-                        enabled: root.buffer-active;
-                        clicked => { root.save-clip(); }
-                    }
-                }
-                if root.save-status != "": Text { text: root.save-status; font-size: 12px; color: Theme.text-muted; wrap: word-wrap; }
-            }
-
-            SectionCard {
-                heading: "Full recording";
-                subtitle: "Records to disk until you stop it. Independent of the buffer.";
-                width: 340px;
-                HorizontalLayout {
-                    spacing: 10px;
-                    Rectangle {
-                        y: (parent.height - self.height) / 2;
-                        width: 10px;
-                        height: 10px;
-                        border-radius: 5px;
-                        background: root.recording-active ? Theme.record : Theme.text-faint;
-                    }
-                    Text { text: root.recording-status; font-size: 15px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
-                }
-                HorizontalLayout {
-                    spacing: 10px;
-                    alignment: start;
-                    KeyPill { keys: root.recording-keys; }
-                    Text { text: "start or stop"; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
-                }
-                HorizontalLayout {
-                    alignment: start;
-                    TextButton {
-                        text: root.recording-active ? "Stop recording" : "Start recording";
-                        icon: root.recording-active ? Icons.stop : Icons.circle-dot;
-                        has-icon: true;
-                        kind: root.recording-active ? 2 : 0;
-                        clicked => { root.toggle-recording(); }
-                    }
-                }
-                if root.recording-message != "": Text { text: root.recording-message; font-size: 12px; color: Theme.text-muted; wrap: word-wrap; }
-            }
-        }
-
-        SectionCard {
-            heading: "Recent clips";
-            subtitle: "";
-            if root.recent.length == 0: Text {
-                text: "No clips yet. Save one with the hotkey while the buffer is running.";
-                font-size: 13px;
-                color: Theme.text-muted;
-            }
+        // One compact status strip; the details live in Settings.
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border;
             HorizontalLayout {
-                spacing: 12px;
-                for card in root.recent: RecentCard {
-                    horizontal-stretch: 1;
-                    card: card;
-                    clicked => { root.open-clip(card.id); }
+                padding: 14px;
+                padding-left: 18px;
+                spacing: 14px;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: root.recording-active ? Theme.record : (root.buffer-active ? Theme.accent : Theme.text-faint);
+                    animate background { duration: Theme.quick; }
                 }
-            }
-            HorizontalLayout {
-                alignment: start;
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: center;
+                    Text {
+                        text: root.recording-active ? root.recording-status : root.buffer-status;
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text;
+                    }
+                    Text {
+                        text: root.buffer-active ? root.buffer-detail : "Start the buffer to keep the last moments in memory.";
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        overflow: elide;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                KeyPill { y: (parent.height - self.height) / 2; keys: root.save-keys; }
+                Text { text: root.save-label; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
                 TextButton {
-                    text: "All clips";
-                    icon: Icons.film;
+                    text: root.buffer-active ? "Stop buffer" : "Start buffer";
+                    icon: root.buffer-active ? Icons.stop : Icons.play;
                     has-icon: true;
-                    kind: 3;
-                    clicked => { root.show-clips(); }
+                    clicked => { root.toggle-buffer(); }
+                }
+                TextButton {
+                    text: "Save clip";
+                    icon: Icons.scissors;
+                    has-icon: true;
+                    kind: 1;
+                    enabled: root.buffer-active;
+                    clicked => { root.save-clip(); }
+                }
+                TextButton {
+                    text: root.recording-active ? "Stop recording" : "Record";
+                    icon: root.recording-active ? Icons.stop : Icons.circle-dot;
+                    has-icon: true;
+                    kind: root.recording-active ? 2 : 0;
+                    clicked => { root.toggle-recording(); }
                 }
             }
         }
+        if root.save-status != "" || root.recording-message != "": Text {
+            text: root.recording-message != "" ? root.recording-message : root.save-status;
+            font-size: 12px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
 
-        SectionCard {
-            heading: "This installation";
-            subtitle: "";
-            StatRow { label: "Version"; value: root.info.version; }
-            StatRow { label: "Config file"; value: root.info.config-path; }
-            StatRow { label: "Clips folder"; value: root.info.clips-dir; }
-            StatRow { label: "Logs"; value: root.info.log-dir; }
-            HorizontalLayout {
-                spacing: 8px;
-                alignment: start;
-                TextButton { text: "Open config folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-config-dir(); } }
-                TextButton { text: "Open clips folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-clips-dir(); } }
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "Recent clips"; font-size: 18px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
+            TextButton { text: "All clips"; icon: Icons.film; has-icon: true; kind: 3; clicked => { root.show-clips(); } }
+        }
+
+        if root.recent.length == 0: Text {
+            text: "No clips yet. Save one with the hotkey while the buffer is running.";
+            font-size: 13px;
+            color: Theme.text-muted;
+        }
+
+        Rectangle {
+            property <int> columns: max(1, floor((self.width + root.gap) / (root.min-card-width + root.gap)));
+            property <length> card-width: (self.width - root.gap * (self.columns - 1)) / self.columns;
+            property <length> card-height: self.card-width * 9 / 16 + 50px;
+            height: ceil(root.recent.length / self.columns) * (self.card-height + root.gap);
+            for card[i] in root.recent: RecentCard {
+                x: mod(i, parent.columns) * (parent.card-width + root.gap);
+                y: floor(i / parent.columns) * (parent.card-height + root.gap);
+                width: parent.card-width;
+                height: parent.card-height;
+                card: card;
+                clicked => { root.open-clip(card.id); }
             }
         }
 
         Text {
             text: "Closing the window keeps OpenClips in the tray. Quit from the tray menu.";
-            font-size: 12px;
+            font-size: 11px;
             color: Theme.text-faint;
         }
     }

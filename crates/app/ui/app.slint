@@ -10,6 +10,7 @@ import { SettingsPage, SettingsState } from "settings.slint";
 import { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, HotkeyRow } from "types.slint";
 
 export { TrayIcon } from "tray.slint";
+export { Theme }
 
 export { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, HotkeyRow, SettingsState, LibraryState, PlayerState, NavPage }
 
@@ -152,6 +153,7 @@ export component MainWindow inherits Window {
 
     callback open-config-dir();
     callback open-clips-dir();
+    callback open-logs-dir();
     callback toggle-buffer();
     callback save-clip();
     callback toggle-recording();
@@ -221,29 +223,25 @@ export component MainWindow inherits Window {
                 Rectangle {
                     vertical-stretch: 1;
                     background: Theme.background;
+                    property <NavPage> shown: root.page;
+                    opacity: 1;
+                    changed shown => { self.opacity = 0; self.opacity = 1; }
+                    animate opacity { duration: Theme.slow; }
                     if root.page == NavPage.home: HomePage {
-                        info: root.info;
                         startup-warning: root.startup-warning;
                         buffer-active: root.buffer-active;
                         buffer-status: root.buffer-status;
                         buffer-detail: root.buffer-detail;
-                        encoder-name: root.encoder-name;
                         capture-error: root.capture-error;
                         capture-notice: root.capture-notice;
                         save-status: root.save-status;
-                        last-clip: root.last-clip;
                         recording-active: root.recording-active;
                         recording-status: root.recording-status;
                         recording-message: root.recording-message;
-                        last-recording: root.last-recording;
                         detected-game: root.detected-game;
                         save-keys: root.save-keys;
                         save-label: root.save-label;
-                        buffer-keys: root.buffer-keys;
-                        recording-keys: root.recording-keys;
                         recent: root.recent-clips;
-                        open-config-dir => { root.open-config-dir(); }
-                        open-clips-dir => { root.open-clips-dir(); }
                         toggle-buffer => { root.toggle-buffer(); }
                         save-clip => { root.save-clip(); }
                         toggle-recording => { root.toggle-recording(); }
@@ -252,7 +250,18 @@ export component MainWindow inherits Window {
                     }
                     if root.page == NavPage.clips: ClipsPage { }
                     if root.page == NavPage.player: PlayerPage { }
-                    if root.page == NavPage.settings: SettingsPage { }
+                    if root.page == NavPage.settings: SettingsPage {
+                        info: root.info;
+                        buffer-active: root.buffer-active;
+                        buffer-status: root.buffer-status;
+                        buffer-detail: root.buffer-detail;
+                        encoder-name: root.encoder-name;
+                        detected-game: root.detected-game;
+                        recording-status: root.recording-status;
+                        open-config-dir => { root.open-config-dir(); }
+                        open-clips-dir => { root.open-clips-dir(); }
+                        open-logs-dir => { root.open-logs-dir(); }
+                    }
                 }
             }
         }

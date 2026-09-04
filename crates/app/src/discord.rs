@@ -143,10 +143,17 @@ fn run(receiver: Receiver<PresenceState>) {
             .state(signature.1)
             .assets(Assets::new().large_image("logo").large_text("OpenClips"))
             .timestamps(Timestamps::new().start(start));
-        let result = connection
-            .as_mut()
-            .map(|c| c.client.set_activity(activity))
-            .unwrap_or(Ok(()));
+        let result = connection.as_mut().map_or(Ok(()), |c| {
+            c.client.set_activity(activity).and_then(|()| {
+                let (_, reply) = c.client.recv()?;
+                if reply.get("evt").and_then(|e| e.as_str()) == Some("ERROR") {
+                    warn!("Discord rejected the activity: {reply}");
+                } else {
+                    info!("Discord activity set: {} / {}", signature.0, signature.1);
+                }
+                Ok(())
+            })
+        });
         match result {
             Ok(()) => shown = Some(signature),
             Err(err) => {

@@ -30,6 +30,7 @@ component Card inherits Rectangle {
     background: touch.has-hover ? Theme.surface-hover : Theme.surface;
     border-width: 1px;
     border-color: touch.has-hover ? Theme.border : transparent;
+    animate background, border-color { duration: Theme.quick; }
     clip: true;
 
     touch := TouchArea {

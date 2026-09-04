@@ -2,7 +2,7 @@ import { ComboBox, SpinBox, LineEdit, ScrollView, Slider } from "std-widgets.sli
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icons.slint";
 import { IconButton, TextButton, Toggle, SectionCard, SettingRow, Divider, KeyPill, Badge, Notice, AddButton, OptionCard, PageHeader } from "widgets.slint";
-import { AudioSourceRow, GameProfileRow, HotkeyRow } from "types.slint";
+import { AppInfo, AudioSourceRow, GameProfileRow, HotkeyRow } from "types.slint";
 
 export global SettingsState {
     in-out property <[string]> display-names: ["Primary display"];
@@ -16,6 +16,7 @@ export global SettingsState {
     in-out property <int> capture-api-index: 0;
     in-out property <bool> launch-on-startup: false;
     in-out property <bool> clip-sound: false;
+    in-out property <bool> animations: true;
 
     in-out property <int> replay-length-value: 30;
     in-out property <int> replay-unit-index: 0;
@@ -140,6 +141,17 @@ component StorageBar inherits Rectangle {
 }
 
 export component SettingsPage inherits ScrollView {
+    in property <AppInfo> info;
+    in property <bool> buffer-active;
+    in property <string> buffer-status;
+    in property <string> buffer-detail;
+    in property <string> encoder-name;
+    in property <string> detected-game;
+    in property <string> recording-status;
+    callback open-config-dir();
+    callback open-clips-dir();
+    callback open-logs-dir();
+
     VerticalLayout {
         padding: Theme.page-padding;
         padding-top: 20px;
@@ -506,6 +518,11 @@ export component SettingsPage inherits ScrollView {
                 Toggle { checked <=> SettingsState.launch-on-startup; }
             }
             SettingRow {
+                title: "Animations";
+                description: "Short fades on hover, toggles and page changes. Off makes every change instant.";
+                Toggle { checked <=> SettingsState.animations; }
+            }
+            SettingRow {
                 title: "Sound when a clip is saved";
                 description: "A short click confirms the save, so you know the hotkey worked without looking.";
                 Toggle { checked <=> SettingsState.clip-sound; }
@@ -534,6 +551,58 @@ export component SettingsPage inherits ScrollView {
                 title: "Discord application id";
                 description: "Leave empty to use the built in OpenClips application. Paste your own Application ID from discord.com/developers to show a different name or artwork.";
                 LineEdit { width: 260px; placeholder-text: "Built in"; text <=> SettingsState.discord-client-id; enabled: SettingsState.discord-enabled; }
+            }
+        }
+
+        SectionCard {
+            heading: "Status";
+            subtitle: "What capture is doing right now.";
+            SettingRow {
+                title: root.buffer-status;
+                description: root.buffer-active ? root.buffer-detail : "The replay buffer is stopped.";
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: root.buffer-active ? Theme.accent : Theme.text-faint;
+                }
+            }
+            SettingRow {
+                title: "Encoder";
+                description: root.encoder-name;
+            }
+            SettingRow {
+                title: "Game";
+                description: root.detected-game;
+            }
+            SettingRow {
+                title: "Recording";
+                description: root.recording-status;
+            }
+        }
+
+        SectionCard {
+            heading: "About";
+            subtitle: "OpenClips " + root.info.version + " for " + root.info.platform + ". MIT licensed, no cloud, no telemetry.";
+            SettingRow {
+                title: "Version";
+                description: root.info.version;
+            }
+            SettingRow {
+                title: "Config file";
+                description: root.info.config-path;
+                TextButton { text: "Open folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-config-dir(); } }
+            }
+            SettingRow {
+                title: "Clips folder";
+                description: root.info.clips-dir;
+                TextButton { text: "Open folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-clips-dir(); } }
+            }
+            SettingRow {
+                title: "Logs";
+                description: root.info.log-dir;
+                TextButton { text: "Open folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-logs-dir(); } }
             }
         }
 

@@ -16,6 +16,7 @@ export component IconButton inherits Rectangle {
     height: root.size;
     border-radius: Theme.radius-small;
     background: root.active ? Theme.accent : (root.filled || touch.has-hover ? Theme.surface-hover : transparent);
+    animate background { duration: Theme.quick; }
     opacity: root.enabled ? 1 : 0.4;
 
     touch := TouchArea {
@@ -51,6 +52,7 @@ export component TextButton inherits Rectangle {
     border-width: root.kind == 0 || root.kind == 2 ? 1px : 0px;
     border-color: root.kind == 2 ? #5a2a2e : Theme.border;
     background: touch.has-hover && root.enabled ? root.fill-hover : root.fill;
+    animate background { duration: Theme.quick; }
     opacity: root.enabled ? 1 : 0.45;
 
     touch := TouchArea {
@@ -104,7 +106,7 @@ export component Toggle inherits Rectangle {
             height: 26px;
             border-radius: 13px;
             background: root.checked ? Theme.accent : #3a3a40;
-            animate background { duration: 120ms; }
+            animate background { duration: Theme.quick; }
             knob := Rectangle {
                 width: 20px;
                 height: 20px;
@@ -112,7 +114,7 @@ export component Toggle inherits Rectangle {
                 x: root.checked ? parent.width - self.width - 3px : 3px;
                 border-radius: 10px;
                 background: root.checked ? Theme.accent-text : #d4d4d8;
-                animate x { duration: 120ms; }
+                animate x { duration: Theme.quick; }
             }
         }
     }
@@ -306,6 +308,7 @@ export component AddButton inherits Rectangle {
     border-width: 1px;
     border-color: touch.has-hover ? Theme.text-muted : Theme.border;
     background: touch.has-hover ? Theme.surface-hover : transparent;
+    animate background, border-color { duration: Theme.quick; }
     touch := TouchArea { clicked => { root.clicked(); } }
     HorizontalLayout {
         alignment: center;
@@ -337,6 +340,7 @@ export component OptionCard inherits Rectangle {
     border-width: 1px;
     border-color: root.selected ? Theme.text : Theme.border;
     background: root.selected ? Theme.surface-hover : Theme.surface-raised;
+    animate background, border-color { duration: Theme.quick; }
     touch := TouchArea { clicked => { root.clicked(); } }
     VerticalLayout {
         padding: 14px;

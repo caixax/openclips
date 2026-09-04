@@ -55,6 +55,7 @@ fn run() -> Result<(), AppError> {
     };
     info!("GStreamer runtime: {}", runtime.bin.display());
     let minimized_flag = std::env::args().any(|a| a == "--minimized");
+    let show_flag = std::env::args().any(|a| a == "--show");
     info!(
         version = APP_VERSION,
         platform = Platform::current().name(),
@@ -92,7 +93,7 @@ fn run() -> Result<(), AppError> {
         engine,
         startup_warning,
     })?;
-    if !app.start_minimized && !minimized_flag {
+    if show_flag || (!app.start_minimized && !minimized_flag) {
         app.window.show()?;
     }
     app.tray.show()?;

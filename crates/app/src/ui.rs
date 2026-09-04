@@ -112,6 +112,9 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
     });
     window.set_startup_warning(ctx.startup_warning.into());
     update_hotkey_labels(&window, &shared.config.borrow());
+    window
+        .global::<Theme>()
+        .set_animations(shared.config.borrow().general.animations);
 
     wire_folders(&window, &shared);
     wire_window_lifecycle(&window, &tray);
@@ -266,6 +269,8 @@ fn wire_folders(window: &MainWindow, shared: &SharedRef) {
     window.on_open_config_dir(move || shell::open_folder(&config_dir));
     let s = shared.clone();
     window.on_open_clips_dir(move || shell::open_folder(&s.clips_dir()));
+    let logs = shared.paths.log_dir.clone();
+    window.on_open_logs_dir(move || shell::open_folder(&logs));
 }
 
 fn wire_window_lifecycle(window: &MainWindow, tray: &TrayIcon) {
@@ -636,6 +641,9 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
     }
 
     update_hotkey_labels(window, &next);
+    window
+        .global::<Theme>()
+        .set_animations(next.general.animations);
     if let Some(library) = shared.library.borrow_mut().as_mut() {
         library.set_dirs(&shared.paths, &next);
     }
@@ -1061,7 +1069,7 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
     let recent: Vec<ClipCard> = library
         .cards(&CardFilter::default())
         .into_iter()
-        .take(4)
+        .take(12)
         .map(|c| to_card(shared, c))
         .collect();
     window.set_recent_clips(ModelRc::new(VecModel::from(recent)));
