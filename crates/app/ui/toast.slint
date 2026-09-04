@@ -1,0 +1,43 @@
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icons.slint";
+
+/// Small always-on-top notice shown near the bottom right of the screen
+/// when a clip is saved. The app positions and times it.
+export component ToastWindow inherits Window {
+    title: "OpenClips";
+    no-frame: true;
+    always-on-top: true;
+    width: 340px;
+    height: 76px;
+    background: Theme.surface;
+    default-font-family: "Segoe UI";
+
+    in property <string> heading: "Clip saved";
+    in property <string> message;
+
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.border;
+        Rectangle { x: 0; width: 4px; background: Theme.accent; }
+        HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 16px;
+            spacing: 14px;
+            alignment: start;
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 20px;
+                background: Theme.accent;
+                Icon { data: Icons.scissors; size: 18px; color: Theme.accent-text; }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                Text { text: root.heading; color: Theme.text; font-size: 14px; font-weight: 700; }
+                Text { text: root.message; color: Theme.text-muted; font-size: 12px; overflow: elide; }
+            }
+        }
+    }
+}

@@ -8,6 +8,7 @@ mod games;
 mod gpu;
 mod hotkeys;
 mod i18n;
+mod instance;
 mod library;
 mod player;
 mod settings;
@@ -15,6 +16,7 @@ mod shell;
 mod sound;
 mod startup;
 mod steam;
+mod toast;
 mod ui;
 mod updater;
 
@@ -63,8 +65,24 @@ fn run() -> Result<(), AppError> {
         "starting OpenClips"
     );
 
+    let Some(instance) = instance::claim() else {
+        info!("OpenClips is already running; asked it to show its window");
+        return Ok(());
+    };
+
     gpu::raise_gpu_priority();
-    let (config, startup_warning) = load_config(&paths);
+    let first_run = !paths.config_file().exists();
+    let (mut config, startup_warning) = load_config(&paths);
+    if first_run && let Some(language) = startup::installer_language() {
+        info!(
+            "first start, using the installer language {}",
+            language.code()
+        );
+        config.general.language = language;
+        if let Err(err) = config.save(&paths.config_file()) {
+            warn!("could not store the installer language: {err}");
+        }
+    }
     i18n::set_language(config.general.language);
     if config.updates.check && updater::apply_pending_at_start(&paths) {
         info!("handing over to the installer");
@@ -72,7 +90,7 @@ fn run() -> Result<(), AppError> {
     }
     if config.general.launch_on_startup
         && !startup::is_enabled()
-        && let Err(err) = startup::apply(true)
+        && let Err(err) = startup::apply(true, config.general.start_minimized)
     {
         warn!("could not refresh the launch on startup entry: {err}");
     }
@@ -90,14 +108,16 @@ fn run() -> Result<(), AppError> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let start_minimized = config.general.start_minimized;
     let app = ui::build(ui::Context {
         paths,
         config,
         engine,
         startup_warning,
+        instance,
     })?;
-    if show_flag || (!start_minimized && !minimized_flag) {
+    // Only the Windows startup launch (which passes --minimized when the
+    // user asked for it) opens in the tray; a launch by hand shows the window.
+    if show_flag || !minimized_flag {
         app.show_window()?;
     }
     app.show_tray()?;

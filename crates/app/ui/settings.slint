@@ -17,6 +17,7 @@ export global SettingsState {
     in-out property <int> capture-api-index: 0;
     in-out property <bool> launch-on-startup: false;
     in-out property <bool> clip-sound: false;
+    in-out property <bool> clip-toast: true;
     in-out property <bool> animations: true;
     in-out property <int> language-index: 0;
 
@@ -515,14 +516,14 @@ export component SettingsPage inherits ScrollView {
                 ComboBox { width: 200px; model: ["English", "Español", "Français", "Deutsch", "Русский", "Português", "Italiano"]; current-index <=> SettingsState.language-index; }
             }
             SettingRow {
-                title: I18n.tr("Start minimized");
-                description: I18n.tr("Open straight into the tray.");
-                Toggle { checked <=> SettingsState.start-minimized; }
-            }
-            SettingRow {
                 title: I18n.tr("Launch with Windows");
                 description: I18n.tr("Adds OpenClips to the current user's startup entries.");
                 Toggle { checked <=> SettingsState.launch-on-startup; }
+            }
+            SettingRow {
+                title: I18n.tr("Start in the tray when launched with Windows");
+                description: I18n.tr("Only applies to the Windows startup launch. Opening OpenClips yourself always shows the window.");
+                Toggle { checked <=> SettingsState.start-minimized; }
             }
             SettingRow {
                 title: I18n.tr("Animations");
@@ -533,6 +534,11 @@ export component SettingsPage inherits ScrollView {
                 title: I18n.tr("Sound when a clip is saved");
                 description: I18n.tr("A short click confirms the save, so you know the hotkey worked without looking.");
                 Toggle { checked <=> SettingsState.clip-sound; }
+            }
+            SettingRow {
+                title: I18n.tr("Notice when a clip is saved");
+                description: I18n.tr("A small card at the bottom right of the screen says how many seconds were clipped.");
+                Toggle { checked <=> SettingsState.clip-toast; }
             }
             SettingRow {
                 title: I18n.tr("Check for updates at start");

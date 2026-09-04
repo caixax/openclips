@@ -209,6 +209,7 @@ pub fn populate(
     });
     state.set_launch_on_startup(config.general.launch_on_startup);
     state.set_clip_sound(config.general.clip_sound);
+    state.set_clip_toast(config.general.clip_toast);
     state.set_animations(config.general.animations);
     state.set_language_index(
         Language::ALL
@@ -412,6 +413,7 @@ pub fn collect(
     };
     config.general.launch_on_startup = state.get_launch_on_startup();
     config.general.clip_sound = state.get_clip_sound();
+    config.general.clip_toast = state.get_clip_toast();
     config.general.animations = state.get_animations();
     config.general.language = Language::ALL
         .get(state.get_language_index().max(0) as usize)

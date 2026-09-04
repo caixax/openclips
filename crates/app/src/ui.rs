@@ -58,6 +58,7 @@ pub struct Context {
     pub config: Config,
     pub engine: Option<Engine>,
     pub startup_warning: String,
+    pub instance: crate::instance::Guard,
 }
 
 pub struct App {
@@ -99,6 +100,8 @@ struct Shared {
     discord: DiscordPresence,
     pending_update: RefCell<Option<PendingUpdate>>,
     tray: TrayIcon,
+    toast: crate::toast::Toast,
+    instance: crate::instance::Guard,
     window: RefCell<Option<MainWindow>>,
     timer: RefCell<Option<slint::Timer>>,
     startup_warning: RefCell<String>,
@@ -174,6 +177,8 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         discord: DiscordPresence::start(),
         pending_update: RefCell::new(None),
         tray,
+        toast: crate::toast::Toast::default(),
+        instance: ctx.instance,
         window: RefCell::new(None),
         timer: RefCell::new(None),
         startup_warning: RefCell::new(ctx.startup_warning),
@@ -271,8 +276,13 @@ fn unload_window(shared: &SharedRef) {
         player.stop(&window.global::<PlayerState>());
     }
     *shared.player.borrow_mut() = None;
-    let window = shared.window.borrow_mut().take();
-    if window.is_some() {
+    if let Some(window) = shared.window.borrow_mut().take() {
+        // The backend keeps a shown window alive on its own, so dropping the
+        // handle is not enough: hide it first or the old window lingers next
+        // to the rebuilt one.
+        if let Err(err) = window.hide() {
+            warn!("could not hide the window before unloading it: {err}");
+        }
         drop(window);
         info!("window unloaded, capture keeps running in the tray");
     }
@@ -310,8 +320,22 @@ fn handle_event(shared: &SharedRef, event: UiEvent) {
         UiEvent::ClipSaved(result) => {
             match &result {
                 Ok(clip) => {
-                    if shared.config.borrow().general.clip_sound {
+                    let (sound, toast) = {
+                        let general = &shared.config.borrow().general;
+                        (general.clip_sound, general.clip_toast)
+                    };
+                    if sound {
                         crate::sound::play_clip_saved();
+                    }
+                    if toast {
+                        let seconds = clip.duration.as_secs_f64().round() as u64;
+                        let message = crate::i18n::tr("Clipped the last {seconds} seconds")
+                            .replace("{seconds}", &seconds.to_string());
+                        if let Err(err) =
+                            shared.toast.show(&crate::i18n::tr("Clip saved"), &message)
+                        {
+                            warn!("could not show the clip notice: {err}");
+                        }
                     }
                     let mut texts = shared.texts.borrow_mut();
                     texts.last_clip = clip.path.display().to_string();
@@ -882,8 +906,15 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
     }
     let mut problems = Vec::new();
 
-    if shared.config.borrow().general.launch_on_startup != next.general.launch_on_startup
-        && let Err(err) = crate::startup::apply(next.general.launch_on_startup)
+    let startup_changed = {
+        let current = &shared.config.borrow().general;
+        current.launch_on_startup != next.general.launch_on_startup
+            || (next.general.launch_on_startup
+                && current.start_minimized != next.general.start_minimized)
+    };
+    if startup_changed
+        && let Err(err) =
+            crate::startup::apply(next.general.launch_on_startup, next.general.start_minimized)
     {
         problems.push(err);
     }
@@ -967,6 +998,12 @@ fn start_status_timer(shared: &SharedRef) {
         if tick.is_multiple_of(MONITOR_REFRESH_TICKS) {
             poll_monitors(&s);
             poll_games(&s);
+        }
+        if s.instance.take_show_request() {
+            info!("another launch asked for the window");
+            if let Err(err) = show_window(&s) {
+                error!("could not show the main window: {err}");
+            }
         }
         refresh_status(&s);
         let changed = s.library.borrow_mut().as_mut().is_some_and(|l| l.poll());

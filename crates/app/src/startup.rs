@@ -1,19 +1,25 @@
-//! "Launch on startup" through the per user Run key. Nothing is written
-//! unless the user turns the option on, and turning it off removes the
-//! value again.
+//! "Launch on startup" through the per user Run key, plus the values the
+//! installer leaves for the app. Nothing is written to the Run key unless
+//! the user turns the option on, and turning it off removes the value again.
+
+use openclips_core::config::Language;
 
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
+const APP_KEY: &str = r"Software\OpenClips";
 const VALUE_NAME: &str = "OpenClips";
 
-/// Makes the registry match the setting. Errors are returned as text for
-/// the settings page; they never stop the app.
-pub fn apply(enabled: bool) -> Result<(), String> {
+/// Makes the registry match the setting. `minimized` decides whether the
+/// startup launch opens in the tray. Errors are returned as text for the
+/// settings page; they never stop the app.
+pub fn apply(enabled: bool, minimized: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         if enabled {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let command = format!("\"{}\" --minimized", exe.display());
+            let flag = if minimized { " --minimized" } else { "" };
+            let command = format!("\"{}\"{flag}", exe.display());
             registry::set_run_value(RUN_KEY, VALUE_NAME, &command)
         } else {
             registry::delete_run_value(RUN_KEY, VALUE_NAME)
@@ -21,8 +27,20 @@ pub fn apply(enabled: bool) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = enabled;
+        let _ = (enabled, minimized);
         Err("launch on startup is only implemented on Windows".to_owned())
+    }
+}
+
+/// The language chosen in the installer, if it left one behind.
+pub fn installer_language() -> Option<Language> {
+    #[cfg(windows)]
+    {
+        registry::read_string(APP_KEY, "Language").and_then(|code| Language::from_code(&code))
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 
@@ -43,8 +61,8 @@ mod registry {
     use std::os::windows::ffi::OsStrExt;
 
     use windows::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW,
-        RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ, REG_VALUE_TYPE, RegCloseKey,
+        RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     };
     use windows::core::PCWSTR;
 
@@ -111,6 +129,32 @@ mod registry {
         } else {
             Err(format!("could not remove the Run value: {}", status.0))
         }
+    }
+
+    pub fn read_string(path: &str, name: &str) -> Option<String> {
+        let key = open(path, KEY_READ).ok()?;
+        let name = wide(name);
+        let mut kind = REG_VALUE_TYPE::default();
+        let mut buffer = vec![0u16; 256];
+        let mut size = (buffer.len() * 2) as u32;
+        // SAFETY: `size` holds the byte length of `buffer`, which stays
+        // alive for the call; the API writes at most that many bytes.
+        let status = unsafe {
+            RegQueryValueExW(
+                key.0,
+                PCWSTR(name.as_ptr()),
+                None,
+                Some(&mut kind),
+                Some(buffer.as_mut_ptr() as *mut u8),
+                Some(&mut size),
+            )
+        };
+        if status.is_err() || kind != REG_SZ {
+            return None;
+        }
+        let len = (size as usize / 2).min(buffer.len());
+        let text = String::from_utf16_lossy(&buffer[..len]);
+        Some(text.trim_end_matches('\0').to_owned())
     }
 
     pub fn run_value_exists(path: &str, name: &str) -> bool {
