@@ -1,0 +1,7 @@
+// Translation lookup, backed by the Rust i18n catalog. `tr` takes an English
+// source string and returns it in the current language (or the English text
+// when there is no translation). The window is rebuilt when the language
+// changes, so this does not need to be reactive.
+export global I18n {
+    pure callback tr(string) -> string;
+}

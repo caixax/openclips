@@ -7,6 +7,7 @@ mod error;
 mod games;
 mod gpu;
 mod hotkeys;
+mod i18n;
 mod library;
 mod player;
 mod settings;
@@ -64,6 +65,7 @@ fn run() -> Result<(), AppError> {
 
     gpu::raise_gpu_priority();
     let (config, startup_warning) = load_config(&paths);
+    i18n::set_language(config.general.language);
     if config.updates.check && updater::apply_pending_at_start(&paths) {
         info!("handing over to the installer");
         return Ok(());
