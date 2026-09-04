@@ -87,6 +87,12 @@ impl Language {
     ];
 
     /// The lower case code used as the translation catalog file name.
+    /// The language for a `code()` value, for example from the installer.
+    pub fn from_code(code: &str) -> Option<Language> {
+        let code = code.trim().to_ascii_lowercase();
+        Self::ALL.into_iter().find(|l| l.code() == code)
+    }
+
     pub const fn code(self) -> &'static str {
         match self {
             Language::English => "en",
@@ -113,17 +119,34 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
     pub launch_on_startup: bool,
+    /// Open in the tray when Windows starts the app. A launch by the user
+    /// always shows the window.
     pub start_minimized: bool,
     /// Play a short sound when a clip is saved. Off by default.
     pub clip_sound: bool,
+    /// Show a small on-screen notice when a clip is saved.
+    pub clip_toast: bool,
     /// Short UI fades. Off makes every change instant.
     pub animations: bool,
     /// Interface language.
     pub language: Language,
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            launch_on_startup: false,
+            start_minimized: false,
+            clip_sound: false,
+            clip_toast: true,
+            animations: true,
+            language: Language::default(),
+        }
+    }
 }
 
 /// Automatic updates from GitHub releases, checked once at start.
