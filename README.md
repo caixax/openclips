@@ -167,7 +167,7 @@ Under Settings, Audio, an application (`discord.exe`, a browser, a music player)
 
 ## Discord
 
-With Discord running, OpenClips can show "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. Discord only accepts activities from a registered application, so paste an Application ID from <https://discord.com/developers/applications> (create an application called OpenClips) into the same section; without an id nothing is sent. Presence runs on its own thread and reconnects quietly when Discord starts later.
+With Discord running, OpenClips can show "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. Discord only accepts activities from a registered application, so paste an Application ID from <https://discord.com/developers/applications> (create an application called OpenClips) into the same section; without an id nothing is sent. In that application, upload `crates/app/assets/discord-logo.png` as the App Icon and again under Rich Presence, Art Assets with the name `logo`, which is the image the activity shows. Presence runs on its own thread and reconnects quietly when Discord starts later.
 
 ## Architecture
 
@@ -238,6 +238,7 @@ A recording interrupted by a crash leaves a `.mp4.part` file that is still playa
 - **GStreamer** (via `gstreamer-rs`) for capture, encoding, muxing and, later, trimming.
 - **Slint** for the UI and the tray icon. Slint is used under its royalty free desktop license.
 - **Font Awesome Free** icons (CC BY 4.0), embedded as path data in `crates/app/ui/icons.slint`. See `crates/app/assets/icons`.
+- The application icon (`crates/app/assets/icon.ico`, embedded into the executable through `winresource`, also used by the tray, the window and the installer) is the Font Awesome scissors on the accent colour; `discord-logo.png` is the same mark at 1024 px for Discord.
 
 ## License
 
