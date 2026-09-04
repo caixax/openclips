@@ -32,6 +32,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 - Quality presets (Low, Standard, High) or your own frame rate and bitrate.
 - Full session recordings written as fragmented MP4, so a crash still leaves a playable file.
 - Windows Graphics Capture (default) or Desktop Duplication, cursor on or off, any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
+- Game capture, opt in per game, that reads the game's real frames through OBS Studio's capture hook instead of sampling the desktop, so it does not drop frames when the GPU is saturated (see [Game capture](#game-capture)).
 - Hotkeys are a key plus an action: save the last N seconds (one key for 15 seconds, another for two minutes), start or stop the buffer, start or stop recording. As many as you like.
 
 **Audio**
@@ -126,6 +127,7 @@ fps = 60
 bitrate_kbps = 20000
 show_cursor = false
 api = "graphics_capture"      # or desktop_duplication
+method = "display"            # default capture method: display or game (see Game capture)
 
 [capture.display]
 kind = "primary"        # or kind = "monitor", id = "\\\\.\\DISPLAY2"
@@ -175,6 +177,7 @@ action = "buffer"         # buffer, recording or ignore
 # replay_length_seconds = 120
 # subfolder = "Half-Life"
 # display = { kind = "primary" }
+# capture_method = "game"   # game or display; omit to follow [capture] method
 
 [updates]
 check = true              # look at GitHub releases once at start
@@ -217,6 +220,25 @@ Saving from the editor asks whether to write a new file into `Edited` or replace
 ### Per application audio
 
 Under Settings, Audio, an application (`discord.exe`, a browser, a music player) can get its own audio track. It is captured with the Windows process loopback API, so the track only contains that program, and the first such application is excluded from the default desktop output so it is not recorded twice. Because the buffer runs continuously the program has to be running when capture starts; the app watches for it and restarts capture on its own when it opens or closes (never while a recording is active). In the editor that track can then be muted, for example to drop a voice chat from a clip. Separate tracks for desktop and microphone work the same way.
+
+## Game capture
+
+Display capture (Windows Graphics Capture or Desktop Duplication) samples the desktop. When a game pushes the GPU hard the desktop compositor misses updates, so some frames arrive twice and the clip micro stutters. Game capture avoids this by reading the game's real frames: it injects a hook into the game that copies each presented frame, exactly the way OBS Studio, ShadowPlay and Medal do, so no frame is ever missed no matter how busy the GPU is.
+
+OpenClips does not build its own hook. It ships and injects the unmodified, Authenticode signed capture hook from OBS Studio (`graphics-hook`, `inject-helper` and `get-graphics-offsets`, under `third_party/obs-capture`, GPLv2). Anti-cheat vendors (Easy Anti-Cheat, BattlEye and others) whitelist that exact signature because streamers everywhere run OBS, so a hooked game sees OpenClips the same way it sees OBS: **there are no anti-cheat bans for using it.** The one exception is kernel level anti-cheats that block all injection outright, Riot Vanguard (Valorant) being the notable one; for those games OpenClips stays on display capture. If injection fails for any reason, OpenClips falls back to display capture on its own and tells you in the status line, so a clip is never lost.
+
+Game capture is opt in per game. In the config file, set the method on a game profile (or the global default under `[capture]`):
+
+```toml
+[capture]
+method = "display"            # global default: display or game
+
+[[games.profiles]]
+exe = "momentum.exe"
+capture_method = "game"       # this game uses game capture; omit to follow the default
+```
+
+The game must be running and in the foreground for the hook to attach. Everything downstream (the replay buffer, hotkeys, recordings, editor and per application audio) works exactly the same as with display capture.
 
 ## Updates
 
