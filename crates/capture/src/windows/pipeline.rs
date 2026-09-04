@@ -56,6 +56,16 @@ impl CapturePipeline {
             .bus()
             .ok_or_else(|| CaptureError::PipelineBuild("pipeline has no bus".to_owned()))?;
 
+        if std::env::var("OPENCLIPS_MMCSS").as_deref() == Ok("1") {
+            bus.set_sync_handler(|_, msg| {
+                if let gst::MessageView::StreamStatus(status) = msg.view()
+                    && status.type_() == gst::StreamStatusType::Enter
+                {
+                    raise_streaming_thread();
+                }
+                gst::BusSyncReply::Pass
+            });
+        }
         if let Err(err) = pipeline.set_state(gst::State::Playing) {
             let _ = pipeline.set_state(gst::State::Null);
             return Err(CaptureError::EncoderStart {
@@ -73,6 +83,7 @@ impl CapturePipeline {
                 other => other,
             });
         }
+        log_negotiated_caps(&pipeline);
         info!(
             "capture started with {} on {} and {} audio track(s)",
             settings.encoder.element,
@@ -186,6 +197,69 @@ pub(super) fn running_time(sample: &gst::Sample, pts: Option<gst::ClockTime>) ->
     Timestamp::from_nanos(running.nseconds())
 }
 
+/// Logs the caps on every video src pad so a system memory copy in the
+/// chain is visible: every hop before the encoder must carry
+/// `memory:D3D11Memory`.
+fn log_negotiated_caps(pipeline: &gst::Pipeline) {
+    let mut iter = pipeline.iterate_elements();
+    while let Ok(Some(element)) = iter.next() {
+        for pad in element.src_pads() {
+            let Some(caps) = pad.current_caps() else {
+                continue;
+            };
+            let Some(structure) = caps.structure(0) else {
+                continue;
+            };
+            if !structure.name().starts_with("video/") {
+                continue;
+            }
+            let features = caps
+                .features(0)
+                .map(|f| f.to_string())
+                .unwrap_or_else(|| "system memory".to_owned());
+            let format = structure
+                .get::<&str>("format")
+                .map(|f| format!(", {f}"))
+                .unwrap_or_default();
+            let rate = structure
+                .get::<gst::Fraction>("framerate")
+                .map(|f| format!(", {}/{}", f.numer(), f.denom()))
+                .unwrap_or_default();
+            info!(
+                "{}:{} -> {} [{features}{format}{rate}]",
+                element.name(),
+                pad.name(),
+                structure.name()
+            );
+        }
+    }
+}
+
+/// Runs inside a GStreamer streaming thread when it starts: registers it
+/// with the multimedia class scheduler and raises its priority so capture
+/// and encode are not starved while a game keeps the machine busy.
+#[cfg(windows)]
+fn raise_streaming_thread() {
+    use windows::Win32::System::Threading::{
+        AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+    };
+    use windows::core::w;
+
+    // SAFETY: plain Win32 calls on the current thread.
+    unsafe {
+        let mut index = 0u32;
+        if AvSetMmThreadCharacteristicsW(w!("Capture"), &mut index).is_err() {
+            warn!("MMCSS registration failed for a streaming thread");
+        }
+        if SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST).is_err() {
+            warn!("could not raise a streaming thread's priority");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn raise_streaming_thread() {}
+
 fn make(element: &str) -> Result<gst::Element, CaptureError> {
     gst::ElementFactory::make(element)
         .build()
@@ -227,9 +301,17 @@ fn build(
     }
 
     let fps = settings.fps.max(1) as i32;
+    // OPENCLIPS_SOURCE_FPS asks the source for another rate (for example the
+    // display refresh rate) and lets videorate pick the nearest frame for
+    // each output slot.
+    let source_fps = std::env::var("OPENCLIPS_SOURCE_FPS")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(fps);
     let rate_caps = gst::Caps::builder("video/x-raw")
         .features(["memory:D3D11Memory"])
-        .field("framerate", gst::Fraction::new(fps, 1))
+        .field("framerate", gst::Fraction::new(source_fps, 1))
         .build();
     let rate_filter = make("capsfilter")?;
     rate_filter.set_property("caps", &rate_caps);
@@ -293,6 +375,16 @@ fn build(
         vec![src, rate_filter, rate, grid_filter, convert, nv12_filter];
     if !spec.d3d11_input {
         chain.push(make("d3d11download")?);
+    }
+    // OPENCLIPS_QUEUE=1 decouples capture from encode with a few frames of
+    // slack; the oldest frame goes when the encoder stalls longer than that.
+    if std::env::var("OPENCLIPS_QUEUE").as_deref() == Ok("1") {
+        let queue = make("queue")?;
+        queue.set_property("max-size-buffers", 4u32);
+        queue.set_property("max-size-bytes", 0u32);
+        queue.set_property("max-size-time", 0u64);
+        queue.set_property_from_str("leaky", "downstream");
+        chain.push(queue);
     }
     chain.push(enc);
     chain.push(parse);

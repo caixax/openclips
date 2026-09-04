@@ -85,6 +85,8 @@ fn main() {
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(8);
     let path = PathBuf::from(args.next().unwrap_or_else(|| "record_check.mp4".to_owned()));
 
+    let _log = openclips_core::logging::init(&std::env::temp_dir().join("openclips-record-check"))
+        .expect("logging");
     let mut backend = openclips_capture::create_backend().expect("backend");
     let encoder = choose_encoder(backend.available_encoders(), EncoderPreference::Auto)
         .cloned()
