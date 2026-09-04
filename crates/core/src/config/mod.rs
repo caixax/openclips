@@ -29,6 +29,7 @@ pub const MIN_MEMORY_CAP_MB: u32 = 64;
 pub struct Config {
     pub version: u32,
     pub general: GeneralConfig,
+    pub discord: DiscordConfig,
     pub capture: CaptureConfig,
     pub replay: ReplayConfig,
     pub recording: RecordingConfig,
@@ -43,6 +44,7 @@ impl Default for Config {
         Self {
             version: CONFIG_VERSION,
             general: GeneralConfig::default(),
+            discord: DiscordConfig::default(),
             capture: CaptureConfig::default(),
             replay: ReplayConfig::default(),
             recording: RecordingConfig::default(),
@@ -59,6 +61,28 @@ impl Default for Config {
 pub struct GeneralConfig {
     pub launch_on_startup: bool,
     pub start_minimized: bool,
+}
+
+/// Discord Rich Presence, the "Clipping <game>" status in the user's
+/// Discord profile. Needs a Discord application id; the bundled default is
+/// the OpenClips application, an own one can be pasted instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscordConfig {
+    pub enabled: bool,
+    /// Show the detected game name next to "Clipping".
+    pub show_game: bool,
+    pub client_id: String,
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            show_game: true,
+            client_id: String::new(),
+        }
+    }
 }
 
 /// Which display to capture. `Primary` follows the OS primary monitor even
