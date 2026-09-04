@@ -16,6 +16,12 @@ pub enum CoreError {
         source: std::io::Error,
     },
 
+    #[error("invalid version number: {0}")]
+    InvalidVersion(String),
+
+    #[error("could not serialize {path}: {reason}")]
+    Serialize { path: PathBuf, reason: String },
+
     #[error("failed to write {path}: {source}")]
     WriteFile {
         path: PathBuf,

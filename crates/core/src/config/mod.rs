@@ -29,6 +29,7 @@ pub const MIN_MEMORY_CAP_MB: u32 = 64;
 pub struct Config {
     pub version: u32,
     pub general: GeneralConfig,
+    pub updates: UpdatesConfig,
     pub discord: DiscordConfig,
     pub capture: CaptureConfig,
     pub replay: ReplayConfig,
@@ -44,6 +45,7 @@ impl Default for Config {
         Self {
             version: CONFIG_VERSION,
             general: GeneralConfig::default(),
+            updates: UpdatesConfig::default(),
             discord: DiscordConfig::default(),
             capture: CaptureConfig::default(),
             replay: ReplayConfig::default(),
@@ -61,6 +63,35 @@ impl Default for Config {
 pub struct GeneralConfig {
     pub launch_on_startup: bool,
     pub start_minimized: bool,
+}
+
+/// Automatic updates from GitHub releases, checked once at start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    pub check: bool,
+    /// `owner/name` on GitHub. Empty means the official repository.
+    pub repo: String,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            check: true,
+            repo: String::new(),
+        }
+    }
+}
+
+impl UpdatesConfig {
+    pub fn effective_repo(&self) -> &str {
+        let own = self.repo.trim();
+        if own.is_empty() {
+            crate::update::GITHUB_REPO
+        } else {
+            own
+        }
+    }
 }
 
 /// The OpenClips application registered on Discord, used for Rich Presence.
