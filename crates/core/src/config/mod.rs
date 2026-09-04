@@ -63,16 +63,31 @@ pub struct GeneralConfig {
     pub start_minimized: bool,
 }
 
+/// The OpenClips application registered on Discord, used for Rich Presence.
+pub const DISCORD_CLIENT_ID: &str = "1545244599575121920";
+
 /// Discord Rich Presence, the "Clipping <game>" status in the user's
-/// Discord profile. Needs a Discord application id; the bundled default is
-/// the OpenClips application, an own one can be pasted instead.
+/// Discord profile. Uses the OpenClips application by default; an own
+/// application id can be set instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscordConfig {
     pub enabled: bool,
     /// Show the detected game name next to "Clipping".
     pub show_game: bool,
+    /// Empty means the bundled OpenClips application.
     pub client_id: String,
+}
+
+impl DiscordConfig {
+    pub fn effective_client_id(&self) -> &str {
+        let own = self.client_id.trim();
+        if own.is_empty() {
+            DISCORD_CLIENT_ID
+        } else {
+            own
+        }
+    }
 }
 
 impl Default for DiscordConfig {
