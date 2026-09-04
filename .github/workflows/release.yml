@@ -83,6 +83,12 @@ jobs:
           Start-Process -FilePath .\gstreamer-installer.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/TYPE=devel" -Wait
           "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
 
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -Append -FilePath $env:GITHUB_PATH
+
       - name: Test
         run: cargo test --workspace
 
