@@ -445,7 +445,7 @@ pub fn collect(
     } else {
         CaptureScope::Global
     };
-    config.games.profiles = collect_game_profiles(state, monitors);
+    config.games.profiles = collect_game_profiles(state, monitors, &config.games.profiles);
 
     config.hotkeys.bindings = collect_hotkeys(state)?;
 
@@ -523,24 +523,36 @@ pub fn set_game_profiles(
 pub fn collect_game_profiles(
     state: &SettingsState<'_>,
     monitors: &[MonitorInfo],
+    previous: &[GameProfile],
 ) -> Vec<GameProfile> {
     state
         .get_game_profiles()
         .iter()
         .filter(|row| !row.exe.trim().is_empty())
-        .map(|row| GameProfile {
-            exe: row.exe.trim().to_lowercase(),
-            name: row.name.trim().to_owned(),
-            action: ACTIONS
-                .get(row.action_index.max(0) as usize)
-                .copied()
-                .unwrap_or_default(),
-            replay_length_seconds: (row.replay_seconds > 0).then_some(row.replay_seconds as u32),
-            subfolder: {
-                let sub = row.subfolder.trim();
-                (!sub.is_empty()).then(|| sub.to_owned())
-            },
-            display: display_from_index(row.display_index, monitors),
+        .map(|row| {
+            let exe = row.exe.trim().to_lowercase();
+            // The capture method has no UI control yet; carry the value set in
+            // the config file across settings saves instead of dropping it.
+            let capture_method = previous
+                .iter()
+                .find(|p| p.exe == exe)
+                .and_then(|p| p.capture_method);
+            GameProfile {
+                exe,
+                name: row.name.trim().to_owned(),
+                action: ACTIONS
+                    .get(row.action_index.max(0) as usize)
+                    .copied()
+                    .unwrap_or_default(),
+                replay_length_seconds: (row.replay_seconds > 0)
+                    .then_some(row.replay_seconds as u32),
+                subfolder: {
+                    let sub = row.subfolder.trim();
+                    (!sub.is_empty()).then(|| sub.to_owned())
+                },
+                display: display_from_index(row.display_index, monitors),
+                capture_method,
+            }
         })
         .collect()
 }

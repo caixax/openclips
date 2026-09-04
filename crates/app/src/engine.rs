@@ -16,7 +16,7 @@ use openclips_core::capture::{
     AudioDeviceInfo, CaptureSettings, EncoderInfo, MonitorInfo, audio_source_key, choose_encoder,
 };
 use openclips_core::clip::{ClipFile, LocalDateTime, clip_file_name, unique_path};
-use openclips_core::config::{AppPaths, Config, DisplaySelection};
+use openclips_core::config::{AppPaths, CaptureMethod, Config, DisplaySelection};
 use openclips_core::games::{AutoCapture, DetectedGame};
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo, Timestamp};
 use openclips_core::replay::{ReplayBuffer, ReplayLimits, ReplayStats};
@@ -197,6 +197,9 @@ pub struct Engine {
     /// Timestamps of automatic restarts after capture errors, to cap them.
     restarts: VecDeque<Instant>,
     blank_warned: bool,
+    /// Game capture failed this session (or for this game); fall back to
+    /// display until the game or the settings change.
+    game_capture_unavailable: bool,
 }
 
 impl Engine {
@@ -244,6 +247,7 @@ impl Engine {
             monitors,
             restarts: VecDeque::new(),
             blank_warned: false,
+            game_capture_unavailable: false,
         })
     }
 
@@ -309,6 +313,29 @@ impl Engine {
             .unwrap_or_else(|| self.config.capture.display.clone())
     }
 
+    /// The capture method for the active game, its per game override taking
+    /// precedence over the global default.
+    fn effective_capture_method(&self) -> CaptureMethod {
+        self.active_game
+            .as_ref()
+            .and_then(|g| g.profile.as_ref())
+            .and_then(|p| p.capture_method)
+            .unwrap_or(self.config.capture.method)
+    }
+
+    /// The process id to hook, when game capture is chosen and possible.
+    /// `None` selects display capture (no active game, no hooks, or a prior
+    /// failure this session).
+    fn game_capture_pid(&self) -> Option<u32> {
+        if self.game_capture_unavailable
+            || self.effective_capture_method() != CaptureMethod::Game
+            || !self.backend.game_capture_available()
+        {
+            return None;
+        }
+        self.active_game.as_ref().map(|g| g.pid)
+    }
+
     fn output_dir(&self, base: PathBuf) -> PathBuf {
         match self
             .active_game
@@ -331,10 +358,13 @@ impl Engine {
         auto: AutoCapture,
     ) -> Result<(), AppError> {
         let previous_display = self.effective_display();
+        let previous_pid = self.game_capture_pid();
         let game_changed =
             active.as_ref().map(|g| &g.exe) != self.active_game.as_ref().map(|g| &g.exe);
         self.active_game = active;
         if game_changed {
+            // A new game gets a fresh attempt at game capture.
+            self.game_capture_unavailable = false;
             if let Some(game) = &self.active_game {
                 info!("active game: {} ({})", game.name, game.exe);
             }
@@ -342,10 +372,11 @@ impl Engine {
                 max_duration: self.effective_replay_length(),
                 max_bytes: self.config.replay_memory_cap_bytes(),
             });
-            if self.effective_display() != previous_display
-                && self.backend.is_running()
-                && !self.recording_wanted
-            {
+            // Restart when the source changes: a different display, or a
+            // different game capture target (which display comparison misses).
+            let source_changed = self.effective_display() != previous_display
+                || self.game_capture_pid() != previous_pid;
+            if source_changed && self.backend.is_running() && !self.recording_wanted {
                 self.restart_capture()?;
             }
         }
@@ -499,6 +530,7 @@ impl Engine {
             self.config.replay.temp_dir.clone(),
         );
         settings.display = display;
+        settings.game_capture_pid = self.game_capture_pid();
         for track in &mut settings.audio_tracks {
             track
                 .sources
@@ -649,6 +681,15 @@ impl Engine {
                     failures.push(format!("{} ({reason})", candidate.kind.label()));
                     index += 1;
                 }
+                // Game capture could not attach: fall back to display capture
+                // for this session and retry the same encoder without the hook.
+                Err(CaptureError::GameCapture(message)) if !self.game_capture_unavailable => {
+                    warn!("game capture failed to start: {message}");
+                    self.game_capture_unavailable = true;
+                    self.add_notice(format!(
+                        "Game capture failed ({message}), using display capture."
+                    ));
+                }
                 Err(other) => return Err(other.into()),
             }
         }
@@ -695,6 +736,8 @@ impl Engine {
         }
         if previous.capture_restart_needed(&self.config) {
             self.unavailable_audio.clear();
+            // Changed capture settings get a fresh attempt at game capture.
+            self.game_capture_unavailable = false;
             if self.backend.is_running() {
                 if self.recording_wanted {
                     self.restart_pending = true;
@@ -755,6 +798,17 @@ impl Engine {
                     match self.restart_capture() {
                         Ok(()) => self.add_notice(format!(
                             "Audio device {name} stopped working, capturing without it."
+                        )),
+                        Err(err) => self.last_failure = Some(err.to_string()),
+                    }
+                }
+                // Game capture could not start or the hook died: fall back to
+                // display capture for the rest of this session.
+                CaptureError::GameCapture(message) if self.wants_capture() => {
+                    self.game_capture_unavailable = true;
+                    match self.restart_capture() {
+                        Ok(()) => self.add_notice(format!(
+                            "Game capture failed ({message}), using display capture."
                         )),
                         Err(err) => self.last_failure = Some(err.to_string()),
                     }

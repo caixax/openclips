@@ -1915,7 +1915,7 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         let state = window.global::<SettingsState>();
         let index = state.get_running_known_index().max(0) as usize;
         let monitors = current_monitors(&s);
-        let mut profiles = settings::collect_game_profiles(&state, &monitors);
+        let mut profiles = settings::collect_game_profiles(&state, &monitors, &[]);
         let configured: Vec<String> = profiles.iter().map(|p| p.exe.clone()).collect();
         let candidate = s.games.borrow().as_ref().and_then(|g| {
             g.detected()
@@ -1953,7 +1953,7 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
             format!("{exe}.exe")
         };
         let monitors = current_monitors(&s);
-        let mut profiles = settings::collect_game_profiles(&state, &monitors);
+        let mut profiles = settings::collect_game_profiles(&state, &monitors, &[]);
         if profiles.iter().any(|p| p.exe == exe) {
             state.set_games_message(format!("{exe} is already in the list.").into());
             return;
@@ -1986,7 +1986,7 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         };
         let state = window.global::<SettingsState>();
         let monitors = current_monitors(&s);
-        let mut profiles = settings::collect_game_profiles(&state, &monitors);
+        let mut profiles = settings::collect_game_profiles(&state, &monitors, &[]);
         profiles.retain(|p| p.exe != exe.as_str());
         set_game_rows(&window, &s, &profiles);
         state.set_games_message("Removed. Save to apply.".into());
@@ -1999,7 +1999,7 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         };
         let state = window.global::<SettingsState>();
         let monitors = current_monitors(&s);
-        let profiles = settings::collect_game_profiles(&state, &monitors);
+        let profiles = settings::collect_game_profiles(&state, &monitors, &[]);
         let missing: Vec<String> = profiles
             .iter()
             .filter(|p| p.name.trim().is_empty())
