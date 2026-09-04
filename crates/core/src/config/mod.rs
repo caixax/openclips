@@ -163,9 +163,13 @@ impl Default for RecordingConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputConfig {
-    /// Root folder for clips. `None` resolves to the platform videos folder.
+    /// Root folder for everything. `None` resolves to the platform videos folder.
     pub clips_dir: Option<PathBuf>,
     pub file_name_pattern: String,
+    /// Subfolder of the root for replay clips. Empty keeps them in the root.
+    pub clips_subfolder: String,
+    /// Subfolder of the root for trimmed and compressed files.
+    pub edited_subfolder: String,
 }
 
 impl Default for OutputConfig {
@@ -173,6 +177,8 @@ impl Default for OutputConfig {
         Self {
             clips_dir: None,
             file_name_pattern: "{game} {date} {time}".to_owned(),
+            clips_subfolder: "Clips".to_owned(),
+            edited_subfolder: "Edited".to_owned(),
         }
     }
 }
@@ -293,8 +299,7 @@ pub struct GamesConfig {
     pub profiles: Vec<GameProfile>,
 }
 
-/// A hotkey that saves the last `seconds` of the buffer. Zero means the
-/// whole buffer length.
+/// Pre 0.3 save hotkey entry, kept for reading old config files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SaveHotkey {
@@ -311,25 +316,106 @@ impl Default for SaveHotkey {
     }
 }
 
+/// What a hotkey does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HotkeyActionKind {
+    /// Save the last `seconds` of the buffer, or the whole buffer when zero.
+    #[default]
+    SaveReplay,
+    ToggleReplayBuffer,
+    ToggleRecording,
+}
+
+impl HotkeyActionKind {
+    pub const ALL: [HotkeyActionKind; 3] = [
+        HotkeyActionKind::SaveReplay,
+        HotkeyActionKind::ToggleReplayBuffer,
+        HotkeyActionKind::ToggleRecording,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            HotkeyActionKind::SaveReplay => "Save replay",
+            HotkeyActionKind::ToggleReplayBuffer => "Start or stop the buffer",
+            HotkeyActionKind::ToggleRecording => "Start or stop recording",
+        }
+    }
+}
+
+/// One global hotkey and what it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HotkeyBinding {
+    pub binding: Hotkey,
+    pub action: HotkeyActionKind,
+    /// Only used by `SaveReplay`. Zero saves everything the buffer holds.
+    pub seconds: u32,
+}
+
+impl Default for HotkeyBinding {
+    fn default() -> Self {
+        Self {
+            binding: Hotkey::new(Modifiers::ALT, Key::Char('8')),
+            action: HotkeyActionKind::SaveReplay,
+            seconds: 0,
+        }
+    }
+}
+
+impl HotkeyBinding {
+    pub fn describe(&self) -> String {
+        match self.action {
+            HotkeyActionKind::SaveReplay if self.seconds == 0 => {
+                "saves the whole buffer".to_owned()
+            }
+            HotkeyActionKind::SaveReplay if self.seconds.is_multiple_of(60) => {
+                format!("saves the last {} min", self.seconds / 60)
+            }
+            HotkeyActionKind::SaveReplay => format!("saves the last {} s", self.seconds),
+            HotkeyActionKind::ToggleReplayBuffer => "starts or stops the buffer".to_owned(),
+            HotkeyActionKind::ToggleRecording => "starts or stops recording".to_owned(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HotkeyConfig {
-    /// Any number of save hotkeys, each with its own length.
-    pub save: Vec<SaveHotkey>,
-    pub toggle_replay_buffer: Hotkey,
-    pub toggle_recording: Hotkey,
-    /// Pre 0.2 single save binding, migrated into `save` on load.
+    /// Every hotkey. An empty list on disk falls back to the defaults.
+    #[serde(default = "Vec::new")]
+    pub bindings: Vec<HotkeyBinding>,
+    /// Pre 0.3 keys, migrated into `bindings` on load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save: Option<Vec<SaveHotkey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_replay: Option<Hotkey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toggle_replay_buffer: Option<Hotkey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toggle_recording: Option<Hotkey>,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
-            save: vec![SaveHotkey::default()],
-            toggle_replay_buffer: Hotkey::new(Modifiers::ALT, Key::Char('9')),
-            toggle_recording: Hotkey::new(Modifiers::ALT, Key::Char('0')),
+            bindings: vec![
+                HotkeyBinding::default(),
+                HotkeyBinding {
+                    binding: Hotkey::new(Modifiers::ALT, Key::Char('9')),
+                    action: HotkeyActionKind::ToggleReplayBuffer,
+                    seconds: 0,
+                },
+                HotkeyBinding {
+                    binding: Hotkey::new(Modifiers::ALT, Key::Char('0')),
+                    action: HotkeyActionKind::ToggleRecording,
+                    seconds: 0,
+                },
+            ],
+            save: None,
             save_replay: None,
+            toggle_replay_buffer: None,
+            toggle_recording: None,
         }
     }
 }
@@ -337,28 +423,82 @@ impl Default for HotkeyConfig {
 impl HotkeyConfig {
     /// Every binding with a name, for conflict checks and display.
     pub fn all(&self) -> Vec<(String, Hotkey)> {
-        let mut all: Vec<(String, Hotkey)> = self
-            .save
+        self.bindings
             .iter()
             .enumerate()
-            .map(|(i, s)| (format!("save #{}", i + 1), s.binding))
-            .collect();
-        all.push(("toggle_replay_buffer".to_owned(), self.toggle_replay_buffer));
-        all.push(("toggle_recording".to_owned(), self.toggle_recording));
-        all
+            .map(|(i, b)| {
+                (
+                    format!("hotkey #{} ({})", i + 1, b.action.label()),
+                    b.binding,
+                )
+            })
+            .collect()
     }
 
     /// The first save binding, for hints.
-    pub fn primary_save(&self) -> Option<&SaveHotkey> {
-        self.save.first()
+    pub fn primary_save(&self) -> Option<&HotkeyBinding> {
+        self.bindings
+            .iter()
+            .find(|b| b.action == HotkeyActionKind::SaveReplay)
+    }
+
+    pub fn first_of(&self, action: HotkeyActionKind) -> Option<&HotkeyBinding> {
+        self.bindings.iter().find(|b| b.action == action)
     }
 
     fn migrate(&mut self) {
-        if let Some(binding) = self.save_replay.take()
-            && self.save.is_empty()
-        {
-            self.save.push(SaveHotkey {
+        let legacy = self.save.take();
+        let save_replay = self.save_replay.take();
+        let toggle_buffer = self.toggle_replay_buffer.take();
+        let toggle_recording = self.toggle_recording.take();
+        if !self.bindings.is_empty() {
+            return;
+        }
+        let had_legacy = legacy.is_some()
+            || save_replay.is_some()
+            || toggle_buffer.is_some()
+            || toggle_recording.is_some();
+        if !had_legacy {
+            self.bindings = Self::default().bindings;
+            return;
+        }
+        let defaults = Self::default();
+        let saves: Vec<SaveHotkey> = match (legacy, save_replay) {
+            (Some(list), _) if !list.is_empty() => list,
+            (_, Some(binding)) => vec![SaveHotkey {
                 binding,
+                seconds: 0,
+            }],
+            _ => vec![SaveHotkey::default()],
+        };
+        for save in saves {
+            self.bindings.push(HotkeyBinding {
+                binding: save.binding,
+                action: HotkeyActionKind::SaveReplay,
+                seconds: save.seconds,
+            });
+        }
+        let buffer = toggle_buffer.or_else(|| {
+            defaults
+                .first_of(HotkeyActionKind::ToggleReplayBuffer)
+                .map(|b| b.binding)
+        });
+        let recording = toggle_recording.or_else(|| {
+            defaults
+                .first_of(HotkeyActionKind::ToggleRecording)
+                .map(|b| b.binding)
+        });
+        if let Some(binding) = buffer {
+            self.bindings.push(HotkeyBinding {
+                binding,
+                action: HotkeyActionKind::ToggleReplayBuffer,
+                seconds: 0,
+            });
+        }
+        if let Some(binding) = recording {
+            self.bindings.push(HotkeyBinding {
+                binding,
+                action: HotkeyActionKind::ToggleRecording,
                 seconds: 0,
             });
         }
@@ -481,18 +621,13 @@ impl Config {
                 reason: "must be between 1 and 1024".to_owned(),
             });
         }
-        if self.hotkeys.save.is_empty() {
-            return Err(CoreError::InvalidConfig {
-                field: "hotkeys.save",
-                reason: "at least one save hotkey is required".to_owned(),
-            });
-        }
-        for save in &self.hotkeys.save {
-            if save.seconds != 0
-                && !(MIN_REPLAY_SECONDS..=MAX_REPLAY_SECONDS).contains(&save.seconds)
+        for binding in &self.hotkeys.bindings {
+            if binding.action == HotkeyActionKind::SaveReplay
+                && binding.seconds != 0
+                && !(MIN_REPLAY_SECONDS..=MAX_REPLAY_SECONDS).contains(&binding.seconds)
             {
                 return Err(CoreError::InvalidConfig {
-                    field: "hotkeys.save.seconds",
+                    field: "hotkeys.bindings.seconds",
                     reason: format!(
                         "must be 0 or between {MIN_REPLAY_SECONDS} and {MAX_REPLAY_SECONDS}"
                     ),
@@ -550,7 +685,21 @@ impl Config {
     }
 
     pub fn recordings_dir(&self, paths: &AppPaths) -> PathBuf {
-        let sub = self.recording.subfolder.trim();
+        self.subdir(paths, &self.recording.subfolder)
+    }
+
+    /// Where replay clips are written.
+    pub fn clips_out_dir(&self, paths: &AppPaths) -> PathBuf {
+        self.subdir(paths, &self.output.clips_subfolder)
+    }
+
+    /// Where trimmed and compressed files are written.
+    pub fn edited_dir(&self, paths: &AppPaths) -> PathBuf {
+        self.subdir(paths, &self.output.edited_subfolder)
+    }
+
+    fn subdir(&self, paths: &AppPaths, sub: &str) -> PathBuf {
+        let sub = sub.trim();
         if sub.is_empty() {
             self.clips_dir(paths)
         } else {
@@ -592,19 +741,16 @@ mod tests {
 
     #[test]
     fn partial_file_fills_in_defaults() {
-        let text = "[replay]\nlength_seconds = 90\n\n[[hotkeys.save]]\nbinding = \"Ctrl+F10\"\nseconds = 15\n";
+        let text = "[replay]\nlength_seconds = 90\n\n[[hotkeys.bindings]]\nbinding = \"Ctrl+F10\"\nseconds = 15\n";
         let config: Config = toml::from_str(text).expect("parse");
         assert_eq!(config.replay.length_seconds, 90);
         assert_eq!(
             config.replay.memory_cap_mb,
             ReplayConfig::default().memory_cap_mb
         );
-        assert_eq!(config.hotkeys.save[0].binding.to_string(), "Ctrl+F10");
-        assert_eq!(config.hotkeys.save[0].seconds, 15);
-        assert_eq!(
-            config.hotkeys.toggle_recording,
-            HotkeyConfig::default().toggle_recording
-        );
+        assert_eq!(config.hotkeys.bindings[0].binding.to_string(), "Ctrl+F10");
+        assert_eq!(config.hotkeys.bindings[0].seconds, 15);
+        assert_eq!(config.hotkeys.bindings.len(), 1);
     }
 
     #[test]
@@ -625,7 +771,7 @@ mod tests {
         assert!(config.validate().is_err());
 
         let mut config = Config::default();
-        config.hotkeys.toggle_recording = config.hotkeys.save[0].binding;
+        config.hotkeys.bindings[2].binding = config.hotkeys.bindings[0].binding;
         assert!(matches!(
             config.validate(),
             Err(CoreError::InvalidConfig {
@@ -660,7 +806,7 @@ mod tests {
         assert!(base.replay_limits_changed(&next));
 
         let mut next = base.clone();
-        next.hotkeys.save[0].binding = "F9".parse().expect("valid");
+        next.hotkeys.bindings[0].binding = "F9".parse().expect("valid");
         assert!(base.hotkeys_changed(&next));
     }
 
@@ -723,17 +869,58 @@ mod tests {
 mod hotkey_migration_tests {
     use super::*;
 
-    #[test]
-    fn old_save_replay_key_becomes_a_save_hotkey() {
+    fn load_text(text: &str) -> Config {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[hotkeys]\nsave_replay = \"F9\"\nsave = []\n").expect("write");
-        let config = Config::load(&path).expect("load");
-        assert_eq!(config.hotkeys.save.len(), 1);
-        assert_eq!(config.hotkeys.save[0].binding.to_string(), "F9");
-        assert_eq!(config.hotkeys.save[0].seconds, 0);
+        fs::write(&path, text).expect("write");
+        Config::load(&path).expect("load")
+    }
+
+    #[test]
+    fn old_save_replay_key_becomes_a_binding() {
+        let config = load_text("[hotkeys]\nsave_replay = \"F9\"\n");
+        let bindings = &config.hotkeys.bindings;
+        assert_eq!(bindings.len(), 3);
+        assert_eq!(bindings[0].binding.to_string(), "F9");
+        assert_eq!(bindings[0].action, HotkeyActionKind::SaveReplay);
+        assert_eq!(bindings[1].action, HotkeyActionKind::ToggleReplayBuffer);
         assert!(config.hotkeys.save_replay.is_none());
         let text = toml::to_string(&config).expect("serialize");
-        assert!(!text.contains("save_replay"));
+        assert!(!text.contains("save_replay ="));
+        assert!(text.contains("[[hotkeys.bindings]]"));
+    }
+
+    #[test]
+    fn old_save_list_keeps_lengths() {
+        let config = load_text(
+            "[hotkeys]\ntoggle_recording = \"F12\"\n\n[[hotkeys.save]]\nbinding = \"Alt+8\"\nseconds = 0\n\n[[hotkeys.save]]\nbinding = \"Alt+F1\"\nseconds = 15\n",
+        );
+        let bindings = &config.hotkeys.bindings;
+        assert_eq!(bindings.len(), 4);
+        assert_eq!(bindings[1].seconds, 15);
+        assert_eq!(bindings[3].binding.to_string(), "F12");
+        assert_eq!(bindings[3].action, HotkeyActionKind::ToggleRecording);
+    }
+
+    #[test]
+    fn empty_bindings_fall_back_to_defaults() {
+        let config = load_text("[hotkeys]\nbindings = []\n");
+        assert_eq!(config.hotkeys, HotkeyConfig::default());
+    }
+
+    #[test]
+    fn output_subfolders() {
+        let paths = AppPaths::rooted_at("/tmp/openclips-test");
+        let mut config = Config::default();
+        assert_eq!(
+            config.clips_out_dir(&paths),
+            paths.default_clips_dir.join("Clips")
+        );
+        assert_eq!(
+            config.edited_dir(&paths),
+            paths.default_clips_dir.join("Edited")
+        );
+        config.output.clips_subfolder = String::new();
+        assert_eq!(config.clips_out_dir(&paths), paths.default_clips_dir);
     }
 }

@@ -21,6 +21,7 @@ pub const LIBRARY_VERSION: u32 = 1;
 pub enum ClipKind {
     Replay,
     Recording,
+    Edited,
 }
 
 impl ClipKind {
@@ -28,6 +29,7 @@ impl ClipKind {
         match self {
             ClipKind::Replay => "Clip",
             ClipKind::Recording => "Recording",
+            ClipKind::Edited => "Edited",
         }
     }
 }
@@ -47,6 +49,9 @@ pub struct ClipRecord {
     pub thumbnail: Option<PathBuf>,
     /// Duration and dimensions were read from the file.
     pub probed: bool,
+    /// Names of the audio tracks, when known (mixed, desktop, an app).
+    #[serde(default)]
+    pub audio_tracks: Vec<String>,
 }
 
 impl ClipRecord {
@@ -206,6 +211,7 @@ impl Library {
                     height: 0,
                     thumbnail: None,
                     probed: false,
+                    audio_tracks: Vec::new(),
                 }),
             }
         }
@@ -239,6 +245,22 @@ impl Library {
     pub fn set_game(&mut self, id: &str, game: Option<String>) {
         if let Some(record) = self.get_mut(id) {
             record.game = game;
+        }
+    }
+
+    pub fn set_audio_tracks(&mut self, id: &str, tracks: Vec<String>) {
+        if let Some(record) = self.get_mut(id) {
+            record.audio_tracks = tracks;
+        }
+    }
+
+    /// Names tracks generically when the file was probed and nothing
+    /// better is known.
+    pub fn default_audio_tracks(&mut self, id: &str, count: u32) {
+        if let Some(record) = self.get_mut(id)
+            && record.audio_tracks.is_empty()
+        {
+            record.audio_tracks = (1..=count).map(|n| format!("Track {n}")).collect();
         }
     }
 

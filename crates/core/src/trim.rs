@@ -86,6 +86,11 @@ impl TrimRange {
 /// Picks a name for the trimmed file next to the original.
 pub fn trimmed_path(original: &Path, title: &str) -> PathBuf {
     let dir = original.parent().unwrap_or(Path::new("."));
+    edited_path(dir, original, title, "trim")
+}
+
+/// A fresh `<title> (<suffix>).mp4` inside `dir`.
+pub fn edited_path(dir: &Path, original: &Path, title: &str, suffix: &str) -> PathBuf {
     let base = sanitize_file_name(title);
     let base = if base.is_empty() {
         original
@@ -95,8 +100,16 @@ pub fn trimmed_path(original: &Path, title: &str) -> PathBuf {
     } else {
         base
     };
-    unique_path(dir, &format!("{base} (trim).mp4"))
+    unique_path(dir, &format!("{base} ({suffix}).mp4"))
 }
+
+/// Resolution presets for compressing a clip: (label, height, video kbps).
+pub const COMPRESS_PRESETS: [(&str, u32, u32); 4] = [
+    ("1080p, 8 Mbps", 1080, 8000),
+    ("1080p, 4 Mbps", 1080, 4000),
+    ("720p, 4 Mbps", 720, 4000),
+    ("720p, 2 Mbps", 720, 2000),
+];
 
 #[cfg(test)]
 mod tests {

@@ -91,6 +91,8 @@ pub struct ClipFile {
     pub created: SystemTime,
     /// The game that was running when the clip was made, when known.
     pub game: Option<String>,
+    /// Names of the audio tracks in the file, in order.
+    pub audio_tracks: Vec<String>,
 }
 
 #[cfg(test)]

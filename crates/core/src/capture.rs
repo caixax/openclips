@@ -92,6 +92,9 @@ pub enum AudioDeviceKind {
     Output,
     /// A recording device such as a microphone.
     Input,
+    /// The sound of one application (by executable name), captured on its
+    /// own track so it can be muted afterwards.
+    Application,
 }
 
 impl AudioDeviceKind {
@@ -99,6 +102,7 @@ impl AudioDeviceKind {
         match self {
             AudioDeviceKind::Output => "Output",
             AudioDeviceKind::Input => "Input",
+            AudioDeviceKind::Application => "App",
         }
     }
 }
@@ -118,9 +122,13 @@ pub struct AudioDeviceInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioSourceSettings {
     pub id: String,
+    pub name: String,
     pub kind: AudioDeviceKind,
     pub volume: f32,
     pub muted: bool,
+    /// For `Application`: the process to capture. For the default output:
+    /// a process to leave out of the desktop mix. Zero means none.
+    pub process: u32,
 }
 
 impl AudioSourceSettings {
@@ -153,34 +161,48 @@ pub fn plan_audio_tracks(audio: &AudioConfig) -> Vec<AudioTrackPlan> {
         .filter(|s| s.enabled)
         .map(|s| AudioSourceSettings {
             id: s.id.clone(),
+            name: s.name.clone(),
             kind: s.kind,
             volume: s.volume,
             muted: s.muted,
+            process: 0,
         })
         .collect();
     if sources.is_empty() {
         return Vec::new();
     }
-    if !audio.separate_tracks {
-        return vec![AudioTrackPlan {
-            label: "Audio".to_owned(),
-            sources,
-        }];
-    }
-    let (outputs, inputs): (Vec<_>, Vec<_>) = sources
+    let (apps, devices): (Vec<_>, Vec<_>) = sources
         .into_iter()
-        .partition(|s| s.kind == AudioDeviceKind::Output);
+        .partition(|s| s.kind == AudioDeviceKind::Application);
     let mut tracks = Vec::new();
-    if !outputs.is_empty() {
-        tracks.push(AudioTrackPlan {
-            label: "Desktop".to_owned(),
-            sources: outputs,
-        });
+    if !audio.separate_tracks {
+        if !devices.is_empty() {
+            tracks.push(AudioTrackPlan {
+                label: "Audio".to_owned(),
+                sources: devices,
+            });
+        }
+    } else {
+        let (outputs, inputs): (Vec<_>, Vec<_>) = devices
+            .into_iter()
+            .partition(|s| s.kind == AudioDeviceKind::Output);
+        if !outputs.is_empty() {
+            tracks.push(AudioTrackPlan {
+                label: "Desktop".to_owned(),
+                sources: outputs,
+            });
+        }
+        if !inputs.is_empty() {
+            tracks.push(AudioTrackPlan {
+                label: "Microphone".to_owned(),
+                sources: inputs,
+            });
+        }
     }
-    if !inputs.is_empty() {
+    for app in apps {
         tracks.push(AudioTrackPlan {
-            label: "Microphone".to_owned(),
-            sources: inputs,
+            label: app.name.clone(),
+            sources: vec![app],
         });
     }
     tracks
@@ -278,6 +300,22 @@ mod tests {
             ..AudioConfig::default()
         };
         assert_eq!(plan_audio_tracks(&only_mic).len(), 1);
+    }
+
+    #[test]
+    fn applications_get_their_own_track() {
+        let audio = AudioConfig {
+            sources: vec![
+                source("spk", AudioDeviceKind::Output, true),
+                source("discord.exe", AudioDeviceKind::Application, true),
+            ],
+            ..AudioConfig::default()
+        };
+        let tracks = plan_audio_tracks(&audio);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].label, "Audio");
+        assert_eq!(tracks[1].label, "discord.exe");
+        assert_eq!(tracks[1].sources[0].kind, AudioDeviceKind::Application);
     }
 
     #[test]
