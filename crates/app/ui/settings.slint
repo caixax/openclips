@@ -64,8 +64,38 @@ export global SettingsState {
     in-out property <string> message;
     in-out property <bool> message-is-error: false;
 
-    callback save();
-    callback revert();
+    /// Something the config stores changed; the app saves shortly after.
+    /// Rows (hotkeys, audio sources, games) report through their controls.
+    callback changed();
+    changed display-index => { root.changed(); }
+    changed encoder-index => { root.changed(); }
+    changed fps => { root.changed(); }
+    changed bitrate-kbps => { root.changed(); }
+    changed show-cursor => { root.changed(); }
+    changed capture-api-index => { root.changed(); }
+    changed launch-on-startup => { root.changed(); }
+    changed clip-sound => { root.changed(); }
+    changed clip-toast => { root.changed(); }
+    changed animations => { root.changed(); }
+    changed language-index => { root.changed(); }
+    changed replay-length-value => { root.changed(); }
+    changed replay-unit-index => { root.changed(); }
+    changed memory-cap-mb => { root.changed(); }
+    changed start-on-launch => { root.changed(); }
+    changed start-minimized => { root.changed(); }
+    changed updates-check => { root.changed(); }
+    changed discord-enabled => { root.changed(); }
+    changed discord-show-game => { root.changed(); }
+    changed discord-client-id => { root.changed(); }
+    changed clips-dir => { root.changed(); }
+    changed file-name-pattern => { root.changed(); }
+    changed clips-subfolder => { root.changed(); }
+    changed recording-subfolder => { root.changed(); }
+    changed edited-subfolder => { root.changed(); }
+    changed audio-enabled => { root.changed(); }
+    changed separate-tracks => { root.changed(); }
+    changed audio-bitrate-kbps => { root.changed(); }
+    changed games-scope-index => { root.changed(); }
     callback browse-clips-dir();
     callback refresh-displays();
     callback refresh-audio-devices();
@@ -166,16 +196,7 @@ export component SettingsPage inherits ScrollView {
             PageHeader {
                 icon: Icons.gear;
                 title: I18n.tr("Settings");
-                description: I18n.tr("Capture, audio, games, storage and hotkeys. Changes apply when you save.");
-            }
-            Rectangle { horizontal-stretch: 1; }
-            VerticalLayout {
-                alignment: center;
-                HorizontalLayout {
-                    spacing: 8px;
-                    TextButton { text: I18n.tr("Revert"); icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
-                    TextButton { text: I18n.tr("Save changes"); icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
-                }
+                description: I18n.tr("Capture, audio, games, storage and hotkeys. Every change is saved and applied right away.");
             }
         }
 
@@ -192,15 +213,15 @@ export component SettingsPage inherits ScrollView {
                 ComboBox {
                     width: 210px;
                     model: [I18n.tr("Save replay"), I18n.tr("Start or stop the buffer"), I18n.tr("Start or stop recording")];
-                    current-index <=> hk.action-index;
+                    current-index <=> hk.action-index; changed current-index => { SettingsState.changed(); }
                 }
                 if hk.action-index == 0: HorizontalLayout {
                     spacing: 8px;
                     alignment: start;
                     Label { text: I18n.tr("last"); }
-                    SpinBox { width: 90px; minimum: 0; maximum: 60; value <=> hk.minutes; }
+                    SpinBox { width: 90px; minimum: 0; maximum: 60; value <=> hk.minutes; changed value => { SettingsState.changed(); } }
                     Label { text: I18n.tr("min"); }
-                    SpinBox { width: 90px; minimum: 0; maximum: 59; value <=> hk.seconds; }
+                    SpinBox { width: 90px; minimum: 0; maximum: 59; value <=> hk.seconds; changed value => { SettingsState.changed(); } }
                     Label { text: I18n.tr("s"); }
                     Label {
                         text: hk.minutes == 0 && hk.seconds == 0 ? I18n.tr("= whole buffer") : "";
@@ -364,7 +385,7 @@ export component SettingsPage inherits ScrollView {
             for row in SettingsState.audio-sources: HorizontalLayout {
                 spacing: 12px;
                 alignment: start;
-                Toggle { y: (parent.height - self.height) / 2; checked <=> row.enabled; }
+                Toggle { y: (parent.height - self.height) / 2; checked <=> row.enabled; changed checked => { SettingsState.changed(); } }
                 Icon {
                     y: (parent.height - self.height) / 2;
                     size: 14px;
@@ -385,7 +406,7 @@ export component SettingsPage inherits ScrollView {
                     width: 150px;
                     minimum: 0;
                     maximum: 200;
-                    value <=> row.volume;
+                    value <=> row.volume; changed value => { SettingsState.changed(); }
                     enabled: row.enabled && !row.muted;
                 }
                 Label { text: "\{round(row.volume)}%"; width: 44px; }
@@ -394,7 +415,7 @@ export component SettingsPage inherits ScrollView {
                     icon-color: row.muted ? Theme.danger : Theme.text;
                     size: 32px;
                     enabled: row.enabled;
-                    clicked => { row.muted = !row.muted; }
+                    clicked => { row.muted = !row.muted; SettingsState.changed(); }
                 }
                 if row.kind == "app": IconButton {
                     icon: Icons.trash;
@@ -460,13 +481,13 @@ export component SettingsPage inherits ScrollView {
                     width: 190px;
                     spacing: 2px;
                     alignment: center;
-                    LineEdit { placeholder-text: I18n.tr("Display name"); text <=> profile.name; }
+                    LineEdit { placeholder-text: I18n.tr("Display name"); text <=> profile.name; changed text => { SettingsState.changed(); } }
                     Text { text: profile.exe; font-size: 11px; color: Theme.text-faint; overflow: elide; }
                 }
-                ComboBox { width: 150px; model: [I18n.tr("Replay buffer"), I18n.tr("Full recording"), I18n.tr("Do nothing")]; current-index <=> profile.action-index; }
-                SpinBox { width: 90px; minimum: 0; maximum: 3600; value <=> profile.replay-seconds; }
-                LineEdit { width: 120px; placeholder-text: I18n.tr("Subfolder"); text <=> profile.subfolder; }
-                ComboBox { width: 160px; model: SettingsState.profile-display-names; current-index <=> profile.display-index; }
+                ComboBox { width: 150px; model: [I18n.tr("Replay buffer"), I18n.tr("Full recording"), I18n.tr("Do nothing")]; current-index <=> profile.action-index; changed current-index => { SettingsState.changed(); } }
+                SpinBox { width: 90px; minimum: 0; maximum: 3600; value <=> profile.replay-seconds; changed value => { SettingsState.changed(); } }
+                LineEdit { width: 120px; placeholder-text: I18n.tr("Subfolder"); text <=> profile.subfolder; changed text => { SettingsState.changed(); } }
+                ComboBox { width: 160px; model: SettingsState.profile-display-names; current-index <=> profile.display-index; changed current-index => { SettingsState.changed(); } }
                 IconButton { icon: Icons.trash; icon-color: Theme.danger; size: 32px; clicked => { SettingsState.remove-game(profile.exe); } }
             }
             Hint { text: I18n.tr("Columns: name, action when the game starts, buffer length override in seconds (0 keeps the global one), clip subfolder, display."); }
@@ -512,7 +533,7 @@ export component SettingsPage inherits ScrollView {
             subtitle: "";
             SettingRow {
                 title: I18n.tr("Language");
-                description: I18n.tr("The interface language. Applied when you save.");
+                description: I18n.tr("The interface language. Applied right away.");
                 ComboBox { width: 200px; model: ["English", "Español", "Français", "Deutsch", "Русский", "Português", "Italiano"]; current-index <=> SettingsState.language-index; }
             }
             SettingRow {
@@ -617,13 +638,6 @@ export component SettingsPage inherits ScrollView {
                 description: root.info.log-dir;
                 TextButton { text: I18n.tr("Open folder"); icon: Icons.folder-open; has-icon: true; clicked => { root.open-logs-dir(); } }
             }
-        }
-
-        HorizontalLayout {
-            alignment: end;
-            spacing: 8px;
-            TextButton { text: I18n.tr("Revert"); icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
-            TextButton { text: I18n.tr("Save changes"); icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
         }
     }
 }

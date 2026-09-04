@@ -52,6 +52,10 @@ const MONITOR_REFRESH_TICKS: u32 = 4;
 /// The window is dropped a moment after the close request so the request
 /// handler itself never runs inside a dying component.
 const UNLOAD_DELAY: Duration = Duration::from_millis(50);
+/// Quiet time after the last settings change before it is saved.
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
+/// How long the "saved" notice stays on the settings page.
+const SAVED_NOTICE: Duration = Duration::from_millis(2500);
 
 pub struct Context {
     pub paths: AppPaths,
@@ -104,6 +108,10 @@ struct Shared {
     instance: crate::instance::Guard,
     window: RefCell<Option<MainWindow>>,
     timer: RefCell<Option<slint::Timer>>,
+    /// Pending settings save, restarted on every change.
+    autosave: RefCell<Option<slint::Timer>>,
+    /// Clears the "saved" notice again.
+    message_timer: RefCell<Option<slint::Timer>>,
     startup_warning: RefCell<String>,
     update_banner: RefCell<Option<UpdateEvent>>,
     texts: RefCell<StatusTexts>,
@@ -181,6 +189,8 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         instance: ctx.instance,
         window: RefCell::new(None),
         timer: RefCell::new(None),
+        autosave: RefCell::new(None),
+        message_timer: RefCell::new(None),
         startup_warning: RefCell::new(ctx.startup_warning),
         update_banner: RefCell::new(None),
         texts: RefCell::new(StatusTexts::default()),
@@ -698,30 +708,8 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
     );
     refresh_game_rows(window, shared);
 
-    let (s, w) = (shared.clone(), window.as_weak());
-    state.on_save(move || {
-        if let Some(window) = w.upgrade() {
-            save_settings(&s, &window);
-        }
-    });
-
-    let (s, w) = (shared.clone(), window.as_weak());
-    state.on_revert(move || {
-        if let Some(window) = w.upgrade() {
-            let state = window.global::<SettingsState>();
-            let monitors = current_monitors(&s);
-            let audio_devices = current_audio_devices(&s);
-            settings::populate(
-                &state,
-                &s.config.borrow(),
-                &monitors,
-                &audio_devices,
-                &s.default_clips_dir(),
-            );
-            refresh_game_rows(&window, &s);
-            state.set_message("".into());
-        }
-    });
+    let s = shared.clone();
+    state.on_changed(move || schedule_autosave(&s));
 
     let w = window.as_weak();
     state.on_browse_clips_dir(move || {
@@ -762,7 +750,7 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         }
     });
 
-    let w = window.as_weak();
+    let (s, w) = (shared.clone(), window.as_weak());
     state.on_key_captured(move |action, text, alt, control, shift, meta| {
         let Some(window) = w.upgrade() else {
             return;
@@ -788,34 +776,39 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
                 (action - settings::SAVE_ACTION_BASE) as usize,
                 hotkey,
             );
+            schedule_autosave(&s);
         }
         state.set_listening_action(-1);
     });
 
-    let w = window.as_weak();
+    let (s, w) = (shared.clone(), window.as_weak());
     state.on_add_hotkey(move || {
         if let Some(window) = w.upgrade() {
             settings::add_hotkey(&window.global::<SettingsState>());
+            schedule_autosave(&s);
         }
     });
-    let w = window.as_weak();
+    let (s, w) = (shared.clone(), window.as_weak());
     state.on_remove_hotkey(move |index| {
         if let Some(window) = w.upgrade() {
             settings::remove_hotkey(&window.global::<SettingsState>(), index.max(0) as usize);
+            schedule_autosave(&s);
         }
     });
-    let w = window.as_weak();
+    let (s, w) = (shared.clone(), window.as_weak());
     state.on_add_app_audio(move |exe| {
         if let Some(window) = w.upgrade() {
             let state = window.global::<SettingsState>();
             settings::add_app_source(&state, &exe);
             state.set_new_app_exe("".into());
+            schedule_autosave(&s);
         }
     });
-    let w = window.as_weak();
+    let (s, w) = (shared.clone(), window.as_weak());
     state.on_remove_audio_source(move |id| {
         if let Some(window) = w.upgrade() {
             settings::remove_audio_source(&window.global::<SettingsState>(), &id);
+            schedule_autosave(&s);
         }
     });
     let (s, w) = (shared.clone(), window.as_weak());
@@ -899,6 +892,10 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
             return;
         }
     };
+    // Refilling the page after a save reports changes too; they are no-ops.
+    if next == *shared.config.borrow() {
+        return;
+    }
     if let Err(err) = next.save(&shared.paths.config_file()) {
         state.set_message_is_error(true);
         state.set_message(format!("Could not save settings: {err}").into());
@@ -955,6 +952,12 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
     if problems.is_empty() {
         state.set_message_is_error(false);
         state.set_message(crate::i18n::tr("Settings saved.").into());
+        let s = shared.clone();
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::SingleShot, SAVED_NOTICE, move || {
+            s.with_window(|w| w.global::<SettingsState>().set_message("".into()));
+        });
+        *shared.message_timer.borrow_mut() = Some(timer);
     } else {
         state.set_message_is_error(true);
         state.set_message(
@@ -972,6 +975,20 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
         let s = shared.clone();
         slint::Timer::single_shot(UNLOAD_DELAY, move || reload_window(&s));
     }
+}
+
+/// Saves the settings page shortly after the last change, so typing or a
+/// quick series of toggles ends in one save and one capture restart.
+fn schedule_autosave(shared: &SharedRef) {
+    let s = shared.clone();
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::SingleShot, AUTOSAVE_DELAY, move || {
+        let window = s.window.borrow();
+        if let Some(window) = window.as_ref() {
+            save_settings(&s, window);
+        }
+    });
+    *shared.autosave.borrow_mut() = Some(timer);
 }
 
 /// Rebuilds the open window so every translated string is re-evaluated in the
@@ -2034,7 +2051,8 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
             ..GameProfile::default()
         });
         set_game_rows(&window, &s, &profiles);
-        state.set_games_message(format!("Added {}. Save to apply.", game.name).into());
+        state.set_games_message(format!("Added {}.", game.name).into());
+        schedule_autosave(&s);
     });
 
     let (s, w) = (shared.clone(), window.as_weak());
@@ -2077,7 +2095,8 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         set_game_rows(&window, &s, &profiles);
         state.set_new_game_exe("".into());
         state.set_new_game_name("".into());
-        state.set_games_message(format!("Added {exe}. Save to apply.").into());
+        state.set_games_message(format!("Added {exe}.").into());
+        schedule_autosave(&s);
     });
 
     let (s, w) = (shared.clone(), window.as_weak());
@@ -2090,7 +2109,8 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         let mut profiles = settings::collect_game_profiles(&state, &monitors, &[]);
         profiles.retain(|p| p.exe != exe.as_str());
         set_game_rows(&window, &s, &profiles);
-        state.set_games_message("Removed. Save to apply.".into());
+        state.set_games_message("Removed.".into());
+        schedule_autosave(&s);
     });
 
     let (s, w) = (shared.clone(), window.as_weak());
@@ -2146,9 +2166,7 @@ fn apply_steam_result(window: &MainWindow, result: Result<Vec<(String, String)>,
                     rows.set_row_data(i, row);
                 }
             }
-            state.set_games_message(
-                format!("Filled {} name(s) from Steam. Save to apply.", found.len()).into(),
-            );
+            state.set_games_message(format!("Filled {} name(s) from Steam.", found.len()).into());
         }
         Err(err) => state.set_games_message(err.into()),
     }
