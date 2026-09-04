@@ -65,6 +65,8 @@ pub struct GeneralConfig {
     pub start_minimized: bool,
     /// Play a short sound when a clip is saved. Off by default.
     pub clip_sound: bool,
+    /// Short UI fades. Off makes every change instant.
+    pub animations: bool,
 }
 
 /// Automatic updates from GitHub releases, checked once at start.
