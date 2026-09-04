@@ -58,6 +58,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 
 - Discord Rich Presence: "Clipping <game>" as your Discord activity while the buffer runs, with switches to hide the game or turn it off.
 - Dark, Medal style interface with its own title bar, a tray icon with the same actions, launch with Windows, and a single human readable config file. Closing the window destroys the whole UI (scene, renderer, thumbnails) while capture, hotkeys, Discord presence and the clip sound keep running from the tray; opening it again rebuilds it.
+- Interface in English, Spanish, French, German, Russian, Portuguese and Italian, picked under Settings, General.
 - An optional confirmation sound when a clip is saved (off by default, Settings, General).
 - Short fades on hover, toggles and page changes, which can be switched off in Settings, General. Settings also shows the live capture status and an About section with the version and the config, clips and log folders.
 
@@ -178,6 +179,9 @@ action = "buffer"         # buffer, recording or ignore
 # subfolder = "Half-Life"
 # display = { kind = "primary" }
 # capture_method = "game"   # game or display; omit to follow [capture] method
+
+[general]
+language = "en"           # en, es, fr, de, ru, pt or it
 
 [updates]
 check = true              # look at GitHub releases once at start
