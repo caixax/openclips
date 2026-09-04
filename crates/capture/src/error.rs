@@ -53,4 +53,7 @@ pub enum CaptureError {
 
     #[error("playback failed: {0}")]
     Playback(String),
+
+    #[error("game capture failed: {0}")]
+    GameCapture(String),
 }

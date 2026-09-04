@@ -4,6 +4,7 @@
 
 mod audio;
 mod encoders;
+mod game_capture;
 mod icons;
 mod media;
 mod monitors;
@@ -143,6 +144,10 @@ impl CaptureBackend for WindowsBackend {
 
     fn is_running(&self) -> bool {
         self.capture.is_some()
+    }
+
+    fn game_capture_available(&self) -> bool {
+        game_capture::GameCaptureSource::available()
     }
 
     fn set_audio_level(&self, source_key: &str, volume: f32, muted: bool) -> bool {

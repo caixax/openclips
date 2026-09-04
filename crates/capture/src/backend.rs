@@ -160,6 +160,13 @@ pub trait CaptureBackend: Send {
 
     fn is_running(&self) -> bool;
 
+    /// Whether game capture (the injected hook) can be used on this system.
+    /// False when the signed hook binaries are missing or the platform has no
+    /// game capture backend.
+    fn game_capture_available(&self) -> bool {
+        false
+    }
+
     /// Adjusts a running source's level. Returns false when no such source
     /// is part of the running capture.
     fn set_audio_level(&self, source_key: &str, volume: f32, muted: bool) -> bool;

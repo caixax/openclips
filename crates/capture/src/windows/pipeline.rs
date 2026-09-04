@@ -27,11 +27,15 @@ use tracing::{error, info, warn};
 
 use super::audio;
 use super::encoders::{self, EncoderTuning};
+use super::game_capture::GameCaptureSource;
 use super::monitors;
 use crate::backend::FrameSink;
 use crate::error::CaptureError;
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+/// Game capture must inject the hook and wait for the game to present, which
+/// takes longer than a display source's first frame.
+const GAME_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Source element name to source key, shared with the bus watch so that
 /// an error can be attributed to one audio device.
@@ -42,6 +46,9 @@ pub struct CapturePipeline {
     stop_flag: Arc<AtomicBool>,
     bus_thread: Option<JoinHandle<()>>,
     volumes: HashMap<String, gst::Element>,
+    /// Kept alive for the pipeline's lifetime: dropping it stops the hook
+    /// thread. `None` for display capture.
+    _game_source: Option<GameCaptureSource>,
 }
 
 impl CapturePipeline {
@@ -73,7 +80,14 @@ impl CapturePipeline {
                 reason: format!("could not start capture: {err}"),
             });
         }
-        if let Err(err) = wait_for_first_frame(&bus, &first_frame, &built.source_names) {
+        let first_frame_timeout = if settings.game_capture_pid.is_some() {
+            GAME_FIRST_FRAME_TIMEOUT
+        } else {
+            FIRST_FRAME_TIMEOUT
+        };
+        if let Err(err) =
+            wait_for_first_frame(&bus, &first_frame, &built.source_names, first_frame_timeout)
+        {
             let _ = pipeline.set_state(gst::State::Null);
             return Err(match err {
                 CaptureError::Pipeline { message, .. } => CaptureError::EncoderStart {
@@ -98,6 +112,7 @@ impl CapturePipeline {
             stop_flag,
             bus_thread: Some(bus_thread),
             volumes: built.volumes,
+            _game_source: built.game_source,
         })
     }
 
@@ -162,21 +177,31 @@ fn wait_for_first_frame(
     bus: &gst::Bus,
     first_frame: &AtomicBool,
     names: &HashMap<String, String>,
+    timeout: Duration,
 ) -> Result<(), CaptureError> {
-    let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let poll = gst::ClockTime::from_mseconds(50);
     while !first_frame.load(Ordering::SeqCst) {
-        if let Some(msg) = bus.timed_pop_filtered(poll, &[gst::MessageType::Error])
-            && let gst::MessageView::Error(err) = msg.view()
+        if let Some(msg) =
+            bus.timed_pop_filtered(poll, &[gst::MessageType::Error, gst::MessageType::Eos])
         {
-            return Err(classify_error(err, names));
+            match msg.view() {
+                gst::MessageView::Error(err) => return Err(classify_error(err, names)),
+                // End of stream before the first frame means the source gave
+                // up during startup (game capture signals this when the hook
+                // cannot attach), so the caller can fall back.
+                gst::MessageView::Eos(_) => {
+                    return Err(CaptureError::Pipeline {
+                        message: "the capture source stopped before the first frame".to_owned(),
+                        element: String::new(),
+                    });
+                }
+                _ => {}
+            }
         }
         if Instant::now() >= deadline {
             return Err(CaptureError::Pipeline {
-                message: format!(
-                    "no frame was produced within {} seconds",
-                    FIRST_FRAME_TIMEOUT.as_secs()
-                ),
+                message: format!("no frame was produced within {} seconds", timeout.as_secs()),
                 element: String::new(),
             });
         }
@@ -270,6 +295,7 @@ struct Built {
     pipeline: gst::Pipeline,
     volumes: HashMap<String, gst::Element>,
     source_names: SourceNames,
+    game_source: Option<GameCaptureSource>,
 }
 
 fn build(
@@ -280,41 +306,14 @@ fn build(
     let spec = encoders::spec_for(&settings.encoder.element)
         .ok_or_else(|| CaptureError::MissingElement(settings.encoder.element.clone()))?;
 
-    let src = make("d3d11screencapturesrc")?;
-    src.set_property("show-cursor", settings.show_cursor);
-    // The yellow capture border Windows draws for Graphics Capture.
-    super::props::set_bool(&src, "show-border", false);
-    let api = match settings.api {
-        CaptureApi::DesktopDuplication => "dxgi",
-        CaptureApi::GraphicsCapture => "wgc",
-    };
-    if !super::props::set_nick(&src, "capture-api", api) {
-        warn!("this GStreamer build has no capture-api selection, using the default");
-    }
-    match &settings.display {
-        DisplaySelection::Primary => src.set_property("monitor-index", -1i32),
-        DisplaySelection::Monitor(id) => {
-            let monitor = monitors::find_by_id(id)
-                .ok_or_else(|| CaptureError::MonitorNotFound(id.clone()))?;
-            src.set_property("monitor-handle", monitor.handle as u64);
-        }
-    }
-
     let fps = settings.fps.max(1) as i32;
-    // OPENCLIPS_SOURCE_FPS asks the source for another rate (for example the
-    // display refresh rate) and lets videorate pick the nearest frame for
-    // each output slot.
-    let source_fps = std::env::var("OPENCLIPS_SOURCE_FPS")
-        .ok()
-        .and_then(|v| v.parse::<i32>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(fps);
-    let rate_caps = gst::Caps::builder("video/x-raw")
-        .features(["memory:D3D11Memory"])
-        .field("framerate", gst::Fraction::new(source_fps, 1))
-        .build();
-    let rate_filter = make("capsfilter")?;
-    rate_filter.set_property("caps", &rate_caps);
+    // The head of the chain differs by source; both feed NV12 D3D11 frames
+    // into the shared convert and encode tail below.
+    let (head, game_source): (Vec<gst::Element>, Option<GameCaptureSource>) =
+        match settings.game_capture_pid {
+            Some(pid) => build_game_head(pid, fps, sink.clone())?,
+            None => (build_display_head(settings, fps)?, None),
+        };
 
     let convert = make("d3d11convert")?;
     let nv12_caps = gst::Caps::builder("video/x-raw")
@@ -323,18 +322,6 @@ fn build(
         .build();
     let nv12_filter = make("capsfilter")?;
     nv12_filter.set_property("caps", &nv12_caps);
-
-    // The capture source paces itself, but its timestamps drift under load.
-    // videorate re-stamps frames onto an exact grid so the ring buffer math
-    // and the container frame rate stay honest. It only touches metadata.
-    let rate = make("videorate")?;
-    rate.set_property("skip-to-first", true);
-    let grid_caps = gst::Caps::builder("video/x-raw")
-        .features(["memory:D3D11Memory"])
-        .field("framerate", gst::Fraction::new(fps, 1))
-        .build();
-    let grid_filter = make("capsfilter")?;
-    grid_filter.set_property("caps", &grid_caps);
 
     let enc = make(spec.element)?;
     encoders::configure(
@@ -371,8 +358,9 @@ fn build(
     );
 
     let pipeline = gst::Pipeline::with_name("openclips-capture");
-    let mut chain: Vec<gst::Element> =
-        vec![src, rate_filter, rate, grid_filter, convert, nv12_filter];
+    let mut chain: Vec<gst::Element> = head;
+    chain.push(convert);
+    chain.push(nv12_filter);
     if !spec.d3d11_input {
         chain.push(make("d3d11download")?);
     }
@@ -414,7 +402,90 @@ fn build(
         pipeline,
         volumes,
         source_names: Arc::new(source_names),
+        game_source,
     })
+}
+
+/// The display capture head: `d3d11screencapturesrc` re-gridded to the output
+/// frame rate, all in D3D11 memory.
+fn build_display_head(
+    settings: &CaptureSettings,
+    fps: i32,
+) -> Result<Vec<gst::Element>, CaptureError> {
+    let src = make("d3d11screencapturesrc")?;
+    src.set_property("show-cursor", settings.show_cursor);
+    // The yellow capture border Windows draws for Graphics Capture.
+    super::props::set_bool(&src, "show-border", false);
+    let api = match settings.api {
+        CaptureApi::DesktopDuplication => "dxgi",
+        CaptureApi::GraphicsCapture => "wgc",
+    };
+    if !super::props::set_nick(&src, "capture-api", api) {
+        warn!("this GStreamer build has no capture-api selection, using the default");
+    }
+    match &settings.display {
+        DisplaySelection::Primary => src.set_property("monitor-index", -1i32),
+        DisplaySelection::Monitor(id) => {
+            let monitor = monitors::find_by_id(id)
+                .ok_or_else(|| CaptureError::MonitorNotFound(id.clone()))?;
+            src.set_property("monitor-handle", monitor.handle as u64);
+        }
+    }
+
+    // OPENCLIPS_SOURCE_FPS asks the source for another rate (for example the
+    // display refresh rate) and lets videorate pick the nearest frame for
+    // each output slot.
+    let source_fps = std::env::var("OPENCLIPS_SOURCE_FPS")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(fps);
+    let rate_caps = gst::Caps::builder("video/x-raw")
+        .features(["memory:D3D11Memory"])
+        .field("framerate", gst::Fraction::new(source_fps, 1))
+        .build();
+    let rate_filter = make("capsfilter")?;
+    rate_filter.set_property("caps", &rate_caps);
+
+    let (rate, grid_filter) = grid(fps, true)?;
+    Ok(vec![src, rate_filter, rate, grid_filter])
+}
+
+/// The game capture head: the injected hook feeds an `appsrc` with the game's
+/// backbuffer, re-gridded to the output frame rate, then uploaded to D3D11
+/// for the shared convert and encode tail.
+fn build_game_head(
+    pid: u32,
+    fps: i32,
+    sink: Arc<dyn FrameSink>,
+) -> Result<(Vec<gst::Element>, Option<GameCaptureSource>), CaptureError> {
+    let on_fatal: Arc<dyn Fn(CaptureError) + Send + Sync> = Arc::new(move |err| sink.on_error(err));
+    let (appsrc, source) = GameCaptureSource::start(pid, fps, on_fatal)?;
+    let (rate, grid_filter) = grid(fps, false)?;
+    let upload = make("d3d11upload")?;
+    Ok((vec![appsrc, rate, grid_filter, upload], Some(source)))
+}
+
+/// A `videorate` plus a caps filter that pins the output frame rate. The
+/// source paces itself, but its timestamps drift under load; videorate
+/// re-stamps frames onto an exact grid so the ring buffer math and the
+/// container frame rate stay honest. It only touches metadata.
+fn grid(fps: i32, d3d11: bool) -> Result<(gst::Element, gst::Element), CaptureError> {
+    let rate = make("videorate")?;
+    rate.set_property("skip-to-first", true);
+    let caps = if d3d11 {
+        gst::Caps::builder("video/x-raw")
+            .features(["memory:D3D11Memory"])
+            .field("framerate", gst::Fraction::new(fps, 1))
+            .build()
+    } else {
+        gst::Caps::builder("video/x-raw")
+            .field("framerate", gst::Fraction::new(fps, 1))
+            .build()
+    };
+    let grid_filter = make("capsfilter")?;
+    grid_filter.set_property("caps", &caps);
+    Ok((rate, grid_filter))
 }
 
 struct StreamTracker {
