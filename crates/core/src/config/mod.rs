@@ -63,6 +63,8 @@ impl Default for Config {
 pub struct GeneralConfig {
     pub launch_on_startup: bool,
     pub start_minimized: bool,
+    /// Play a short sound when a clip is saved. Off by default.
+    pub clip_sound: bool,
 }
 
 /// Automatic updates from GitHub releases, checked once at start.
