@@ -39,3 +39,7 @@ Keep the subject line under 72 characters. Explain the why in the body when it i
 ## Reporting bugs
 
 Please include your Windows version, GPU and driver version, the GStreamer version (`gst-inspect-1.0 --version`), and the relevant portion of the log file from `%LOCALAPPDATA%\OpenClips\data\logs`.
+
+## Releasing
+
+Releases are made from the Actions tab with the Release workflow. Choose patch, minor or major (or type an exact version); the workflow bumps the version in `Cargo.toml`, commits and tags it, builds the installer and the portable zip and publishes the GitHub release with a `SHA256SUMS.txt`. Installed copies of the app pick the release up on their next start.

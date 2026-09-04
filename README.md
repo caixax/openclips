@@ -174,6 +174,10 @@ action = "buffer"         # buffer, recording or ignore
 # subfolder = "Half-Life"
 # display = { kind = "primary" }
 
+[updates]
+check = true              # look at GitHub releases once at start
+repo = ""                 # empty uses the official repository
+
 [discord]
 enabled = true
 show_game = true
@@ -211,6 +215,12 @@ Saving from the editor asks whether to write a new file into `Edited` or replace
 ### Per application audio
 
 Under Settings, Audio, an application (`discord.exe`, a browser, a music player) can get its own audio track. It is captured with the Windows process loopback API, so the track only contains that program, and the first such application is excluded from the default desktop output so it is not recorded twice. Because the buffer runs continuously the program has to be running when capture starts; the app watches for it and restarts capture on its own when it opens or closes (never while a recording is active). In the editor that track can then be muted, for example to drop a voice chat from a clip. Separate tracks for desktop and microphone work the same way.
+
+## Updates
+
+OpenClips checks the GitHub releases once, when it starts, never while you play. If a newer version exists the installer is downloaded in the background, verified against the release's `SHA256SUMS.txt`, and a banner under the title bar tells you it is ready: it installs on the next start on its own, or right away with Install now. The installer restarts the app when it is done. A portable copy (the zip) only shows a link to the release page. The check can be switched off under Settings, General, and `[updates] repo = "owner/name"` in the config file points a fork at its own releases.
+
+Releases are cut from the Actions tab: the Release workflow takes the part of the version to bump (or an exact version), writes it into `Cargo.toml`, commits and tags `vX.Y.Z`, builds the installer and the zip with the GStreamer runtime, and publishes the GitHub release with checksums. Nothing is released on plain pushes.
 
 ## Discord
 
