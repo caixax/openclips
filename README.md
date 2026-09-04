@@ -25,6 +25,7 @@ OpenClips is feature complete for its first release on Windows. The table below 
 | Fullscreen reliability pass, installer, launch on startup | Done (Sprint 7) |
 | Dark icon rail UI, quality presets, player controls, any number of save hotkeys | Done (Sprint 8) |
 | Hotkeys with actions, per application audio tracks, editor track muting, compression, Edited folder, own title bar, NSIS installer | Done (Sprint 9) |
+| Discord Rich Presence with on/off and game name options | Done (Sprint 9) |
 | Linux backend (PipeWire and desktop portal) | Future |
 
 What works today: the app starts capturing the selected display into memory as soon as it launches, `Alt+8` writes everything the buffer holds to `Videos\OpenClips`, `Alt+9` starts or stops the buffer, `Alt+0` starts or stops a full session recording (written to a `Recordings` subfolder), and the tray menu offers the same actions. Every hotkey in Settings is a key plus an action (save the last N seconds, start or stop the buffer, start or stop a recording), so one key can save the last 15 seconds and another the last two minutes. The Settings page covers display, encoder, frame rate, bitrate, buffer length (seconds or minutes), memory cap, output folders, hotkey rebinding and start up behaviour. Displays are re-enumerated while the app runs, and a capture of a display that goes away moves to the primary display. Audio comes from any combination of playback devices (captured through WASAPI loopback) and microphones, each with its own volume and mute, mixed into one AAC track or split into desktop and microphone tracks. A device that fails mid capture is dropped and capture continues without it. The Clips page lists every clip and recording with a thumbnail, date and duration, filters by game or title, plays clips in the app with audio, and can rename, delete (to the Recycle Bin) or reveal a file in Explorer. The player has a trim mode: drag the in and out handles on the timeline (or set them at the playhead), preview the selection, and save it as a new file. The fast mode copies the streams and cuts on keyframes; the exact mode re-encodes the selection for a frame accurate cut. Replacing the original is an explicit checkbox, off by default. Running games are detected from their executable through a bundled database of about 1900 titles plus your own profiles; clips are named and tagged with the game, cards show the game's icon (extracted from the executable itself), and in per game mode capture starts and stops with the game, with per game buffer length, subfolder and display overrides.
@@ -125,6 +126,12 @@ action = "buffer"         # buffer, recording or ignore
 # subfolder = "Half-Life"
 # display = { kind = "primary" }
 
+[discord]
+enabled = true
+show_game = true
+# Application ID from discord.com/developers; empty sends nothing.
+client_id = ""
+
 # Every hotkey is a key plus an action: save_replay, toggle_replay_buffer
 # or toggle_recording. For save_replay, seconds = 0 saves the whole buffer.
 [[hotkeys.bindings]]
@@ -157,6 +164,10 @@ Saving from the editor asks whether to write a new file into `Edited` or replace
 ### Per application audio
 
 Under Settings, Audio, an application (`discord.exe`, a browser, a music player) can get its own audio track. It is captured with the Windows process loopback API, so the track only contains that program, and the first such application is excluded from the default desktop output so it is not recorded twice. Because the buffer runs continuously the program has to be running when capture starts; the app watches for it and restarts capture on its own when it opens or closes (never while a recording is active). In the editor that track can then be muted, for example to drop a voice chat from a clip. Separate tracks for desktop and microphone work the same way.
+
+## Discord
+
+With Discord running, OpenClips can show "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. Discord only accepts activities from a registered application, so paste an Application ID from <https://discord.com/developers/applications> (create an application called OpenClips) into the same section; without an id nothing is sent. Presence runs on its own thread and reconnects quietly when Discord starts later.
 
 ## Architecture
 
