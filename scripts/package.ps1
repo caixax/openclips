@@ -49,6 +49,19 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item "target\release\openclips.exe" $stage
 Copy-Item "README.md", "LICENSE" $stage
 
+# The signed OBS capture hooks for game capture. Kept in a folder the app
+# looks for beside the executable.
+$hooks = Join-Path $repo "third_party\obs-capture"
+if (Test-Path (Join-Path $hooks "graphics-hook64.dll")) {
+    $hooksTarget = Join-Path $stage "obs-capture"
+    New-Item -ItemType Directory -Force $hooksTarget | Out-Null
+    Copy-Item (Join-Path $hooks "*.dll") $hooksTarget
+    Copy-Item (Join-Path $hooks "*.exe") $hooksTarget
+    Copy-Item (Join-Path $hooks "COPYING"), (Join-Path $hooks "README.md") $hooksTarget
+} else {
+    Write-Warning "OBS capture hooks not found at $hooks; game capture will be unavailable in this build"
+}
+
 if ($BundleRuntime) {
     $bin = Join-Path $GStreamerRoot "bin"
     $plugins = Join-Path $GStreamerRoot "lib\gstreamer-1.0"

@@ -117,6 +117,7 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\${APP_NAME}"
   ; Only the installed files go; clips, settings and logs stay where they are.
   RMDir /r "$INSTDIR\gstreamer"
+  RMDir /r "$INSTDIR\obs-capture"
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\LICENSE"
