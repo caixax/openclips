@@ -5,6 +5,7 @@ mod discord;
 mod engine;
 mod error;
 mod games;
+mod gpu;
 mod hotkeys;
 mod library;
 mod player;
@@ -61,6 +62,7 @@ fn run() -> Result<(), AppError> {
         "starting OpenClips"
     );
 
+    gpu::raise_gpu_priority();
     let (config, startup_warning) = load_config(&paths);
     if config.updates.check && updater::apply_pending_at_start(&paths) {
         info!("handing over to the installer");
