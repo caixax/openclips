@@ -10,6 +10,7 @@ mod library;
 mod player;
 mod settings;
 mod shell;
+mod sound;
 mod startup;
 mod steam;
 mod ui;

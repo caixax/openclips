@@ -293,29 +293,18 @@ fn wire_window_lifecycle(window: &MainWindow, tray: &TrayIcon) {
 /// The window draws its own title bar; moving, resizing and the three
 /// buttons go through the OS so they behave like a native frame.
 fn wire_title_bar(window: &MainWindow) {
-    fn native_handle(window: &MainWindow) -> Option<isize> {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let handle = window.window().window_handle();
-        match handle.window_handle().ok()?.as_raw() {
-            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
-            _ => None,
-        }
-    }
+    use slint::winit_030::WinitWindowAccessor;
 
     let w = window.as_weak();
-    window.on_window_drag(move |hit| {
-        if let Some(window) = w.upgrade()
-            && let Some(hwnd) = native_handle(&window)
-        {
-            shell::drag_window(hwnd, hit.max(0) as u32);
-        }
-    });
-    let w = window.as_weak();
-    window.on_window_resize(move |hit| {
-        if let Some(window) = w.upgrade()
-            && let Some(hwnd) = native_handle(&window)
-        {
-            shell::drag_window(hwnd, hit.max(0) as u32);
+    window.on_window_drag(move || {
+        if let Some(window) = w.upgrade() {
+            // winit tracks the system move and delivers the button release
+            // when it ends, so the UI never gets stuck in a pressed state.
+            window.window().with_winit_window(|winit| {
+                if let Err(err) = winit.drag_window() {
+                    warn!("could not start moving the window: {err}");
+                }
+            });
         }
     });
     let w = window.as_weak();
@@ -356,6 +345,12 @@ fn wire_actions(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
     let (s, w) = (shared.clone(), window.as_weak());
     tray.on_toggle_recording(move || toggle_recording(&s, &w));
 
+    let s = shared.clone();
+    window.on_clip_sound(move || {
+        if s.config.borrow().general.clip_sound {
+            crate::sound::play_clip_saved();
+        }
+    });
     let s = shared.clone();
     window.on_recording_finished(move || {
         if let Some(engine) = s.engine.borrow_mut().as_mut() {
@@ -796,6 +791,7 @@ fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>, hotkey_index: Option
         Box::new(move |result| {
             let _ = weak.upgrade_in_event_loop(move |window| match result {
                 Ok(clip) => {
+                    window.invoke_clip_sound();
                     window.set_last_clip(clip.path.display().to_string().into());
                     window.invoke_clip_written(
                         clip.path.display().to_string().into(),

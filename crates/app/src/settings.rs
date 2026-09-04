@@ -208,6 +208,7 @@ pub fn populate(
         CaptureApi::GraphicsCapture => 1,
     });
     state.set_launch_on_startup(config.general.launch_on_startup);
+    state.set_clip_sound(config.general.clip_sound);
 
     let seconds = config.replay.length_seconds;
     if seconds >= 60 && seconds.is_multiple_of(60) {
@@ -403,6 +404,7 @@ pub fn collect(
         CaptureApi::DesktopDuplication
     };
     config.general.launch_on_startup = state.get_launch_on_startup();
+    config.general.clip_sound = state.get_clip_sound();
 
     let value = state.get_replay_length_value().max(1) as u32;
     config.replay.length_seconds = if state.get_replay_unit_index() == UNIT_MINUTES {

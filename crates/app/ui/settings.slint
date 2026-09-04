@@ -15,6 +15,7 @@ export global SettingsState {
     in-out property <bool> show-cursor: false;
     in-out property <int> capture-api-index: 0;
     in-out property <bool> launch-on-startup: false;
+    in-out property <bool> clip-sound: false;
 
     in-out property <int> replay-length-value: 30;
     in-out property <int> replay-unit-index: 0;
@@ -503,6 +504,11 @@ export component SettingsPage inherits ScrollView {
                 title: "Launch with Windows";
                 description: "Adds OpenClips to the current user's startup entries.";
                 Toggle { checked <=> SettingsState.launch-on-startup; }
+            }
+            SettingRow {
+                title: "Sound when a clip is saved";
+                description: "A short click confirms the save, so you know the hotkey worked without looking.";
+                Toggle { checked <=> SettingsState.clip-sound; }
             }
             SettingRow {
                 title: "Check for updates at start";

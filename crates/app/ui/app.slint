@@ -113,17 +113,6 @@ component UpdateBanner inherits Rectangle {
     }
 }
 
-/// Invisible strip along one edge that starts a system resize.
-component ResizeEdge inherits TouchArea {
-    in property <int> hit;
-    callback resize(int);
-    pointer-event(e) => {
-        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
-            root.resize(root.hit);
-        }
-    }
-}
-
 export component MainWindow inherits Window {
     title: "OpenClips";
     icon: @image-url("../assets/icon.png");
@@ -172,8 +161,8 @@ export component MainWindow inherits Window {
     callback clip-written(string, string);
     callback navigated(NavPage);
     callback open-clip(string);
-    callback window-drag(int);
-    callback window-resize(int);
+    callback window-drag();
+    callback clip-sound();
     callback window-minimize();
     callback window-maximize();
     callback window-close();
@@ -187,12 +176,11 @@ export component MainWindow inherits Window {
     callback update-pending(string);
 
     in-out property <NavPage> page: NavPage.home;
-    property <length> edge: 6px;
 
     VerticalLayout {
         TitleBar {
             maximized: root.maximized;
-            drag => { root.window-drag(2); }
+            drag => { root.window-drag(); }
             minimize => { root.window-minimize(); }
             maximize => { root.window-maximize(); }
             close => { root.window-close(); }
@@ -270,13 +258,4 @@ export component MainWindow inherits Window {
         }
     }
 
-    // Resize handles along the edges and corners (WM_NCHITTEST codes).
-    if !root.maximized: ResizeEdge { x: 0; y: root.edge; width: root.edge; height: root.height - 2 * root.edge; hit: 10; mouse-cursor: ew-resize; resize(h) => { root.window-resize(h); } }
-    if !root.maximized: ResizeEdge { x: root.width - root.edge; y: root.edge; width: root.edge; height: root.height - 2 * root.edge; hit: 11; mouse-cursor: ew-resize; resize(h) => { root.window-resize(h); } }
-    if !root.maximized: ResizeEdge { x: root.edge; y: 0; width: root.width - 2 * root.edge; height: root.edge; hit: 12; mouse-cursor: ns-resize; resize(h) => { root.window-resize(h); } }
-    if !root.maximized: ResizeEdge { x: root.edge; y: root.height - root.edge; width: root.width - 2 * root.edge; height: root.edge; hit: 15; mouse-cursor: ns-resize; resize(h) => { root.window-resize(h); } }
-    if !root.maximized: ResizeEdge { x: 0; y: 0; width: root.edge; height: root.edge; hit: 13; mouse-cursor: nwse-resize; resize(h) => { root.window-resize(h); } }
-    if !root.maximized: ResizeEdge { x: root.width - root.edge; y: 0; width: root.edge; height: root.edge; hit: 14; mouse-cursor: nesw-resize; resize(h) => { root.window-resize(h); } }
-    if !root.maximized: ResizeEdge { x: 0; y: root.height - root.edge; width: root.edge; height: root.edge; hit: 16; mouse-cursor: nesw-resize; resize(h) => { root.window-resize(h); } }
-    if !root.maximized: ResizeEdge { x: root.width - root.edge; y: root.height - root.edge; width: root.edge; height: root.edge; hit: 17; mouse-cursor: nwse-resize; resize(h) => { root.window-resize(h); } }
 }
