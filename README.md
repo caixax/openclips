@@ -1,6 +1,14 @@
-# OpenClips
+<p align="center">
+  <img src="crates/app/assets/discord-logo.png" width="128" alt="OpenClips">
+</p>
 
-A lightweight, open source game clip recorder for Windows. Keep a rolling buffer of recent gameplay in memory, press a hotkey, and the last N seconds land on your disk as an MP4. That is the whole product.
+<h1 align="center">OpenClips</h1>
+
+<p align="center">A lightweight, open source game clip recorder for Windows. Keep a rolling buffer of recent gameplay in memory, press a hotkey, and the last N seconds land on your disk as an MP4. That is the whole product.</p>
+
+<p align="center"><a href="#install">Install</a> · <a href="#features">Features</a> · <a href="#building">Building</a> · <a href="#configuration">Configuration</a> · <a href="#architecture">Architecture</a> · <a href="#roadmap">Roadmap</a></p>
+
+## Why
 
 OpenClips replaces tools like ShadowPlay, ReLive and Medal with a strict philosophy:
 
@@ -9,26 +17,51 @@ OpenClips replaces tools like ShadowPlay, ReLive and Medal with a strict philoso
 - Low overhead. Video is encoded on the GPU (NVENC, Quick Sync, AMF) with a software fallback.
 - Instant. The app lives in the tray and reacts immediately to a hotkey.
 
-## Status
+## Install
 
-OpenClips is feature complete for its first release on Windows. The table below is kept current as features land.
+Download `OpenClips-<version>-setup.exe` and run it. The installer is per user (no administrator prompt), puts the app under `%LOCALAPPDATA%\Programs\OpenClips` together with the GStreamer runtime it needs, and offers a desktop shortcut and a "launch when Windows starts" option. There is also a portable `OpenClips-<version>-win64.zip`: unzip anywhere and start `openclips.exe`. Uninstalling or deleting the folder leaves your clips, settings and logs where they are.
 
-| Area | Status |
-| --- | --- |
-| Workspace, config file, logging, tray app skeleton | Done (Sprint 0) |
-| Rolling replay buffer with GPU encode and Alt+8 save | Done (Sprint 1) |
-| Display selection, buffer length, hotkey rebinding, full session recording | Done (Sprint 2) |
-| Multi source audio (desktop loopback and microphones) | Done (Sprint 3) |
-| Clip library with thumbnails and playback | Done (Sprint 4) |
-| Trim editor (stream copy and frame accurate) | Done (Sprint 5) |
-| Game detection, per game profiles, bundled games database | Done (Sprint 6) |
-| Fullscreen reliability pass, installer, launch on startup | Done (Sprint 7) |
-| Dark icon rail UI, quality presets, player controls, any number of save hotkeys | Done (Sprint 8) |
-| Hotkeys with actions, per application audio tracks, editor track muting, compression, Edited folder, own title bar, NSIS installer | Done (Sprint 9) |
-| Discord Rich Presence with on/off and game name options | Done (Sprint 9) |
-| Linux backend (PipeWire and desktop portal) | Future |
+Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clips`. `Alt+9` starts or stops the buffer, `Alt+0` starts or stops a full recording. Every key can be changed, and any number of extra keys can be added, in Settings.
 
-What works today: the app starts capturing the selected display into memory as soon as it launches, `Alt+8` writes everything the buffer holds to `Videos\OpenClips`, `Alt+9` starts or stops the buffer, `Alt+0` starts or stops a full session recording (written to a `Recordings` subfolder), and the tray menu offers the same actions. Every hotkey in Settings is a key plus an action (save the last N seconds, start or stop the buffer, start or stop a recording), so one key can save the last 15 seconds and another the last two minutes. The Settings page covers display, encoder, frame rate, bitrate, buffer length (seconds or minutes), memory cap, output folders, hotkey rebinding and start up behaviour. Displays are re-enumerated while the app runs, and a capture of a display that goes away moves to the primary display. Audio comes from any combination of playback devices (captured through WASAPI loopback) and microphones, each with its own volume and mute, mixed into one AAC track or split into desktop and microphone tracks. A device that fails mid capture is dropped and capture continues without it. The Clips page lists every clip and recording with a thumbnail, date and duration, filters by game or title, plays clips in the app with audio, and can rename, delete (to the Recycle Bin) or reveal a file in Explorer. The player has a trim mode: drag the in and out handles on the timeline (or set them at the playhead), preview the selection, and save it as a new file. The fast mode copies the streams and cuts on keyframes; the exact mode re-encodes the selection for a frame accurate cut. Replacing the original is an explicit checkbox, off by default. Running games are detected from their executable through a bundled database of about 1900 titles plus your own profiles; clips are named and tagged with the game, cards show the game's icon (extracted from the executable itself), and in per game mode capture starts and stops with the game, with per game buffer length, subfolder and display overrides.
+## Features
+
+**Capture**
+
+- Rolling replay buffer in memory (5 seconds to 20 minutes, with a memory cap) that never touches the disk until you save.
+- Hardware encoding through NVENC, Quick Sync or AMF, with Media Foundation and x264 as fallbacks; 1080p60 at 20 Mbps costs a few percent of a modern GPU.
+- Quality presets (Low, Standard, High) or your own frame rate and bitrate.
+- Full session recordings written as fragmented MP4, so a crash still leaves a playable file.
+- Desktop Duplication or Windows Graphics Capture, cursor on or off, any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
+- Hotkeys are a key plus an action: save the last N seconds (one key for 15 seconds, another for two minutes), start or stop the buffer, start or stop recording. As many as you like.
+
+**Audio**
+
+- Any combination of playback devices (WASAPI loopback) and microphones, each with volume and mute, mixed into one track or split into desktop and microphone tracks.
+- Per application tracks: give Discord, a browser or a music player its own track through the Windows process loopback API, then mute it in the editor.
+- A device that fails mid capture is dropped and capture goes on without it.
+
+**Clips and editing**
+
+- Gallery with thumbnails, game icons, size, date and duration; filter by kind (clips, recordings, edits), game or title, sort by date, length or size.
+- Built in player with skip, mute and a scrubbable timeline.
+- Trim with drag handles, fast keyframe cuts or exact re-encoded cuts, and per track muting. Saving asks whether to write a new file into `Edited` or replace the original.
+- Compress a clip to 1080p or 720p at a lower bitrate in one click.
+- Rename, delete to the Recycle Bin, reveal in Explorer.
+
+**Games**
+
+- Running games are detected from their executable through a bundled database of about 1900 titles plus your own profiles, with icons pulled from the executable itself.
+- Clips are named and tagged with the game. Per game profiles set the action (buffer, record or ignore), buffer length, subfolder and display, and in per game mode capture starts and stops with the game.
+
+**Everything else**
+
+- Discord Rich Presence: "Clipping <game>" as your Discord activity while the buffer runs, with switches to hide the game or turn it off.
+- Dark, Medal style interface with its own title bar, a tray icon with the same actions, launch with Windows, and a single human readable config file.
+
+## Roadmap
+
+- **Linux.** The capture backend is a trait with one Windows implementation today. A Linux backend (PipeWire through the desktop ScreenCast portal, VAAPI or NVENC encode, PulseAudio or PipeWire audio) slots into `crates/capture` without touching the rest, and the config, library and UI already avoid Windows specific paths.
+- **Auto clips from game events.** Save a clip on its own when you get a kill, a multi kill or an ace. CS2 and Dota 2 expose Game State Integration, League of Legends the Live Client Data API, both official and anti cheat safe; games without an API (Valorant, Fortnite, Apex) need screen recognition of the kill feed on the frames already captured. The rule model (game, event, threshold, seconds before and after) would live in `core` with one event source per game.
 
 ## Building
 
@@ -42,7 +75,9 @@ What works today: the app starts capturing the selected display into memory as s
 
   At run time no `PATH` changes are needed: the GStreamer imports are delay loaded and the app looks for the runtime in a `gstreamer` folder next to the executable, then in `GSTREAMER_1_0_ROOT_MSVC_X86_64`, then in the default install locations, and shows a clear message if none exists.
 
-  Plugins used: `d3d11` (screen capture), `nvcodec`, `qsv`, `amfcodec` and `mediafoundation` (hardware encoders), `x264` (software fallback), `videoparsersbad` (`h264parse`), `isomp4` (MP4 muxing), `app` (`appsink` and `appsrc`). All of them ship with the official installer.
+  Plugins used: `d3d11` (screen capture), `nvcodec`, `qsv`, `amfcodec` and `mediafoundation` (hardware encoders), `x264` (software fallback), `videoparsersbad` (`h264parse`), `isomp4` (MP4 muxing), `app` (`appsink` and `appsrc`), `wasapi2` (audio). All of them ship with the official installer.
+
+- For the installer: NSIS 3.
 
 ### Build and run
 
@@ -51,13 +86,13 @@ cargo build --release
 cargo run --release
 ```
 
-The binary is `target/release/openclips.exe`. To stage a distributable folder and zip, optionally with the GStreamer runtime bundled so it runs on a machine without GStreamer, use:
+The binary is `target/release/openclips.exe`. To stage a distributable folder and zip with the GStreamer runtime bundled, and to build the installer from it:
 
 ```text
-powershell -File scripts\package.ps1 -BundleRuntime
+powershell -File scripts\package.ps1 -BundleRuntime -Installer
 ```
 
-`packaging\openclips.nsi` builds a Windows installer from that staged folder with NSIS 3 (`makensis packaging\openclips.nsi`, or `scripts\package.ps1 -BundleRuntime -Installer` to do both steps). The installer is per user (no administrator prompt), installs under `%LOCALAPPDATA%\Programs\OpenClips`, offers a desktop shortcut and a "launch when Windows starts" option; the same option lives in the app's Settings page and uses the per user Run key. Uninstalling leaves clips, settings and logs in place.
+Without `-Installer` only the folder and the zip are produced; `makensis packaging\openclips.nsi` builds the installer from the staged folder on its own.
 
 Run the checks the CI runs with:
 
@@ -80,7 +115,7 @@ Linux:    ~/.config/OpenClips/config.toml
 
 Clips default to `Videos\OpenClips`. Logs default to `%LOCALAPPDATA%\OpenClips\data\logs`. The library index lives in `%LOCALAPPDATA%\OpenClips\data\library.json` and thumbnails in `%LOCALAPPDATA%\OpenClips\cache\thumbnails`; both are rebuilt from the clip files when missing. A malformed config file is reported in the app and ignored for that session; it is never overwritten with defaults.
 
-The keys that matter today:
+The keys that matter:
 
 ```toml
 [capture]
@@ -99,8 +134,13 @@ length_seconds = 30     # 5 to 1200
 memory_cap_mb = 1024
 
 [output]
-# clips_dir = "D:\\Clips"
+# clips_dir = "D:\\Clips"       # the root folder
+clips_subfolder = "Clips"
+edited_subfolder = "Edited"
 file_name_pattern = "{game} {date} {time}"
+
+[recording]
+subfolder = "Recordings"
 
 [audio]
 enabled = true
@@ -113,6 +153,14 @@ name = "Default output"
 kind = "output"           # output = loopback of a playback device, input = microphone
 enabled = true
 volume = 1.0              # 0.0 to 2.0
+muted = false
+
+[[audio.sources]]
+id = "discord.exe"        # an application gets its own track
+name = "Discord"
+kind = "application"
+enabled = true
+volume = 1.0
 muted = false
 
 [games]
@@ -129,8 +177,7 @@ action = "buffer"         # buffer, recording or ignore
 [discord]
 enabled = true
 show_game = true
-# Empty uses the built in OpenClips application on Discord.
-client_id = ""
+client_id = ""            # empty uses the built in OpenClips application
 
 # Every hotkey is a key plus an action: save_replay, toggle_replay_buffer
 # or toggle_recording. For save_replay, seconds = 0 saves the whole buffer.
@@ -167,7 +214,7 @@ Under Settings, Audio, an application (`discord.exe`, a browser, a music player)
 
 ## Discord
 
-With Discord running, OpenClips can show "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. It uses the OpenClips application registered on Discord, so it works out of the box; an own Application ID from <https://discord.com/developers/applications> can be pasted into the same section to show a different name or artwork (upload `crates/app/assets/discord-logo.png`, or your own image, as the App Icon and again under Rich Presence, Art Assets with the name `logo`). Presence runs on its own thread and reconnects quietly when Discord starts later.
+With Discord running, OpenClips shows "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. It uses the OpenClips application registered on Discord, so it works out of the box; an own Application ID from <https://discord.com/developers/applications> can be pasted into the same section to show a different name or artwork (upload `crates/app/assets/discord-logo.png`, or your own image, as the App Icon and again under Rich Presence, Art Assets with the name `logo`). Presence runs on its own thread and reconnects quietly when Discord starts later.
 
 ## Architecture
 
@@ -183,9 +230,9 @@ crates/
              the Windows GStreamer implementation. A Linux backend (pipewiresrc through the
              xdg-desktop-portal ScreenCast portal, VAAPI encode) slots in
              here without touching the other crates.
-  app/       The Slint UI, tray icon, global hotkeys, the engine that
-             wires capture into the buffer and the buffer into clip files,
-             the library service and the in app player.
+  app/       The Slint UI, tray icon, global hotkeys, Discord presence, the
+             engine that wires capture into the buffer and the buffer into
+             clip files, the library service and the in app player.
 ```
 
 The capture backend and the UI never talk to each other directly. Everything flows through `core`.
@@ -198,6 +245,7 @@ The Windows backend runs one GStreamer pipeline:
 d3d11screencapturesrc -> d3d11convert -> videorate -> hardware encoder -> h264parse -> appsink
 wasapi2src (loopback) -> volume -\
 wasapi2src (microphone) -> volume -> audiomixer -> AAC encoder -> appsink
+wasapi2src (one process) -> volume -> AAC encoder -> appsink
 ```
 
 Frames stay on the GPU until they are encoded, and `videorate` pins them to an exact frame grid so that buffer math and the container frame rate are reliable. Audio and video share the pipeline clock, and both are handed to `core` as running time, so they line up in the clip. Every encoded access unit and audio packet is handed to `core`, which keeps them in a ring bounded by both duration and bytes; audio is trimmed to the oldest video frame. The ring evicts whole groups of pictures, so the oldest frame it holds is always a keyframe, and every keyframe carries its parameter sets. Nothing touches the disk until you press the hotkey.
@@ -214,11 +262,11 @@ Encoders are tried in order (NVENC, Quick Sync, AMF, Media Foundation, x264) and
 
 ### Library and playback
 
-The library is an index of the files in the clips folder. On start and after every save it scans the folder, reads duration and dimensions with the GStreamer discoverer and renders a thumbnail with a short decode pipeline, all on a worker thread. Playback uses `playbin3` with an `appsink` video sink: decoded RGBA frames (scaled to at most 1280 pixels wide) are handed to the Slint image element, audio plays through the default output, and seeking is frame accurate.
+The library is an index of the files in the clip folders. On start and after every save it scans them, reads duration, dimensions and the audio track count with the GStreamer discoverer and renders a thumbnail with a short decode pipeline, all on a worker thread. Playback uses `playbin3` with an `appsink` video sink: decoded RGBA frames (scaled to at most 1280 pixels wide) are handed to the Slint image element, audio plays through the default output, and seeking is frame accurate.
 
-### Trimming
+### Trimming and compression
 
-Both trim paths are a seek with a segment: the pipeline prerolls, a seek with start and stop selects the range, and the muxer receives exactly that segment before end of stream. The fast path demuxes and remuxes the encoded streams (`qtdemux -> h264parse -> mp4mux`, audio alongside) with a keyframe snapping seek, so it finishes in a fraction of a second and the start lands on the previous keyframe (one second apart at the default settings). The exact path decodes with `uridecodebin`, re-encodes with the best available hardware encoder and AAC, and uses an accurate seek so the first frame is the one you picked.
+Both trim paths are a seek with a segment: the pipeline prerolls, a seek with start and stop selects the range, and the muxer receives exactly that segment before end of stream. The fast path demuxes and remuxes the encoded streams (`qtdemux -> h264parse -> mp4mux`, every audio track alongside) with a keyframe snapping seek, so it finishes in a fraction of a second and the start lands on the previous keyframe (one second apart at the default settings). The exact path decodes with `uridecodebin`, re-encodes with the best available hardware encoder and AAC, and uses an accurate seek so the first frame is the one you picked. Compression is the exact path over the whole clip with `videoscale` and a lower bitrate. Tracks switched off in the editor are drained and dropped, so the output keeps the remaining tracks in order.
 
 ### Fullscreen games and black clips
 
@@ -235,10 +283,10 @@ A recording interrupted by a crash leaves a `.mp4.part` file that is still playa
 ### Stack
 
 - **Rust** for the whole application.
-- **GStreamer** (via `gstreamer-rs`) for capture, encoding, muxing and, later, trimming.
+- **GStreamer** (via `gstreamer-rs`) for capture, encoding, muxing, playback and trimming.
 - **Slint** for the UI and the tray icon. Slint is used under its royalty free desktop license.
 - **Font Awesome Free** icons (CC BY 4.0), embedded as path data in `crates/app/ui/icons.slint`. See `crates/app/assets/icons`.
-- The application icon (`crates/app/assets/icon.ico`, embedded into the executable through `winresource`, also used by the tray, the window and the installer) is the Font Awesome scissors on the accent colour; `discord-logo.png` is the same mark at 1024 px for Discord.
+- The application icon (`crates/app/assets/icon.ico`, embedded into the executable through `winresource`, also used by the tray, the window and the installer) is the Font Awesome scissors on the accent colour; `discord-logo.png` is the same mark at 1024 px for Discord and the top of this page.
 
 ## License
 
