@@ -157,14 +157,9 @@ export component MainWindow inherits Window {
     callback toggle-buffer();
     callback save-clip();
     callback toggle-recording();
-    callback recording-finished();
-    callback library-changed();
-    callback clip-saved(string, string);
-    callback clip-written(string, string);
     callback navigated(NavPage);
     callback open-clip(string);
     callback window-drag();
-    callback clip-sound();
     callback window-minimize();
     callback window-maximize();
     callback window-close();
@@ -175,7 +170,6 @@ export component MainWindow inherits Window {
     callback install-update();
     callback dismiss-update();
     callback open-update-page();
-    callback update-pending(string);
 
     in-out property <NavPage> page: NavPage.home;
 

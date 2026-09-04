@@ -21,7 +21,6 @@ use std::process::ExitCode;
 use openclips_capture::platform::Platform;
 use openclips_core::config::{AppPaths, Config};
 use openclips_core::{APP_VERSION, logging};
-use slint::ComponentHandle;
 use tracing::{error, info, warn};
 
 use crate::engine::Engine;
@@ -87,16 +86,17 @@ fn run() -> Result<(), AppError> {
         .collect::<Vec<_>>()
         .join("\n");
 
+    let start_minimized = config.general.start_minimized;
     let app = ui::build(ui::Context {
         paths,
         config,
         engine,
         startup_warning,
     })?;
-    if show_flag || (!app.start_minimized && !minimized_flag) {
-        app.window.show()?;
+    if show_flag || (!start_minimized && !minimized_flag) {
+        app.show_window()?;
     }
-    app.tray.show()?;
+    app.show_tray()?;
 
     slint::run_event_loop_until_quit()?;
     info!("event loop finished, shutting down");

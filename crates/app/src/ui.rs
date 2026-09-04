@@ -1,3 +1,8 @@
+//! The UI layer. The window is created on demand and destroyed when it is
+//! closed, so a copy living in the tray holds no Slint scene, renderer or
+//! decoded thumbnails; capture, hotkeys, Discord presence, the library and
+//! the sound keep running from `Shared`, which outlives every window.
+
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -5,8 +10,9 @@ use std::time::Duration;
 
 use openclips_capture::platform::Platform;
 use openclips_core::APP_VERSION;
+use openclips_core::clip::ClipFile;
 use openclips_core::config::{AppPaths, Config};
-use slint::{CloseRequestResponse, ComponentHandle, Weak};
+use slint::{CloseRequestResponse, ComponentHandle};
 use tracing::{error, info, warn};
 
 use crate::discord::{DiscordPresence, PresenceState};
@@ -43,6 +49,9 @@ pub use generated::*;
 const STATUS_REFRESH: Duration = Duration::from_millis(500);
 /// Displays are re-enumerated every this many status ticks.
 const MONITOR_REFRESH_TICKS: u32 = 4;
+/// The window is dropped a moment after the close request so the request
+/// handler itself never runs inside a dying component.
+const UNLOAD_DELAY: Duration = Duration::from_millis(50);
 
 pub struct Context {
     pub paths: AppPaths,
@@ -52,13 +61,32 @@ pub struct Context {
 }
 
 pub struct App {
-    pub window: MainWindow,
-    pub tray: TrayIcon,
-    pub start_minimized: bool,
-    _status_timer: slint::Timer,
+    shared: SharedRef,
 }
 
-/// State shared between UI callbacks on the UI thread.
+impl App {
+    /// Creates the window if there is none and shows it.
+    pub fn show_window(&self) -> Result<(), AppError> {
+        show_window(&self.shared)
+    }
+
+    pub fn show_tray(&self) -> Result<(), AppError> {
+        self.shared.tray.show()?;
+        Ok(())
+    }
+}
+
+/// Texts that outlive the window so a reopened window shows them again.
+#[derive(Default)]
+struct StatusTexts {
+    save_status: String,
+    last_clip: String,
+    last_recording: String,
+    recording_message: String,
+}
+
+/// State shared between UI callbacks on the UI thread. Everything here
+/// survives closing the window.
 struct Shared {
     paths: AppPaths,
     config: RefCell<Config>,
@@ -70,6 +98,14 @@ struct Shared {
     ticks: RefCell<u32>,
     discord: DiscordPresence,
     pending_update: RefCell<Option<PendingUpdate>>,
+    tray: TrayIcon,
+    window: RefCell<Option<MainWindow>>,
+    timer: RefCell<Option<slint::Timer>>,
+    startup_warning: RefCell<String>,
+    update_banner: RefCell<Option<UpdateEvent>>,
+    texts: RefCell<StatusTexts>,
+    /// Detected game name and its icon file, for the top bar.
+    game: RefCell<(String, Option<PathBuf>)>,
 }
 
 type SharedRef = Rc<Shared>;
@@ -82,12 +118,46 @@ impl Shared {
     fn clips_dir(&self) -> PathBuf {
         self.config.borrow().clips_dir(&self.paths)
     }
+
+    /// Runs `f` against the window when one exists.
+    fn with_window<R>(&self, f: impl FnOnce(&MainWindow) -> R) -> Option<R> {
+        self.window.borrow().as_ref().map(f)
+    }
+}
+
+thread_local! {
+    /// Lets worker threads reach the UI state through the event loop.
+    static SHARED: RefCell<Option<SharedRef>> = const { RefCell::new(None) };
+}
+
+/// Results that arrive from worker threads. They are handled on the UI
+/// thread whether or not a window exists at that moment.
+enum UiEvent {
+    ClipSaved(Result<ClipFile, String>),
+    RecordingDone(Result<ClipFile, String>),
+    EditDone {
+        result: Result<ClipFile, String>,
+        overwrite: bool,
+        original: PathBuf,
+    },
+    Update(UpdateEvent),
+    Steam(Result<Vec<(String, String)>, String>),
+}
+
+fn post(event: UiEvent) {
+    let queued = slint::invoke_from_event_loop(move || {
+        let shared = SHARED.with(|slot| slot.borrow().clone());
+        if let Some(shared) = shared {
+            handle_event(&shared, event);
+        }
+    });
+    if let Err(err) = queued {
+        warn!("could not deliver a UI event: {err}");
+    }
 }
 
 pub fn build(ctx: Context) -> Result<App, AppError> {
-    let window = MainWindow::new()?;
     let tray = TrayIcon::new()?;
-    let start_minimized = ctx.config.general.start_minimized;
     let shared: SharedRef = Rc::new(Shared {
         paths: ctx.paths,
         config: RefCell::new(ctx.config),
@@ -99,33 +169,20 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         ticks: RefCell::new(0),
         discord: DiscordPresence::start(),
         pending_update: RefCell::new(None),
+        tray,
+        window: RefCell::new(None),
+        timer: RefCell::new(None),
+        startup_warning: RefCell::new(ctx.startup_warning),
+        update_banner: RefCell::new(None),
+        texts: RefCell::new(StatusTexts::default()),
+        game: RefCell::new(("No game detected".to_owned(), None)),
     });
-    init_library_and_player(&window, &shared);
+    SHARED.with(|slot| *slot.borrow_mut() = Some(shared.clone()));
+    init_library(&shared);
     init_games(&shared);
-
-    window.set_info(AppInfo {
-        version: APP_VERSION.into(),
-        platform: Platform::current().name().into(),
-        config_path: shared.paths.config_file().display().to_string().into(),
-        clips_dir: shared.clips_dir().display().to_string().into(),
-        log_dir: shared.paths.log_dir.display().to_string().into(),
-    });
-    window.set_startup_warning(ctx.startup_warning.into());
-    update_hotkey_labels(&window, &shared.config.borrow());
-    window
-        .global::<Theme>()
-        .set_animations(shared.config.borrow().general.animations);
-
-    wire_folders(&window, &shared);
-    wire_window_lifecycle(&window, &tray);
-    wire_title_bar(&window);
-    wire_actions(&window, &tray, &shared);
-    wire_settings(&window, &shared);
-    wire_library(&window, &shared);
-    wire_player(&window, &shared);
-    wire_games(&window, &shared);
-    install_hotkeys(&window, &shared);
-    let status_timer = start_status_timer(&window, &tray, &shared);
+    wire_tray(&shared);
+    install_hotkeys(&shared);
+    start_status_timer(&shared);
 
     let start_now = {
         let config = shared.config.borrow();
@@ -133,18 +190,221 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
             && config.games.scope == openclips_core::config::CaptureScope::Global
     };
     if start_now {
-        run_engine(&shared, &window, |e| e.start_buffer());
+        run_engine(&shared, None, |e| e.start_buffer());
     }
-    poll_games(&shared, &window);
-    refresh_status(&window, &tray, &shared);
-    wire_updates(&window, &shared);
+    poll_games(&shared);
+    refresh_status(&shared);
 
-    Ok(App {
-        window,
-        tray,
-        start_minimized,
-        _status_timer: status_timer,
-    })
+    let config = shared.config.borrow().updates.clone();
+    updater::spawn_check(shared.paths.clone(), config, |event| {
+        post(UiEvent::Update(event));
+    });
+
+    Ok(App { shared })
+}
+
+fn show_window(shared: &SharedRef) -> Result<(), AppError> {
+    if shared.window.borrow().is_none() {
+        let window = create_window(shared)?;
+        *shared.window.borrow_mut() = Some(window);
+        refresh_status(shared);
+    }
+    if let Some(window) = shared.window.borrow().as_ref() {
+        window.show()?;
+    }
+    Ok(())
+}
+
+/// Builds the window and fills it from the shared state.
+fn create_window(shared: &SharedRef) -> Result<MainWindow, AppError> {
+    let window = MainWindow::new()?;
+    window.set_info(AppInfo {
+        version: APP_VERSION.into(),
+        platform: Platform::current().name().into(),
+        config_path: shared.paths.config_file().display().to_string().into(),
+        clips_dir: shared.clips_dir().display().to_string().into(),
+        log_dir: shared.paths.log_dir.display().to_string().into(),
+    });
+    window.set_startup_warning(shared.startup_warning.borrow().clone().into());
+    {
+        let config = shared.config.borrow();
+        update_hotkey_labels(&window, &config);
+        window
+            .global::<Theme>()
+            .set_animations(config.general.animations);
+    }
+    apply_texts(&window, shared);
+    apply_game(&window, shared);
+
+    wire_folders(&window, shared);
+    wire_window_lifecycle(&window, shared);
+    wire_title_bar(&window, shared);
+    wire_actions(&window, shared);
+    wire_settings(&window, shared);
+    wire_library(&window, shared);
+    create_player(&window, shared);
+    wire_player(&window, shared);
+    wire_games(&window, shared);
+    wire_updates(&window, shared);
+    if let Some(event) = shared.update_banner.borrow().clone() {
+        apply_update_event(&window, event);
+    }
+    info!("window created");
+    Ok(window)
+}
+
+/// Drops the window and the player so nothing of the UI stays in memory
+/// while the app lives in the tray.
+fn unload_window(shared: &SharedRef) {
+    if let Some(window) = shared.window.borrow().as_ref()
+        && let Some(player) = shared.player.borrow_mut().as_mut()
+    {
+        player.stop(&window.global::<PlayerState>());
+    }
+    *shared.player.borrow_mut() = None;
+    let window = shared.window.borrow_mut().take();
+    if window.is_some() {
+        drop(window);
+        info!("window unloaded, capture keeps running in the tray");
+    }
+}
+
+fn schedule_unload(shared: &SharedRef) {
+    let s = shared.clone();
+    slint::Timer::single_shot(UNLOAD_DELAY, move || unload_window(&s));
+}
+
+fn apply_texts(window: &MainWindow, shared: &SharedRef) {
+    let texts = shared.texts.borrow();
+    window.set_save_status(texts.save_status.clone().into());
+    window.set_last_clip(texts.last_clip.clone().into());
+    window.set_last_recording(texts.last_recording.clone().into());
+    window.set_recording_message(texts.recording_message.clone().into());
+}
+
+fn apply_game(window: &MainWindow, shared: &SharedRef) {
+    let (name, icon) = shared.game.borrow().clone();
+    let icon = icon.and_then(|p| Image::load_from_path(&p).ok());
+    window.set_has_game_icon(icon.is_some());
+    window.set_game_icon(icon.unwrap_or_default());
+    window.set_detected_game(name.into());
+}
+
+fn handle_event(shared: &SharedRef, event: UiEvent) {
+    match event {
+        UiEvent::ClipSaved(result) => {
+            match &result {
+                Ok(clip) => {
+                    if shared.config.borrow().general.clip_sound {
+                        crate::sound::play_clip_saved();
+                    }
+                    let mut texts = shared.texts.borrow_mut();
+                    texts.last_clip = clip.path.display().to_string();
+                    texts.save_status = format!(
+                        "Saved {} ({:.1} s, {:.1} MB)",
+                        file_name_of(&clip.path),
+                        clip.duration.as_secs_f64(),
+                        clip.bytes as f64 / (1024.0 * 1024.0)
+                    );
+                }
+                Err(err) => {
+                    shared.texts.borrow_mut().save_status = format!("Could not save clip: {err}");
+                }
+            }
+            if let Ok(clip) = &result {
+                index_new_file(shared, clip);
+            }
+            shared.with_window(|w| apply_texts(w, shared));
+        }
+        UiEvent::RecordingDone(result) => {
+            if let Some(engine) = shared.engine.borrow_mut().as_mut() {
+                engine.recording_finished();
+            }
+            match &result {
+                Ok(clip) => {
+                    let mut texts = shared.texts.borrow_mut();
+                    texts.last_recording = clip.path.display().to_string();
+                    texts.recording_message = format!(
+                        "Saved {} ({}, {:.1} MB)",
+                        file_name_of(&clip.path),
+                        format_duration(clip.duration),
+                        clip.bytes as f64 / (1024.0 * 1024.0)
+                    );
+                }
+                Err(err) => {
+                    shared.texts.borrow_mut().recording_message =
+                        format!("Recording failed: {err}");
+                }
+            }
+            if let Ok(clip) = &result {
+                index_new_file(shared, clip);
+            }
+            shared.with_window(|w| apply_texts(w, shared));
+        }
+        UiEvent::EditDone {
+            result,
+            overwrite,
+            original,
+        } => {
+            let message = match &result {
+                Ok(clip) => {
+                    let name = if overwrite {
+                        "the original file".to_owned()
+                    } else {
+                        file_name_of(&clip.path)
+                    };
+                    format!(
+                        "Saved {} ({}, {:.1} MB)",
+                        name,
+                        format_duration(clip.duration),
+                        clip.bytes as f64 / (1024.0 * 1024.0)
+                    )
+                }
+                Err(err) => format!("Edit failed: {err}"),
+            };
+            if let Ok(clip) = &result {
+                let path = if overwrite {
+                    original
+                } else {
+                    clip.path.clone()
+                };
+                let tracks = clip.audio_tracks.clone();
+                if let Some(library) = shared.library.borrow_mut().as_mut() {
+                    library.refresh();
+                    library.tag_tracks(&path, &tracks);
+                }
+            }
+            shared.with_window(|w| {
+                let state = w.global::<PlayerState>();
+                state.set_trim_busy(false);
+                state.set_trim_message(message.into());
+                refresh_library_ui(w, shared);
+            });
+        }
+        UiEvent::Update(event) => {
+            if let UpdateEvent::Ready(pending) = &event {
+                *shared.pending_update.borrow_mut() = Some(pending.clone());
+            }
+            *shared.update_banner.borrow_mut() = Some(event.clone());
+            shared.with_window(|w| apply_update_event(w, event));
+        }
+        UiEvent::Steam(result) => {
+            shared.with_window(|w| apply_steam_result(w, result));
+        }
+    }
+}
+
+/// Puts a freshly written clip or recording into the library with its
+/// game and track names, and refreshes the gallery when it is visible.
+fn index_new_file(shared: &SharedRef, clip: &ClipFile) {
+    if let Some(library) = shared.library.borrow_mut().as_mut() {
+        library.refresh();
+        library.tag_tracks(&clip.path, &clip.audio_tracks);
+        if let Some(game) = &clip.game {
+            library.tag_game(&clip.path, game);
+        }
+    }
+    shared.with_window(|w| refresh_library_ui(w, shared));
 }
 
 fn update_hotkey_labels(window: &MainWindow, config: &Config) {
@@ -175,9 +435,7 @@ fn keys_of(binding: Option<&HotkeyBinding>) -> ModelRc<SharedString> {
     }
 }
 
-/// The update banner: the check runs once at start, the installer is
-/// fetched in the background and runs on the next start unless the user
-/// presses Install now.
+/// The update banner: install now, wait, or open the release page.
 fn wire_updates(window: &MainWindow, shared: &SharedRef) {
     let (s, w) = (shared.clone(), window.as_weak());
     window.on_install_update(move || {
@@ -201,12 +459,9 @@ fn wire_updates(window: &MainWindow, shared: &SharedRef) {
             }
         }
     });
-    let s = shared.clone();
-    window.on_update_pending(move |_version| {
-        *s.pending_update.borrow_mut() = PENDING.with(|slot| slot.borrow_mut().take());
-    });
-    let w = window.as_weak();
+    let (s, w) = (shared.clone(), window.as_weak());
     window.on_dismiss_update(move || {
+        *s.update_banner.borrow_mut() = None;
         if let Some(window) = w.upgrade() {
             window.set_update_message("".into());
         }
@@ -216,12 +471,6 @@ fn wire_updates(window: &MainWindow, shared: &SharedRef) {
         if let Some(window) = w.upgrade() {
             shell::open_url(&window.get_update_page());
         }
-    });
-
-    let w = window.as_weak();
-    let config = shared.config.borrow().updates.clone();
-    updater::spawn_check(shared.paths.clone(), config, move |event| {
-        let _ = w.upgrade_in_event_loop(move |window| apply_update_event(&window, event));
     });
 }
 
@@ -244,9 +493,6 @@ fn apply_update_event(window: &MainWindow, event: UpdateEvent) {
                 .into(),
             );
             window.set_update_ready(true);
-            let version = pending.version.clone();
-            PENDING.with(|slot| *slot.borrow_mut() = Some(pending));
-            window.invoke_update_pending(version.into());
         }
         UpdateEvent::Available { version, url } => {
             window.set_update_ready(false);
@@ -258,12 +504,6 @@ fn apply_update_event(window: &MainWindow, event: UpdateEvent) {
     }
 }
 
-thread_local! {
-    /// The downloaded update, handed from the event to the Shared state
-    /// through the `update-pending` callback (both live on the UI thread).
-    static PENDING: RefCell<Option<PendingUpdate>> = const { RefCell::new(None) };
-}
-
 fn wire_folders(window: &MainWindow, shared: &SharedRef) {
     let config_dir = shared.paths.config_dir.clone();
     window.on_open_config_dir(move || shell::open_folder(&config_dir));
@@ -273,21 +513,32 @@ fn wire_folders(window: &MainWindow, shared: &SharedRef) {
     window.on_open_logs_dir(move || shell::open_folder(&logs));
 }
 
-fn wire_window_lifecycle(window: &MainWindow, tray: &TrayIcon) {
-    window.window().on_close_requested(|| {
+/// Closing hides the window and then drops it; the tray brings it back.
+fn wire_window_lifecycle(window: &MainWindow, shared: &SharedRef) {
+    let s = shared.clone();
+    window.window().on_close_requested(move || {
         info!("window closed, staying in the tray");
+        schedule_unload(&s);
         CloseRequestResponse::HideWindow
     });
+}
 
-    let weak = window.as_weak();
-    tray.on_open_window(move || {
-        if let Some(window) = weak.upgrade()
-            && let Err(err) = window.show()
-        {
+fn wire_tray(shared: &SharedRef) {
+    let s = shared.clone();
+    shared.tray.on_open_window(move || {
+        if let Err(err) = show_window(&s) {
             error!("could not show the main window: {err}");
         }
     });
-    tray.on_quit(|| {
+    let s = shared.clone();
+    shared.tray.on_toggle_buffer(move || toggle_buffer(&s));
+    let s = shared.clone();
+    shared.tray.on_save_clip(move || save_clip(&s, None));
+    let s = shared.clone();
+    shared
+        .tray
+        .on_toggle_recording(move || toggle_recording(&s));
+    shared.tray.on_quit(|| {
         info!("quit requested from the tray");
         if let Err(err) = slint::quit_event_loop() {
             error!("could not stop the event loop: {err}");
@@ -295,9 +546,9 @@ fn wire_window_lifecycle(window: &MainWindow, tray: &TrayIcon) {
     });
 }
 
-/// The window draws its own title bar; moving, resizing and the three
-/// buttons go through the OS so they behave like a native frame.
-fn wire_title_bar(window: &MainWindow) {
+/// The window draws its own title bar; moving and the three buttons go
+/// through the OS so they behave like a native frame.
+fn wire_title_bar(window: &MainWindow, shared: &SharedRef) {
     use slint::winit_030::WinitWindowAccessor;
 
     let w = window.as_weak();
@@ -325,55 +576,39 @@ fn wire_title_bar(window: &MainWindow) {
             window.window().set_maximized(!maximized);
         }
     });
-    let w = window.as_weak();
+    let (s, w) = (shared.clone(), window.as_weak());
     window.on_window_close(move || {
         if let Some(window) = w.upgrade() {
             info!("window closed, staying in the tray");
             let _ = window.hide();
+            schedule_unload(&s);
         }
     });
 }
 
-fn wire_actions(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
-    let (s, w) = (shared.clone(), window.as_weak());
-    window.on_toggle_buffer(move || toggle_buffer(&s, &w));
-    let (s, w) = (shared.clone(), window.as_weak());
-    tray.on_toggle_buffer(move || toggle_buffer(&s, &w));
-
-    let (s, w) = (shared.clone(), window.as_weak());
-    window.on_save_clip(move || save_clip(&s, &w, None));
-    let (s, w) = (shared.clone(), window.as_weak());
-    tray.on_save_clip(move || save_clip(&s, &w, None));
-
-    let (s, w) = (shared.clone(), window.as_weak());
-    window.on_toggle_recording(move || toggle_recording(&s, &w));
-    let (s, w) = (shared.clone(), window.as_weak());
-    tray.on_toggle_recording(move || toggle_recording(&s, &w));
-
+fn wire_actions(window: &MainWindow, shared: &SharedRef) {
     let s = shared.clone();
-    window.on_clip_sound(move || {
-        if s.config.borrow().general.clip_sound {
-            crate::sound::play_clip_saved();
-        }
-    });
+    window.on_toggle_buffer(move || toggle_buffer(&s));
     let s = shared.clone();
-    window.on_recording_finished(move || {
-        if let Some(engine) = s.engine.borrow_mut().as_mut() {
-            engine.recording_finished();
-        }
-    });
+    window.on_save_clip(move || save_clip(&s, None));
+    let s = shared.clone();
+    window.on_toggle_recording(move || toggle_recording(&s));
 }
 
-fn install_hotkeys(window: &MainWindow, shared: &SharedRef) {
-    let (s, w) = (shared.clone(), window.as_weak());
+fn install_hotkeys(shared: &SharedRef) {
+    let s = shared.clone();
     hotkeys::install_dispatch(move |action| match action {
-        HotkeyAction::SaveReplay { index } => save_clip(&s, &w, Some(index)),
-        HotkeyAction::ToggleReplayBuffer => toggle_buffer(&s, &w),
-        HotkeyAction::ToggleRecording => toggle_recording(&s, &w),
+        HotkeyAction::SaveReplay { index } => save_clip(&s, Some(index)),
+        HotkeyAction::ToggleReplayBuffer => toggle_buffer(&s),
+        HotkeyAction::ToggleRecording => toggle_recording(&s),
     });
     if let Some(problem) = register_hotkeys(shared) {
         warn!("{problem}");
-        window.set_startup_warning(problem.into());
+        let mut warning = shared.startup_warning.borrow_mut();
+        if !warning.is_empty() {
+            warning.push('\n');
+        }
+        warning.push_str(&problem);
     }
 }
 
@@ -671,212 +906,165 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
     info!("settings saved");
 }
 
-fn start_status_timer(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) -> slint::Timer {
+fn start_status_timer(shared: &SharedRef) {
     let timer = slint::Timer::default();
-    let (s, w, t) = (shared.clone(), window.as_weak(), tray.as_weak());
+    let s = shared.clone();
     timer.start(slint::TimerMode::Repeated, STATUS_REFRESH, move || {
-        let (Some(window), Some(tray)) = (w.upgrade(), t.upgrade()) else {
-            return;
-        };
         let tick = {
             let mut ticks = s.ticks.borrow_mut();
             *ticks = ticks.wrapping_add(1);
             *ticks
         };
         if tick.is_multiple_of(MONITOR_REFRESH_TICKS) {
-            poll_monitors(&s, &window);
-            poll_games(&s, &window);
+            poll_monitors(&s);
+            poll_games(&s);
         }
-        refresh_status(&window, &tray, &s);
+        refresh_status(&s);
         let changed = s.library.borrow_mut().as_mut().is_some_and(|l| l.poll());
         if changed {
-            refresh_library_ui(&window, &s);
+            s.with_window(|w| refresh_library_ui(w, &s));
         }
-        if let Some(player) = s.player.borrow_mut().as_mut() {
+        if let Some(window) = s.window.borrow().as_ref()
+            && let Some(player) = s.player.borrow_mut().as_mut()
+        {
             player.tick(&window.global::<PlayerState>());
         }
     });
-    timer
+    *shared.timer.borrow_mut() = Some(timer);
 }
 
-fn poll_monitors(shared: &SharedRef, window: &MainWindow) {
+fn poll_monitors(shared: &SharedRef) {
     let changed = shared
         .engine
         .borrow_mut()
         .as_mut()
         .is_some_and(|e| e.refresh_monitors());
     if changed {
-        let state = window.global::<SettingsState>();
-        let monitors = current_monitors(shared);
-        let selected = settings::selected_display(&state, &monitors);
-        settings::set_monitors(&state, &monitors, &selected);
+        shared.with_window(|window| {
+            let state = window.global::<SettingsState>();
+            let monitors = current_monitors(shared);
+            let selected = settings::selected_display(&state, &monitors);
+            settings::set_monitors(&state, &monitors, &selected);
+        });
     }
 }
 
+/// Runs an engine action and shows its outcome in the window when there
+/// is one; without a window problems only go to the log.
 fn run_engine(
     shared: &SharedRef,
-    window: &MainWindow,
+    window: Option<&MainWindow>,
     action: impl FnOnce(&mut Engine) -> Result<(), AppError>,
 ) {
     let mut slot = shared.engine.borrow_mut();
     let Some(engine) = slot.as_mut() else {
-        window.set_capture_error("Capture is unavailable on this system.".into());
+        if let Some(window) = window {
+            window.set_capture_error("Capture is unavailable on this system.".into());
+        }
         return;
     };
     match action(engine) {
-        Ok(()) => window.set_capture_error("".into()),
+        Ok(()) => {
+            if let Some(window) = window {
+                window.set_capture_error("".into());
+            }
+        }
         Err(err) => {
             error!("{err}");
-            window.set_capture_error(err.to_string().into());
+            if let Some(window) = window {
+                window.set_capture_error(err.to_string().into());
+            }
         }
     }
 }
 
-fn toggle_buffer(shared: &SharedRef, window: &Weak<MainWindow>) {
-    if let Some(window) = window.upgrade() {
-        run_engine(shared, &window, |e| e.toggle_buffer());
-    }
+fn toggle_buffer(shared: &SharedRef) {
+    let window = shared.window.borrow();
+    run_engine(shared, window.as_ref(), |e| e.toggle_buffer());
 }
 
-fn toggle_recording(shared: &SharedRef, window: &Weak<MainWindow>) {
-    let Some(strong) = window.upgrade() else {
-        return;
-    };
-    let weak = window.clone();
-    run_engine(shared, &strong, move |e| {
-        e.toggle_recording(Box::new(move |result| {
-            let _ = weak.upgrade_in_event_loop(move |window| {
-                window.invoke_recording_finished();
-                match result {
-                    Ok(clip) => {
-                        window.set_last_recording(clip.path.display().to_string().into());
-                        window.invoke_clip_written(
-                            clip.path.display().to_string().into(),
-                            clip.audio_tracks.join("\u{1f}").into(),
-                        );
-                        window.invoke_library_changed();
-                        if let Some(game) = &clip.game {
-                            window.invoke_clip_saved(
-                                clip.path.display().to_string().into(),
-                                game.clone().into(),
-                            );
-                        }
-                        window.set_recording_message(
-                            format!(
-                                "Saved {} ({}, {:.1} MB)",
-                                file_name_of(&clip.path),
-                                format_duration(clip.duration),
-                                clip.bytes as f64 / (1024.0 * 1024.0)
-                            )
-                            .into(),
-                        );
-                    }
-                    Err(err) => {
-                        window.set_recording_message(format!("Recording failed: {err}").into())
-                    }
-                }
-            });
-        }))
+fn toggle_recording(shared: &SharedRef) {
+    let window = shared.window.borrow();
+    run_engine(shared, window.as_ref(), |e| {
+        e.toggle_recording(Box::new(|result| post(UiEvent::RecordingDone(result))))
     });
 }
 
-fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>, hotkey_index: Option<usize>) {
-    let Some(strong) = window.upgrade() else {
-        return;
-    };
+fn save_clip(shared: &SharedRef, hotkey_index: Option<usize>) {
     let length = hotkey_index
         .and_then(|i| shared.config.borrow().hotkeys.bindings.get(i).copied())
         .map(|b| Duration::from_secs(u64::from(b.seconds)));
     let slot = shared.engine.borrow();
     let Some(engine) = slot.as_ref() else {
-        strong.set_capture_error("Capture is unavailable on this system.".into());
+        shared
+            .with_window(|w| w.set_capture_error("Capture is unavailable on this system.".into()));
         return;
     };
-    strong.set_save_status("Saving clip...".into());
-    let weak = window.clone();
-    engine.save_clip(
-        length,
-        Box::new(move |result| {
-            let _ = weak.upgrade_in_event_loop(move |window| match result {
-                Ok(clip) => {
-                    window.invoke_clip_sound();
-                    window.set_last_clip(clip.path.display().to_string().into());
-                    window.invoke_clip_written(
-                        clip.path.display().to_string().into(),
-                        clip.audio_tracks.join("\u{1f}").into(),
-                    );
-                    window.invoke_library_changed();
-                    if let Some(game) = &clip.game {
-                        window.invoke_clip_saved(
-                            clip.path.display().to_string().into(),
-                            game.clone().into(),
-                        );
-                    }
-                    window.set_save_status(
-                        format!(
-                            "Saved {} ({:.1} s, {:.1} MB)",
-                            file_name_of(&clip.path),
-                            clip.duration.as_secs_f64(),
-                            clip.bytes as f64 / (1024.0 * 1024.0)
-                        )
-                        .into(),
-                    );
-                }
-                Err(err) => window.set_save_status(format!("Could not save clip: {err}").into()),
-            });
-        }),
-    );
+    shared.texts.borrow_mut().save_status = "Saving clip...".to_owned();
+    shared.with_window(|w| apply_texts(w, shared));
+    engine.save_clip(length, Box::new(|result| post(UiEvent::ClipSaved(result))));
 }
 
-fn refresh_status(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
-    let mut slot = shared.engine.borrow_mut();
-    let Some(engine) = slot.as_mut() else {
-        window.set_buffer_active(false);
-        window.set_buffer_status("Unavailable".into());
-        tray.set_buffer_active(false);
-        tray.set_recording_active(false);
+fn refresh_status(shared: &SharedRef) {
+    let status = {
+        let mut slot = shared.engine.borrow_mut();
+        slot.as_mut().map(|engine| engine.status())
+    };
+    let Some(status) = status else {
+        shared.with_window(|window| {
+            window.set_buffer_active(false);
+            window.set_buffer_status("Unavailable".into());
+        });
+        shared.tray.set_buffer_active(false);
+        shared.tray.set_recording_active(false);
         shared.discord.update(PresenceState::default());
         return;
     };
-    let status = engine.status();
     let buffering = status.buffer == BufferState::Running;
-    window.set_buffer_active(buffering);
-    tray.set_buffer_active(buffering);
-    window.set_buffer_label(if buffering { "Buffer on" } else { "Buffer off" }.into());
-    window.set_buffer_status(describe_buffer_state(&status).into());
-    window.set_buffer_detail(describe_buffer(&status).into());
-    window.set_encoder_name(format!("{} ({})", status.encoder.kind.label(), status.backend).into());
-    if let BufferState::Failed(reason) = &status.buffer {
-        window.set_capture_error(reason.clone().into());
-    }
-    let mut notice = status.notice.clone().unwrap_or_default();
-    if status.blank {
-        if !notice.is_empty() {
-            notice.push(' ');
-        }
-        notice.push_str(
-            "The capture looks black. If the game runs in exclusive fullscreen, switch it to borderless windowed, or choose Windows Graphics Capture under Settings.",
-        );
-    }
-    window.set_capture_notice(notice.into());
-
     let recording = matches!(
         status.recording,
         RecordingState::Starting | RecordingState::Active { .. }
     );
-    window.set_recording_active(recording);
-    tray.set_recording_active(recording);
-    let game = window.get_detected_game();
+    shared.tray.set_buffer_active(buffering);
+    shared.tray.set_recording_active(recording);
+    let game = shared.game.borrow().0.clone();
     shared.discord.update(PresenceState {
         config: shared.config.borrow().discord.clone(),
-        game: (game != "No game detected" && !game.is_empty()).then(|| game.to_string()),
+        game: (game != "No game detected" && !game.is_empty()).then_some(game),
         buffering,
         recording,
     });
-    window.set_recording_status(describe_recording(&status.recording).into());
     if let RecordingState::Failed(reason) = &status.recording {
-        window.set_recording_message(format!("Recording failed: {reason}").into());
+        shared.texts.borrow_mut().recording_message = format!("Recording failed: {reason}");
     }
+
+    shared.with_window(|window| {
+        window.set_buffer_active(buffering);
+        window.set_buffer_label(if buffering { "Buffer on" } else { "Buffer off" }.into());
+        window.set_buffer_status(describe_buffer_state(&status).into());
+        window.set_buffer_detail(describe_buffer(&status).into());
+        window.set_encoder_name(
+            format!("{} ({})", status.encoder.kind.label(), status.backend).into(),
+        );
+        if let BufferState::Failed(reason) = &status.buffer {
+            window.set_capture_error(reason.clone().into());
+        }
+        let mut notice = status.notice.clone().unwrap_or_default();
+        if status.blank {
+            if !notice.is_empty() {
+                notice.push(' ');
+            }
+            notice.push_str(
+                "The capture looks black. If the game runs in exclusive fullscreen, switch it to borderless windowed, or choose Windows Graphics Capture under Settings.",
+            );
+        }
+        window.set_capture_notice(notice.into());
+        window.set_recording_active(recording);
+        window.set_recording_status(describe_recording(&status.recording).into());
+        if matches!(status.recording, RecordingState::Failed(_)) {
+            apply_texts(window, shared);
+        }
+    });
 }
 
 fn describe_buffer_state(status: &EngineStatus) -> String {
@@ -933,16 +1121,28 @@ fn describe_recording(state: &RecordingState) -> String {
     }
 }
 
-fn init_library_and_player(window: &MainWindow, shared: &SharedRef) {
+fn init_library(shared: &SharedRef) {
+    let engine = shared.engine.borrow();
+    let Some(engine) = engine.as_ref() else {
+        return;
+    };
+    let library = LibraryService::new(&shared.paths, &shared.config.borrow(), engine.media_tools());
+    *shared.library.borrow_mut() = Some(library);
+}
+
+/// The player belongs to the window: it pushes decoded frames into it and
+/// dies with it.
+fn create_player(window: &MainWindow, shared: &SharedRef) {
     let engine = shared.engine.borrow();
     let Some(engine) = engine.as_ref() else {
         window.global::<LibraryState>().set_message(
             "The clip library needs the media framework, which is unavailable.".into(),
         );
+        window
+            .global::<PlayerState>()
+            .set_message("Playback is unavailable on this system.".into());
         return;
     };
-    let library = LibraryService::new(&shared.paths, &shared.config.borrow(), engine.media_tools());
-    *shared.library.borrow_mut() = Some(library);
     match PlayerController::new(window, |sink| engine.create_player(sink)) {
         Ok(player) => *shared.player.borrow_mut() = Some(player),
         Err(err) => {
@@ -995,15 +1195,6 @@ fn wire_library(window: &MainWindow, shared: &SharedRef) {
         }
     });
 
-    let (s, w) = (shared.clone(), window.as_weak());
-    window.on_library_changed(move || {
-        if let Some(window) = w.upgrade() {
-            if let Some(library) = s.library.borrow_mut().as_mut() {
-                library.refresh();
-            }
-            refresh_library_ui(&window, &s);
-        }
-    });
     let (s, w) = (shared.clone(), window.as_weak());
     window.on_navigated(move |page| {
         if page != NavPage::Player
@@ -1524,7 +1715,6 @@ fn run_edit_job(
     state.set_trim_busy(true);
     state.set_trim_message(busy_message.into());
     let original = job.input.clone();
-    let weak = window.as_weak();
     let spawned = std::thread::Builder::new()
         .name("edit".to_owned())
         .spawn(move || {
@@ -1538,33 +1728,10 @@ fn run_edit_job(
                     }
                     Ok(clip)
                 });
-            let _ = weak.upgrade_in_event_loop(move |window| {
-                let state = window.global::<PlayerState>();
-                state.set_trim_busy(false);
-                match result {
-                    Ok(clip) => {
-                        let (name, path) = if overwrite {
-                            ("the original file".to_owned(), original.clone())
-                        } else {
-                            (file_name_of(&clip.path), clip.path.clone())
-                        };
-                        state.set_trim_message(
-                            format!(
-                                "Saved {} ({}, {:.1} MB)",
-                                name,
-                                format_duration(clip.duration),
-                                clip.bytes as f64 / (1024.0 * 1024.0)
-                            )
-                            .into(),
-                        );
-                        window.invoke_library_changed();
-                        window.invoke_clip_written(
-                            path.display().to_string().into(),
-                            clip.audio_tracks.join("\u{1f}").into(),
-                        );
-                    }
-                    Err(err) => state.set_trim_message(format!("Edit failed: {err}").into()),
-                }
+            post(UiEvent::EditDone {
+                result,
+                overwrite,
+                original,
             });
         });
     if let Err(err) = spawned {
@@ -1649,7 +1816,7 @@ fn init_games(shared: &SharedRef) {
 }
 
 /// Polls the process list and pushes the result into the engine and the UI.
-fn poll_games(shared: &SharedRef, window: &MainWindow) {
+fn poll_games(shared: &SharedRef) {
     let (active, auto, running_text) = {
         let mut games = shared.games.borrow_mut();
         let Some(games) = games.as_mut() else {
@@ -1671,24 +1838,25 @@ fn poll_games(shared: &SharedRef, window: &MainWindow) {
         .as_ref()
         .map(|g| g.name.clone())
         .unwrap_or_else(|| "No game detected".to_owned());
-    if window.get_detected_game() != name {
+    if shared.game.borrow().0 != name {
         let icon = shared
             .games
             .borrow()
             .as_ref()
-            .and_then(|g| g.icon_for_name(&name, &shared.config.borrow().games))
-            .and_then(|p| Image::load_from_path(&p).ok());
-        window.set_has_game_icon(icon.is_some());
-        window.set_game_icon(icon.unwrap_or_default());
-        window.set_detected_game(name.into());
+            .and_then(|g| g.icon_for_name(&name, &shared.config.borrow().games));
+        *shared.game.borrow_mut() = (name, icon);
+        shared.with_window(|w| apply_game(w, shared));
     }
-    let state = window.global::<SettingsState>();
-    if state.get_running_games() != running_text {
-        state.set_running_games(running_text.into());
-        refresh_running_known(window, shared);
-    }
-    run_engine(shared, window, |e| e.set_game_state(active, auto));
-    run_engine(shared, window, |e| e.poll_app_audio());
+    shared.with_window(|window| {
+        let state = window.global::<SettingsState>();
+        if state.get_running_games() != running_text {
+            state.set_running_games(running_text.clone().into());
+            refresh_running_known(window, shared);
+        }
+    });
+    let window = shared.window.borrow();
+    run_engine(shared, window.as_ref(), |e| e.set_game_state(active, auto));
+    run_engine(shared, window.as_ref(), |e| e.poll_app_audio());
 }
 
 fn refresh_running_known(window: &MainWindow, shared: &SharedRef) {
@@ -1844,7 +2012,6 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         state.set_steam_busy(true);
         state.set_games_message("Contacting Steam...".into());
         let cache = s.paths.cache_dir.join("steam_apps.json");
-        let weak = window.as_weak();
         std::thread::spawn(move || {
             let result = crate::steam::app_names(&cache).map(|names| {
                 missing
@@ -1855,58 +2022,33 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
                     })
                     .collect::<Vec<(String, String)>>()
             });
-            let _ = weak.upgrade_in_event_loop(move |window| {
-                let state = window.global::<SettingsState>();
-                state.set_steam_busy(false);
-                match result {
-                    Ok(found) if found.is_empty() => {
-                        state.set_games_message("Steam had no matching names.".into());
-                    }
-                    Ok(found) => {
-                        let rows = state.get_game_profiles();
-                        for i in 0..rows.row_count() {
-                            if let Some(mut row) = rows.row_data(i)
-                                && let Some((_, name)) =
-                                    found.iter().find(|(exe, _)| *exe == row.exe.to_lowercase())
-                            {
-                                row.name = name.clone().into();
-                                rows.set_row_data(i, row);
-                            }
-                        }
-                        state.set_games_message(
-                            format!("Filled {} name(s) from Steam. Save to apply.", found.len())
-                                .into(),
-                        );
-                    }
-                    Err(err) => state.set_games_message(err.into()),
-                }
-            });
+            post(UiEvent::Steam(result));
         });
     });
+}
 
-    let (s, w) = (shared.clone(), window.as_weak());
-    window.on_clip_saved(move |path, game| {
-        if let Some(window) = w.upgrade() {
-            if let Some(library) = s.library.borrow_mut().as_mut() {
-                library.refresh();
-                library.tag_game(std::path::Path::new(path.as_str()), &game);
-            }
-            refresh_library_ui(&window, &s);
+fn apply_steam_result(window: &MainWindow, result: Result<Vec<(String, String)>, String>) {
+    let state = window.global::<SettingsState>();
+    state.set_steam_busy(false);
+    match result {
+        Ok(found) if found.is_empty() => {
+            state.set_games_message("Steam had no matching names.".into());
         }
-    });
-    let (s, w) = (shared.clone(), window.as_weak());
-    window.on_clip_written(move |path, tracks| {
-        if let Some(window) = w.upgrade() {
-            let tracks: Vec<String> = tracks
-                .split('\u{1f}')
-                .filter(|t| !t.is_empty())
-                .map(str::to_owned)
-                .collect();
-            if let Some(library) = s.library.borrow_mut().as_mut() {
-                library.refresh();
-                library.tag_tracks(std::path::Path::new(path.as_str()), &tracks);
+        Ok(found) => {
+            let rows = state.get_game_profiles();
+            for i in 0..rows.row_count() {
+                if let Some(mut row) = rows.row_data(i)
+                    && let Some((_, name)) =
+                        found.iter().find(|(exe, _)| *exe == row.exe.to_lowercase())
+                {
+                    row.name = name.clone().into();
+                    rows.set_row_data(i, row);
+                }
             }
-            refresh_library_ui(&window, &s);
+            state.set_games_message(
+                format!("Filled {} name(s) from Steam. Save to apply.", found.len()).into(),
+            );
         }
-    });
+        Err(err) => state.set_games_message(err.into()),
+    }
 }
