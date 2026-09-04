@@ -108,6 +108,18 @@ fn main() {
     if let Ok(id) = std::env::var("OPENCLIPS_MONITOR") {
         settings.display = openclips_core::config::DisplaySelection::Monitor(id);
     }
+    // OPENCLIPS_GAME_PID=<pid> captures that game through the OBS hook instead
+    // of the display, so display and game capture can be scored side by side
+    // on the same game without the app's process load in the mix.
+    if let Ok(pid) = std::env::var("OPENCLIPS_GAME_PID") {
+        match pid.parse::<u32>() {
+            Ok(pid) => {
+                println!("using game capture for pid {pid}");
+                settings.game_capture_pid = Some(pid);
+            }
+            Err(_) => eprintln!("OPENCLIPS_GAME_PID must be a process id"),
+        }
+    }
     let sink = Arc::new(Sink {
         recorder: backend.recorder(),
         path,
