@@ -74,8 +74,11 @@ struct JobResult {
 pub struct LibraryService {
     library: Library,
     index_path: PathBuf,
+    /// Root folder plus the three subfolders (which may equal the root).
     clips_dir: PathBuf,
+    clips_out_dir: PathBuf,
     recordings_dir: PathBuf,
+    edited_dir: PathBuf,
     thumbnails_dir: PathBuf,
     tools: Arc<dyn MediaTools>,
     sender: Sender<JobResult>,
@@ -98,7 +101,9 @@ impl LibraryService {
             library,
             index_path,
             clips_dir: config.clips_dir(paths),
+            clips_out_dir: config.clips_out_dir(paths),
             recordings_dir: config.recordings_dir(paths),
+            edited_dir: config.edited_dir(paths),
             thumbnails_dir: paths.cache_dir.join("thumbnails"),
             tools,
             sender,
@@ -110,11 +115,25 @@ impl LibraryService {
     }
 
     pub fn set_dirs(&mut self, paths: &AppPaths, config: &Config) {
-        let clips = config.clips_dir(paths);
-        let recordings = config.recordings_dir(paths);
-        if clips != self.clips_dir || recordings != self.recordings_dir {
-            self.clips_dir = clips;
-            self.recordings_dir = recordings;
+        let dirs = (
+            config.clips_dir(paths),
+            config.clips_out_dir(paths),
+            config.recordings_dir(paths),
+            config.edited_dir(paths),
+        );
+        let current = (
+            self.clips_dir.clone(),
+            self.clips_out_dir.clone(),
+            self.recordings_dir.clone(),
+            self.edited_dir.clone(),
+        );
+        if dirs != current {
+            (
+                self.clips_dir,
+                self.clips_out_dir,
+                self.recordings_dir,
+                self.edited_dir,
+            ) = dirs;
             self.refresh();
         }
     }
@@ -122,13 +141,23 @@ impl LibraryService {
     /// Rescans the folders and queues work for anything new. Partial files
     /// left behind by a crash are renamed so they show up as clips.
     pub fn refresh(&mut self) {
-        recover_partial_files(&self.clips_dir);
-        if self.recordings_dir != self.clips_dir {
-            recover_partial_files(&self.recordings_dir);
-        }
-        let mut files = scan_dir(&self.clips_dir, ClipKind::Replay);
-        if self.recordings_dir != self.clips_dir {
-            files.extend(scan_dir(&self.recordings_dir, ClipKind::Recording));
+        // Folders scanned in priority order; a folder that doubles as
+        // another (empty subfolder setting) is only scanned once.
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let mut files = Vec::new();
+        let plan = [
+            (self.clips_out_dir.clone(), ClipKind::Replay),
+            (self.recordings_dir.clone(), ClipKind::Recording),
+            (self.edited_dir.clone(), ClipKind::Edited),
+            (self.clips_dir.clone(), ClipKind::Replay),
+        ];
+        for (dir, kind) in plan {
+            if seen.contains(&dir) {
+                continue;
+            }
+            recover_partial_files(&dir);
+            files.extend(scan_dir(&dir, kind));
+            seen.push(dir);
         }
         for record in &mut self.library.clips {
             if record.thumbnail.as_ref().is_some_and(|t| !t.exists()) {
@@ -224,6 +253,8 @@ impl LibraryService {
             if let Some(info) = result.info {
                 self.library
                     .set_probe(&result.id, info.duration, info.width, info.height);
+                self.library
+                    .default_audio_tracks(&result.id, info.audio_tracks);
                 changed = true;
             } else if let Some(record) = self.library.get_mut(&result.id)
                 && !record.probed
@@ -285,6 +316,22 @@ impl LibraryService {
     /// Bytes used by every indexed file.
     pub fn total_bytes(&self) -> u64 {
         self.library.clips.iter().map(|c| c.bytes).sum()
+    }
+
+    /// Records the audio track names of a freshly written file.
+    pub fn tag_tracks(&mut self, path: &std::path::Path, tracks: &[String]) {
+        let id = self
+            .library
+            .clips
+            .iter()
+            .find(|c| c.path == path)
+            .map(|c| c.id.clone());
+        if let Some(id) = id
+            && !tracks.is_empty()
+        {
+            self.library.set_audio_tracks(&id, tracks.to_vec());
+            self.save();
+        }
     }
 
     /// Records the game of a freshly written file, once it is indexed.

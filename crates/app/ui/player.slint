@@ -1,7 +1,8 @@
 import { LineEdit, Slider, ComboBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icons.slint";
-import { IconButton, TextButton, Notice, Toggle } from "widgets.slint";
+import { IconButton, TextButton, Notice, Toggle, OptionCard } from "widgets.slint";
+import { AudioTrackRow } from "types.slint";
 
 export global PlayerState {
     in-out property <image> frame;
@@ -28,9 +29,14 @@ export global PlayerState {
     in-out property <string> trim-out-text: "0:00.000";
     in-out property <string> trim-summary;
     in-out property <int> trim-mode-index: 0;
-    in-out property <bool> trim-overwrite: false;
     in-out property <bool> trim-busy: false;
     in-out property <string> trim-message;
+    in-out property <[AudioTrackRow]> audio-tracks: [];
+    in-out property <bool> save-prompt: false;
+
+    // Compression
+    in-out property <bool> compress-open: false;
+    in-out property <int> compress-index: 0;
 
     callback toggle-play();
     callback seek(float);
@@ -46,8 +52,9 @@ export global PlayerState {
     callback set-in-at(float);
     callback set-out-at(float);
     callback preview-selection();
-    callback save-trim();
+    callback save-trim-as(bool);
     callback trim-changed();
+    callback compress();
 }
 
 component Timeline inherits Rectangle {
@@ -151,7 +158,7 @@ component TrimPanel inherits Rectangle {
             spacing: 10px;
             alignment: start;
             Icon { y: (parent.height - self.height) / 2; size: 14px; data: Icons.scissors; color: Theme.accent; }
-            Text { text: "Trim"; font-size: 14px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+            Text { text: "Edit"; font-size: 14px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
             Text { text: PlayerState.trim-summary; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
         }
@@ -163,38 +170,121 @@ component TrimPanel inherits Rectangle {
             TextButton { text: "Set out"; icon: Icons.chevron-right; has-icon: true; clicked => { PlayerState.set-out(); } }
             Text { text: PlayerState.trim-out-text; vertical-alignment: center; font-size: 13px; color: Theme.text; width: 80px; }
             TextButton { text: "Preview"; icon: Icons.play; has-icon: true; clicked => { PlayerState.preview-selection(); } }
-        }
-        HorizontalLayout {
-            spacing: 12px;
-            alignment: start;
+            Rectangle { horizontal-stretch: 1; }
             ComboBox {
                 width: 220px;
                 model: ["Fast (cuts on keyframes)", "Exact (re-encodes)"];
                 current-index <=> PlayerState.trim-mode-index;
                 selected => { PlayerState.trim-changed(); }
             }
-            HorizontalLayout {
-                spacing: 8px;
-                Text { text: "Replace original"; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
-                Toggle { checked <=> PlayerState.trim-overwrite; }
+        }
+        if PlayerState.audio-tracks.length > 0: HorizontalLayout {
+            spacing: 16px;
+            alignment: start;
+            Text { text: "Audio tracks"; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
+            for track in PlayerState.audio-tracks: HorizontalLayout {
+                spacing: 6px;
+                Toggle { y: (parent.height - self.height) / 2; checked <=> track.enabled; }
+                Text { text: track.name; font-size: 12px; color: Theme.text; vertical-alignment: center; }
             }
-            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
             TextButton {
-                text: PlayerState.trim-busy ? "Saving..." : (PlayerState.trim-overwrite ? "Overwrite original" : "Save as new clip");
+                text: PlayerState.trim-busy ? "Working..." : "Save";
                 icon: Icons.floppy-disk;
                 has-icon: true;
                 kind: 1;
                 enabled: !PlayerState.trim-busy;
-                clicked => { PlayerState.save-trim(); }
+                clicked => { PlayerState.save-prompt = true; }
             }
+            TextButton {
+                text: "Compress";
+                icon: Icons.bolt;
+                has-icon: true;
+                enabled: !PlayerState.trim-busy;
+                clicked => { PlayerState.compress-open = true; }
+            }
+            if PlayerState.trim-message != "": Text { text: PlayerState.trim-message; font-size: 12px; color: Theme.text; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
         }
-        if PlayerState.trim-message != "": Text { text: PlayerState.trim-message; font-size: 12px; color: Theme.text; wrap: word-wrap; }
         Text {
-            text: "Drag the handles on the timeline or use Set in and Set out at the playhead. Saving as a new clip never touches the original.";
+            text: "Drag the handles on the timeline or use Set in and Set out at the playhead. Muted tracks are left out of the saved file. Saving asks whether to keep the original.";
             font-size: 11px;
             color: Theme.text-faint;
             wrap: word-wrap;
         }
+    }
+}
+
+component Modal inherits Rectangle {
+    in property <string> title;
+    in property <length> card-width: 460px;
+    callback dismiss();
+    background: #000000a0;
+    TouchArea { clicked => { root.dismiss(); } }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.card-width;
+        height: body.preferred-height;
+        border-radius: Theme.radius;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        TouchArea { }
+        body := VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+            HorizontalLayout {
+                Text { text: root.title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
+                IconButton { icon: Icons.xmark; size: 28px; icon-size: 12px; clicked => { root.dismiss(); } }
+            }
+            @children
+        }
+    }
+}
+
+component SaveDialog inherits Modal {
+    title: "Save the edit";
+    dismiss => { PlayerState.save-prompt = false; }
+    Text {
+        text: "Save as a new file in the Edited folder, or replace the original clip? Replacing cannot be undone.";
+        font-size: 13px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: end;
+        TextButton { text: "Cancel"; clicked => { PlayerState.save-prompt = false; } }
+        TextButton { text: "Replace original"; icon: Icons.triangle-exclamation; has-icon: true; kind: 2; clicked => { PlayerState.save-trim-as(true); } }
+        TextButton { text: "Save as new"; icon: Icons.floppy-disk; has-icon: true; kind: 1; clicked => { PlayerState.save-trim-as(false); } }
+    }
+}
+
+component CompressDialog inherits Modal {
+    title: "Compress clip";
+    card-width: 560px;
+    dismiss => { PlayerState.compress-open = false; }
+    Text {
+        text: "Re-encodes the whole clip with a smaller size. The result goes to the Edited folder; the original stays untouched. Muted tracks are left out.";
+        font-size: 13px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        OptionCard { title: "1080p"; detail: "8 Mbps"; selected: PlayerState.compress-index == 0; clicked => { PlayerState.compress-index = 0; } }
+        OptionCard { title: "1080p"; detail: "4 Mbps"; selected: PlayerState.compress-index == 1; clicked => { PlayerState.compress-index = 1; } }
+        OptionCard { title: "720p"; detail: "4 Mbps"; selected: PlayerState.compress-index == 2; clicked => { PlayerState.compress-index = 2; } }
+        OptionCard { title: "720p"; detail: "2 Mbps"; selected: PlayerState.compress-index == 3; clicked => { PlayerState.compress-index = 3; } }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: end;
+        TextButton { text: "Cancel"; clicked => { PlayerState.compress-open = false; } }
+        TextButton { text: "Compress"; icon: Icons.bolt; has-icon: true; kind: 1; clicked => { PlayerState.compress(); } }
     }
 }
 
@@ -233,6 +323,7 @@ export component PlayerPage inherits Rectangle {
                 }
             }
             IconButton { icon: Icons.scissors; filled: true; active: PlayerState.editing; clicked => { PlayerState.editing = !PlayerState.editing; } }
+            IconButton { icon: Icons.bolt; filled: true; clicked => { PlayerState.compress-open = true; } }
             IconButton { icon: Icons.folder-open; filled: true; clicked => { PlayerState.reveal(); } }
             if !PlayerState.confirm-delete: IconButton { icon: Icons.trash; filled: true; icon-color: Theme.danger; clicked => { PlayerState.confirm-delete = true; } }
             if PlayerState.confirm-delete: TextButton { text: "Delete clip"; icon: Icons.trash; has-icon: true; kind: 2; clicked => { PlayerState.delete(); } }
@@ -318,4 +409,7 @@ export component PlayerPage inherits Rectangle {
 
         if PlayerState.editing: TrimPanel { }
     }
+
+    if PlayerState.save-prompt: SaveDialog { width: root.width; height: root.height; }
+    if PlayerState.compress-open: CompressDialog { width: root.width; height: root.height; }
 }

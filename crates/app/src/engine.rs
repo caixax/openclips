@@ -189,6 +189,8 @@ pub struct Engine {
     restart_pending: bool,
     /// Audio sources that failed this session, skipped until settings change.
     unavailable_audio: HashSet<String>,
+    /// Process ids of the application audio sources the capture started with.
+    app_audio: Vec<(String, u32)>,
     notice: Option<String>,
     last_failure: Option<String>,
     monitors: Vec<MonitorInfo>,
@@ -236,6 +238,7 @@ impl Engine {
             finishing: false,
             restart_pending: false,
             unavailable_audio: HashSet::new(),
+            app_audio: Vec::new(),
             notice: None,
             last_failure: None,
             monitors,
@@ -263,10 +266,6 @@ impl Engine {
                 Vec::new()
             }
         }
-    }
-
-    pub fn clips_dir(&self) -> PathBuf {
-        self.config.clips_dir(&self.paths)
     }
 
     pub fn media_tools(&self) -> Arc<dyn MediaTools> {
@@ -505,8 +504,84 @@ impl Engine {
                 .sources
                 .retain(|s| !self.unavailable_audio.contains(&s.key()));
         }
+        let pids = self.app_pids();
+        let first_app = pids
+            .iter()
+            .map(|(_, pid)| *pid)
+            .find(|pid| *pid != 0)
+            .unwrap_or(0);
+        for track in &mut settings.audio_tracks {
+            for source in &mut track.sources {
+                match source.kind {
+                    openclips_core::capture::AudioDeviceKind::Application => {
+                        source.process = pids
+                            .iter()
+                            .find(|(id, _)| *id == source.id)
+                            .map(|(_, pid)| *pid)
+                            .unwrap_or(0);
+                    }
+                    openclips_core::capture::AudioDeviceKind::Output
+                        if source.id == openclips_core::capture::DEFAULT_AUDIO_DEVICE_ID =>
+                    {
+                        source.process = first_app;
+                    }
+                    _ => {}
+                }
+            }
+            track.sources.retain(|s| {
+                s.kind != openclips_core::capture::AudioDeviceKind::Application || s.process != 0
+            });
+        }
         settings.audio_tracks.retain(|t| !t.sources.is_empty());
         settings
+    }
+
+    /// Process ids of the enabled application audio sources, zero when the
+    /// application is not running.
+    fn app_pids(&self) -> Vec<(String, u32)> {
+        let apps: Vec<&openclips_core::config::AudioSourceConfig> = self
+            .config
+            .audio
+            .sources
+            .iter()
+            .filter(|s| {
+                s.enabled && s.kind == openclips_core::capture::AudioDeviceKind::Application
+            })
+            .collect();
+        if apps.is_empty() || !self.config.audio.enabled {
+            return Vec::new();
+        }
+        let running = self.backend.process_watcher().running().unwrap_or_default();
+        apps.iter()
+            .map(|s| {
+                let exe = s.id.to_lowercase();
+                let pid = running
+                    .iter()
+                    .find(|p| p.exe == exe)
+                    .map(|p| p.pid)
+                    .unwrap_or(0);
+                (s.id.clone(), pid)
+            })
+            .collect()
+    }
+
+    /// Restarts the capture when an application with its own audio track
+    /// starts or stops, so the track appears or disappears. Deferred while
+    /// recording.
+    pub fn poll_app_audio(&mut self) -> Result<(), AppError> {
+        if self.app_audio.is_empty()
+            && !self.config.audio.sources.iter().any(|s| {
+                s.enabled && s.kind == openclips_core::capture::AudioDeviceKind::Application
+            })
+        {
+            return Ok(());
+        }
+        let now = self.app_pids();
+        if now != self.app_audio && self.backend.is_running() && !self.recording_wanted {
+            info!("application audio changed, restarting capture");
+            self.restart_capture()?;
+        }
+        Ok(())
     }
 
     /// Starts capture with the preferred encoder and falls back through the
@@ -550,6 +625,7 @@ impl Engine {
             let sink: Arc<dyn FrameSink> = self.sink.clone();
             match self.backend.start(&settings, sink) {
                 Ok(()) => {
+                    self.app_audio = self.app_pids();
                     if candidate != self.preferred {
                         self.add_notice(format!(
                             "{} could not start, using {} instead.",
@@ -779,7 +855,10 @@ impl Engine {
 
         let game = self.game_name();
         let file_name = clip_file_name(&self.config.output.file_name_pattern, &game, &now_local());
-        let path = unique_path(&self.output_dir(self.clips_dir()), &file_name);
+        let path = unique_path(
+            &self.output_dir(self.config.clips_out_dir(&self.paths)),
+            &file_name,
+        );
         let writer = self.writer.clone();
         let game = (!game.is_empty()).then_some(game);
         spawn_named("clip-writer", move || {

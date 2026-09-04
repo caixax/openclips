@@ -17,6 +17,7 @@ path = "src/main.rs"
 openclips-core.workspace = true
 openclips-capture.workspace = true
 slint.workspace = true
+raw-window-handle.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 global-hotkey.workspace = true
@@ -28,7 +29,7 @@ serde_json.workspace = true
 chrono.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Storage_FileSystem"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [dev-dependencies]
 tempfile = "3"

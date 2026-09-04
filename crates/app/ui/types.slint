@@ -41,9 +41,15 @@ export struct GameProfileRow {
     has-icon: bool,
 }
 
-export struct SaveHotkeyRow {
+export struct HotkeyRow {
     binding: string,
     keys: [string],
+    action-index: int,
     minutes: int,
-    seconds-index: int,
+    seconds: int,
+}
+
+export struct AudioTrackRow {
+    name: string,
+    enabled: bool,
 }

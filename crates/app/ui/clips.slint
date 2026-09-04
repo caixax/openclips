@@ -126,7 +126,7 @@ export component ClipsPage inherits Rectangle {
             IconButton { icon: Icons.folder-open; filled: true; clicked => { LibraryState.open-folder(); } }
             ComboBox {
                 width: 150px;
-                model: ["All types", "Clips", "Recordings"];
+                model: ["All types", "Clips", "Recordings", "Edited"];
                 current-index <=> LibraryState.kind-index;
                 selected => { LibraryState.filter-changed(); }
             }

@@ -2,7 +2,7 @@ import { ComboBox, SpinBox, LineEdit, ScrollView, Slider } from "std-widgets.sli
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icons.slint";
 import { IconButton, TextButton, Toggle, SectionCard, SettingRow, Divider, KeyPill, Badge, Notice, AddButton, OptionCard, PageHeader } from "widgets.slint";
-import { AudioSourceRow, GameProfileRow, SaveHotkeyRow } from "types.slint";
+import { AudioSourceRow, GameProfileRow, HotkeyRow } from "types.slint";
 
 export global SettingsState {
     in-out property <[string]> display-names: ["Primary display"];
@@ -24,7 +24,9 @@ export global SettingsState {
 
     in-out property <string> clips-dir;
     in-out property <string> file-name-pattern;
+    in-out property <string> clips-subfolder;
     in-out property <string> recording-subfolder;
+    in-out property <string> edited-subfolder;
     in-out property <string> storage-line;
     in-out property <float> storage-fraction: 0;
 
@@ -32,6 +34,9 @@ export global SettingsState {
     in-out property <bool> separate-tracks: false;
     in-out property <int> audio-bitrate-kbps: 160;
     in-out property <[AudioSourceRow]> audio-sources: [];
+    in-out property <[string]> app-candidates: [];
+    in-out property <int> app-candidate-index: 0;
+    in-out property <string> new-app-exe;
 
     in-out property <int> games-scope-index: 0;
     in-out property <[GameProfileRow]> game-profiles: [];
@@ -44,11 +49,7 @@ export global SettingsState {
     in-out property <string> games-message;
     in-out property <bool> steam-busy: false;
 
-    in-out property <[SaveHotkeyRow]> save-hotkeys: [];
-    in-out property <string> hotkey-toggle-buffer;
-    in-out property <[string]> hotkey-buffer-keys: [];
-    in-out property <string> hotkey-toggle-recording;
-    in-out property <[string]> hotkey-recording-keys: [];
+    in-out property <[HotkeyRow]> hotkeys: [];
     in-out property <int> listening-action: -1;
 
     in-out property <string> message;
@@ -59,13 +60,16 @@ export global SettingsState {
     callback browse-clips-dir();
     callback refresh-displays();
     callback refresh-audio-devices();
+    callback refresh-apps();
     callback key-captured(int, string, bool, bool, bool, bool);
     callback add-running-game();
     callback add-game();
     callback remove-game(string);
     callback suggest-steam-names();
-    callback add-save-hotkey();
-    callback remove-save-hotkey(int);
+    callback add-hotkey();
+    callback remove-hotkey(int);
+    callback add-app-audio(string);
+    callback remove-audio-source(string);
 }
 
 component HotkeyCapture inherits FocusScope {
@@ -131,9 +135,6 @@ component StorageBar inherits Rectangle {
 }
 
 export component SettingsPage inherits ScrollView {
-    property <[string]> minute-options: ["0m", "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "10m", "11m", "12m", "13m", "14m", "15m", "16m", "17m", "18m", "19m", "20m"];
-    property <[string]> second-options: ["00s", "15s", "30s", "45s"];
-
     VerticalLayout {
         padding: Theme.page-padding;
         padding-top: 20px;
@@ -162,48 +163,40 @@ export component SettingsPage inherits ScrollView {
 
         SectionCard {
             heading: "Hotkeys";
-            subtitle: "Global shortcuts that work while a game has focus. Click a key to change it, Escape cancels.";
+            subtitle: "Global shortcuts that work while a game has focus. Click a key to change it, Escape cancels. Every row is a key plus what it does.";
 
-            for hk[i] in SettingsState.save-hotkeys: HorizontalLayout {
+            for hk[i] in SettingsState.hotkeys: HorizontalLayout {
                 spacing: 12px;
                 alignment: start;
                 HotkeyCapture { action: 100 + i; keys: hk.keys; }
-                Label { text: "saves the last"; }
                 ComboBox {
-                    width: 82px;
-                    model: root.minute-options;
-                    current-index <=> hk.minutes;
+                    width: 210px;
+                    model: ["Save replay", "Start or stop the buffer", "Start or stop recording"];
+                    current-index <=> hk.action-index;
                 }
-                ComboBox {
-                    width: 82px;
-                    model: root.second-options;
-                    current-index <=> hk.seconds-index;
-                }
-                Label {
-                    text: hk.minutes == 0 && hk.seconds-index == 0 ? "= whole buffer" : "";
-                    color: Theme.text-faint;
+                if hk.action-index == 0: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Label { text: "last"; }
+                    SpinBox { width: 90px; minimum: 0; maximum: 60; value <=> hk.minutes; }
+                    Label { text: "min"; }
+                    SpinBox { width: 90px; minimum: 0; maximum: 59; value <=> hk.seconds; }
+                    Label { text: "s"; }
+                    Label {
+                        text: hk.minutes == 0 && hk.seconds == 0 ? "= whole buffer" : "";
+                        color: Theme.text-faint;
+                    }
                 }
                 Rectangle { horizontal-stretch: 1; }
                 IconButton {
                     icon: Icons.trash;
                     icon-color: Theme.danger;
-                    enabled: SettingsState.save-hotkeys.length > 1;
-                    clicked => { SettingsState.remove-save-hotkey(i); }
+                    enabled: SettingsState.hotkeys.length > 1;
+                    clicked => { SettingsState.remove-hotkey(i); }
                 }
             }
-            AddButton { text: "Add hotkey"; clicked => { SettingsState.add-save-hotkey(); } }
-            Hint { text: "0m 00s saves everything the buffer holds. Longer lengths are capped by the buffer length below."; }
-            Divider { }
-            SettingRow {
-                title: "Start or stop the replay buffer";
-                description: "Toggles capture without opening the window.";
-                HotkeyCapture { action: 0; keys: SettingsState.hotkey-buffer-keys; }
-            }
-            SettingRow {
-                title: "Start or stop a full recording";
-                description: "Records to disk until pressed again.";
-                HotkeyCapture { action: 1; keys: SettingsState.hotkey-recording-keys; }
-            }
+            AddButton { text: "Add hotkey"; clicked => { SettingsState.add-hotkey(); } }
+            Hint { text: "A save hotkey with 0 min 0 s saves everything the buffer holds. Longer lengths are capped by the buffer length below."; }
         }
 
         SectionCard {
@@ -296,6 +289,40 @@ export component SettingsPage inherits ScrollView {
         }
 
         SectionCard {
+            heading: "Storage";
+            subtitle: "Where clips, recordings and edits are written. Type a path or browse for a folder.";
+            SettingRow {
+                title: "Root folder";
+                description: "Everything goes under this folder.";
+                HorizontalLayout {
+                    spacing: 6px;
+                    LineEdit { width: 360px; text <=> SettingsState.clips-dir; }
+                    TextButton { text: "Browse"; icon: Icons.folder-open; has-icon: true; clicked => { SettingsState.browse-clips-dir(); } }
+                }
+            }
+            VerticalLayout {
+                spacing: 6px;
+                StorageBar { }
+                Hint { text: SettingsState.storage-line; }
+            }
+            SettingRow {
+                title: "Subfolders";
+                description: "Clips, recordings and edited files each get their own subfolder. Leave one empty to use the root.";
+                HorizontalLayout {
+                    spacing: 6px;
+                    LineEdit { width: 120px; placeholder-text: "Clips"; text <=> SettingsState.clips-subfolder; }
+                    LineEdit { width: 120px; placeholder-text: "Recordings"; text <=> SettingsState.recording-subfolder; }
+                    LineEdit { width: 120px; placeholder-text: "Edited"; text <=> SettingsState.edited-subfolder; }
+                }
+            }
+            SettingRow {
+                title: "File name pattern";
+                description: "Placeholders: {game} {date} {time}";
+                LineEdit { width: 260px; text <=> SettingsState.file-name-pattern; }
+            }
+        }
+
+        SectionCard {
             heading: "Audio";
             subtitle: "Outputs are captured through loopback, inputs are microphones. Volume and mute apply live.";
             SettingRow {
@@ -305,7 +332,7 @@ export component SettingsPage inherits ScrollView {
             }
             SettingRow {
                 title: "Separate tracks";
-                description: "One track per source so you can mute the mic later.";
+                description: "Desktop and microphone on their own tracks so you can mute one later.";
                 Toggle { checked <=> SettingsState.separate-tracks; enabled: SettingsState.audio-enabled; }
             }
             SettingRow {
@@ -321,18 +348,18 @@ export component SettingsPage inherits ScrollView {
                 Icon {
                     y: (parent.height - self.height) / 2;
                     size: 14px;
-                    data: row.kind == "output" ? Icons.headphones : Icons.microphone;
+                    data: row.kind == "output" ? Icons.headphones : (row.kind == "app" ? Icons.layer-group : Icons.microphone);
                     color: row.connected ? Theme.text : Theme.text-faint;
                 }
                 Text {
                     text: row.connected ? row.name : row.name + " (not connected)";
-                    width: 280px;
+                    width: 260px;
                     vertical-alignment: center;
                     font-size: 13px;
                     overflow: elide;
                     color: row.connected ? Theme.text : Theme.text-faint;
                 }
-                Badge { y: (parent.height - self.height) / 2; text: row.kind == "output" ? "Output" : "Input"; }
+                Badge { y: (parent.height - self.height) / 2; text: row.kind == "output" ? "Output" : (row.kind == "app" ? "App track" : "Input"); }
                 Slider {
                     y: (parent.height - self.height) / 2;
                     width: 150px;
@@ -349,16 +376,48 @@ export component SettingsPage inherits ScrollView {
                     enabled: row.enabled;
                     clicked => { row.muted = !row.muted; }
                 }
+                if row.kind == "app": IconButton {
+                    icon: Icons.trash;
+                    icon-color: Theme.danger;
+                    size: 32px;
+                    clicked => { SettingsState.remove-audio-source(row.id); }
+                }
             }
             HorizontalLayout {
+                spacing: 8px;
                 alignment: start;
                 TextButton { text: "Refresh devices"; icon: Icons.arrows-rotate; has-icon: true; clicked => { SettingsState.refresh-audio-devices(); } }
             }
+            Divider { }
+            SettingRow {
+                title: "Application audio";
+                description: "Give one program (Discord, Spotify, a browser) its own track, so you can mute it in the editor. Pick a running program or type its executable.";
+                HorizontalLayout {
+                    spacing: 6px;
+                    ComboBox {
+                        width: 200px;
+                        model: SettingsState.app-candidates;
+                        current-index <=> SettingsState.app-candidate-index;
+                        enabled: SettingsState.app-candidates.length > 0;
+                    }
+                    IconButton { icon: Icons.arrows-rotate; filled: true; size: 32px; clicked => { SettingsState.refresh-apps(); } }
+                    TextButton {
+                        text: "Add";
+                        icon: Icons.plus;
+                        has-icon: true;
+                        enabled: SettingsState.app-candidates.length > 0;
+                        clicked => { SettingsState.add-app-audio(SettingsState.app-candidates[SettingsState.app-candidate-index]); }
+                    }
+                    LineEdit { width: 140px; placeholder-text: "discord.exe"; text <=> SettingsState.new-app-exe; accepted => { SettingsState.add-app-audio(SettingsState.new-app-exe); } }
+                    TextButton { text: "Add typed"; clicked => { SettingsState.add-app-audio(SettingsState.new-app-exe); } }
+                }
+            }
+            Hint { text: "The first application track is left out of the default desktop output so it is not recorded twice. The program has to be running when capture starts; capture restarts on its own when it opens or closes."; }
         }
 
         SectionCard {
             heading: "Games";
-            subtitle: "Capture only while a known game runs, with a profile per game.";
+            subtitle: "Capture only while a known game runs, with a profile per game. Names, actions and folders are editable.";
             SettingRow {
                 title: "Capture scope";
                 description: "Always capture, or only while one of the games below is running.";
@@ -366,7 +425,7 @@ export component SettingsPage inherits ScrollView {
             }
             Hint { text: SettingsState.running-games; }
             for profile in SettingsState.game-profiles: HorizontalLayout {
-                spacing: 12px;
+                spacing: 10px;
                 alignment: start;
                 Rectangle {
                     y: (parent.height - self.height) / 2;
@@ -378,18 +437,19 @@ export component SettingsPage inherits ScrollView {
                     if !profile.has-icon: Icon { x: 7px; y: 7px; size: 14px; data: Icons.gamepad; color: Theme.text-muted; }
                 }
                 VerticalLayout {
-                    width: 200px;
+                    width: 190px;
+                    spacing: 2px;
                     alignment: center;
-                    Text { text: profile.name == "" ? profile.exe : profile.name; font-size: 13px; font-weight: 600; color: Theme.text; overflow: elide; }
+                    LineEdit { placeholder-text: "Display name"; text <=> profile.name; }
                     Text { text: profile.exe; font-size: 11px; color: Theme.text-faint; overflow: elide; }
                 }
                 ComboBox { width: 150px; model: ["Replay buffer", "Full recording", "Do nothing"]; current-index <=> profile.action-index; }
                 SpinBox { width: 90px; minimum: 0; maximum: 3600; value <=> profile.replay-seconds; }
-                LineEdit { width: 130px; placeholder-text: "Subfolder"; text <=> profile.subfolder; }
-                ComboBox { width: 170px; model: SettingsState.profile-display-names; current-index <=> profile.display-index; }
+                LineEdit { width: 120px; placeholder-text: "Subfolder"; text <=> profile.subfolder; }
+                ComboBox { width: 160px; model: SettingsState.profile-display-names; current-index <=> profile.display-index; }
                 IconButton { icon: Icons.trash; icon-color: Theme.danger; size: 32px; clicked => { SettingsState.remove-game(profile.exe); } }
             }
-            Hint { text: "Columns: action when the game starts, buffer length override in seconds (0 keeps the global one), clip subfolder, display."; }
+            Hint { text: "Columns: name, action when the game starts, buffer length override in seconds (0 keeps the global one), clip subfolder, display."; }
             Divider { }
             HorizontalLayout {
                 spacing: 8px;
@@ -425,31 +485,6 @@ export component SettingsPage inherits ScrollView {
             }
             if SettingsState.games-message != "": Hint { text: SettingsState.games-message; color: Theme.text-muted; }
             Hint { text: "Names come from the bundled database. The Steam lookup only runs when you press the button and fills empty names."; }
-        }
-
-        SectionCard {
-            heading: "Storage";
-            subtitle: "Where clips and recordings are written.";
-            SettingRow {
-                title: "Clips folder";
-                description: SettingsState.clips-dir;
-                TextButton { text: "Browse"; icon: Icons.folder-open; has-icon: true; clicked => { SettingsState.browse-clips-dir(); } }
-            }
-            VerticalLayout {
-                spacing: 6px;
-                StorageBar { }
-                Hint { text: SettingsState.storage-line; }
-            }
-            SettingRow {
-                title: "File name pattern";
-                description: "Placeholders: {game} {date} {time} {kind}";
-                LineEdit { width: 260px; text <=> SettingsState.file-name-pattern; }
-            }
-            SettingRow {
-                title: "Recordings subfolder";
-                description: "Full recordings go here, inside the clips folder.";
-                LineEdit { width: 260px; text <=> SettingsState.recording-subfolder; }
-            }
         }
 
         SectionCard {

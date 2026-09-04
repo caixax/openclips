@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use openclips_core::capture::{AudioDeviceInfo, AudioDeviceKind, MonitorInfo};
 use openclips_core::config::{AudioSourceConfig, Config, DisplaySelection, EncoderPreference};
 use openclips_core::config::{CaptureApi, CaptureScope, GameAction, GameProfile};
-use openclips_core::config::{Hotkey, SaveHotkey};
+use openclips_core::config::{Hotkey, HotkeyActionKind, HotkeyBinding};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
-use crate::ui::{AudioSourceRow, GameProfileRow, SaveHotkeyRow, SettingsState};
+use crate::ui::{AudioSourceRow, GameProfileRow, HotkeyRow, SettingsState};
 use slint::Image;
 
 const ENCODERS: [EncoderPreference; 5] = [
@@ -23,7 +23,8 @@ const UNIT_SECONDS: i32 = 0;
 const UNIT_MINUTES: i32 = 1;
 const KIND_OUTPUT: &str = "output";
 const KIND_INPUT: &str = "input";
-/// Save hotkey rows use action ids from this value upwards.
+const KIND_APP: &str = "app";
+/// Hotkey rows use key capture action ids from this value upwards.
 pub const SAVE_ACTION_BASE: i32 = 100;
 
 /// Quality presets as (name, fps, bitrate in kbps). The last entry is custom.
@@ -62,36 +63,31 @@ pub fn key_parts(hotkey: Hotkey) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(parts))
 }
 
-/// Human text for a save length, for example "last 30 s" or "whole buffer".
-pub fn save_length_label(seconds: u32) -> String {
-    match seconds {
-        0 => "saves the whole buffer".to_owned(),
-        s if s % 60 == 0 => format!("saves the last {} min", s / 60),
-        s => format!("saves the last {s} s"),
+fn hotkey_row(b: &HotkeyBinding) -> HotkeyRow {
+    HotkeyRow {
+        binding: b.binding.to_string().into(),
+        keys: key_parts(b.binding),
+        action_index: HotkeyActionKind::ALL
+            .iter()
+            .position(|a| *a == b.action)
+            .unwrap_or(0) as i32,
+        minutes: (b.seconds / 60) as i32,
+        seconds: (b.seconds % 60) as i32,
     }
 }
 
-fn save_row(save: &SaveHotkey) -> SaveHotkeyRow {
-    SaveHotkeyRow {
-        binding: save.binding.to_string().into(),
-        keys: key_parts(save.binding),
-        minutes: (save.seconds / 60) as i32,
-        seconds_index: ((save.seconds % 60 + 7) / 15).min(3) as i32,
-    }
+fn hotkey_rows(state: &SettingsState<'_>) -> Vec<HotkeyRow> {
+    state.get_hotkeys().iter().collect()
 }
 
-fn save_rows(state: &SettingsState<'_>) -> Vec<SaveHotkeyRow> {
-    state.get_save_hotkeys().iter().collect()
+pub fn set_hotkeys(state: &SettingsState<'_>, bindings: &[HotkeyBinding]) {
+    let rows: Vec<HotkeyRow> = bindings.iter().map(hotkey_row).collect();
+    state.set_hotkeys(ModelRc::new(VecModel::from(rows)));
 }
 
-pub fn set_save_hotkeys(state: &SettingsState<'_>, saves: &[SaveHotkey]) {
-    let rows: Vec<SaveHotkeyRow> = saves.iter().map(save_row).collect();
-    state.set_save_hotkeys(ModelRc::new(VecModel::from(rows)));
-}
-
-/// Replaces the binding of one save row after a key capture.
-pub fn set_save_binding(state: &SettingsState<'_>, index: usize, hotkey: Hotkey) {
-    let model = state.get_save_hotkeys();
+/// Replaces the binding of one row after a key capture.
+pub fn set_hotkey_binding(state: &SettingsState<'_>, index: usize, hotkey: Hotkey) {
+    let model = state.get_hotkeys();
     if let Some(mut row) = model.row_data(index) {
         row.binding = hotkey.to_string().into();
         row.keys = key_parts(hotkey);
@@ -99,10 +95,9 @@ pub fn set_save_binding(state: &SettingsState<'_>, index: usize, hotkey: Hotkey)
     }
 }
 
-/// Appends a save row with a binding that is not used yet and the default
-/// length of fifteen seconds.
-pub fn add_save_hotkey(state: &SettingsState<'_>) {
-    let mut rows = save_rows(state);
+/// Appends a save row with a binding that is not used yet.
+pub fn add_hotkey(state: &SettingsState<'_>) {
+    let mut rows = hotkey_rows(state);
     let used: Vec<String> = rows.iter().map(|r| r.binding.to_string()).collect();
     let free = (1..=12)
         .map(|n| format!("Alt+F{n}"))
@@ -110,30 +105,79 @@ pub fn add_save_hotkey(state: &SettingsState<'_>) {
         .unwrap_or_else(|| "Alt+F1".to_owned());
     let binding: Hotkey = free
         .parse()
-        .unwrap_or_else(|_| SaveHotkey::default().binding);
-    rows.push(save_row(&SaveHotkey {
+        .unwrap_or_else(|_| HotkeyBinding::default().binding);
+    rows.push(hotkey_row(&HotkeyBinding {
         binding,
+        action: HotkeyActionKind::SaveReplay,
         seconds: 15,
     }));
-    state.set_save_hotkeys(ModelRc::new(VecModel::from(rows)));
+    state.set_hotkeys(ModelRc::new(VecModel::from(rows)));
 }
 
-pub fn remove_save_hotkey(state: &SettingsState<'_>, index: usize) {
-    let mut rows = save_rows(state);
+pub fn remove_hotkey(state: &SettingsState<'_>, index: usize) {
+    let mut rows = hotkey_rows(state);
     if rows.len() > 1 && index < rows.len() {
         rows.remove(index);
-        state.set_save_hotkeys(ModelRc::new(VecModel::from(rows)));
+        state.set_hotkeys(ModelRc::new(VecModel::from(rows)));
     }
 }
 
-fn collect_save_hotkeys(state: &SettingsState<'_>) -> Result<Vec<SaveHotkey>, String> {
-    let mut saves = Vec::new();
-    for (i, row) in state.get_save_hotkeys().iter().enumerate() {
-        let binding = parse_hotkey(&format!("Save hotkey {}", i + 1), &row.binding)?;
-        let seconds = row.minutes.max(0) as u32 * 60 + row.seconds_index.clamp(0, 3) as u32 * 15;
-        saves.push(SaveHotkey { binding, seconds });
+fn collect_hotkeys(state: &SettingsState<'_>) -> Result<Vec<HotkeyBinding>, String> {
+    let mut bindings = Vec::new();
+    for (i, row) in state.get_hotkeys().iter().enumerate() {
+        let binding = parse_hotkey(&format!("Hotkey {}", i + 1), &row.binding)?;
+        let action = HotkeyActionKind::ALL
+            .get(row.action_index.max(0) as usize)
+            .copied()
+            .unwrap_or_default();
+        let seconds = row.minutes.clamp(0, 60) as u32 * 60 + row.seconds.clamp(0, 59) as u32;
+        bindings.push(HotkeyBinding {
+            binding,
+            action,
+            seconds: if action == HotkeyActionKind::SaveReplay {
+                seconds
+            } else {
+                0
+            },
+        });
     }
-    Ok(saves)
+    Ok(bindings)
+}
+
+/// Adds an application audio source row for `exe` unless one exists.
+pub fn add_app_source(state: &SettingsState<'_>, exe: &str) {
+    let exe = exe.trim();
+    if exe.is_empty() {
+        return;
+    }
+    let id = exe.to_lowercase();
+    let mut rows: Vec<AudioSourceRow> = state.get_audio_sources().iter().collect();
+    if rows
+        .iter()
+        .any(|r| r.kind == KIND_APP && r.id == id.as_str())
+    {
+        return;
+    }
+    let name = exe.trim_end_matches(".exe").trim_end_matches(".EXE");
+    rows.push(AudioSourceRow {
+        id: id.into(),
+        kind: KIND_APP.into(),
+        name: name.into(),
+        enabled: true,
+        volume: 100.0,
+        muted: false,
+        connected: true,
+    });
+    state.set_audio_sources(ModelRc::new(VecModel::from(rows)));
+}
+
+pub fn remove_audio_source(state: &SettingsState<'_>, id: &str) {
+    let rows: Vec<AudioSourceRow> = state
+        .get_audio_sources()
+        .iter()
+        .filter(|r| !(r.kind == KIND_APP && r.id == id))
+        .collect();
+    state.set_audio_sources(ModelRc::new(VecModel::from(rows)));
 }
 
 /// Fills the settings page from a config. `default_clips_dir` is shown when
@@ -184,7 +228,9 @@ pub fn populate(
         .unwrap_or_else(|| default_clips_dir.to_path_buf());
     state.set_clips_dir(clips_dir.display().to_string().into());
     state.set_file_name_pattern(config.output.file_name_pattern.clone().into());
+    state.set_clips_subfolder(config.output.clips_subfolder.clone().into());
     state.set_recording_subfolder(config.recording.subfolder.clone().into());
+    state.set_edited_subfolder(config.output.edited_subfolder.clone().into());
 
     state.set_audio_enabled(config.audio.enabled);
     state.set_separate_tracks(config.audio.separate_tracks);
@@ -196,11 +242,7 @@ pub fn populate(
         CaptureScope::PerGame => 1,
     });
     set_profile_display_names(state, monitors);
-    set_save_hotkeys(state, &config.hotkeys.save);
-    state.set_hotkey_toggle_buffer(config.hotkeys.toggle_replay_buffer.to_string().into());
-    state.set_hotkey_buffer_keys(key_parts(config.hotkeys.toggle_replay_buffer));
-    state.set_hotkey_toggle_recording(config.hotkeys.toggle_recording.to_string().into());
-    state.set_hotkey_recording_keys(key_parts(config.hotkeys.toggle_recording));
+    set_hotkeys(state, &config.hotkeys.bindings);
     state.set_listening_action(-1);
 }
 
@@ -245,14 +287,15 @@ fn kind_name(kind: AudioDeviceKind) -> &'static str {
     match kind {
         AudioDeviceKind::Output => KIND_OUTPUT,
         AudioDeviceKind::Input => KIND_INPUT,
+        AudioDeviceKind::Application => KIND_APP,
     }
 }
 
 fn kind_from_name(name: &str) -> AudioDeviceKind {
-    if name == KIND_INPUT {
-        AudioDeviceKind::Input
-    } else {
-        AudioDeviceKind::Output
+    match name {
+        KIND_INPUT => AudioDeviceKind::Input,
+        KIND_APP => AudioDeviceKind::Application,
+        _ => AudioDeviceKind::Output,
     }
 }
 
@@ -290,7 +333,7 @@ pub fn audio_rows(config: &Config, devices: &[AudioDeviceInfo]) -> Vec<AudioSour
                 enabled: source.enabled,
                 volume: source.volume * 100.0,
                 muted: source.muted,
-                connected: false,
+                connected: source.kind == AudioDeviceKind::Application,
             });
         }
     }
@@ -320,7 +363,7 @@ fn collect_audio_sources(state: &SettingsState<'_>) -> Vec<AudioSourceConfig> {
     state
         .get_audio_sources()
         .iter()
-        .filter(|row| row.enabled || !row.connected)
+        .filter(|row| row.enabled || !row.connected || row.kind == KIND_APP)
         .map(|row| AudioSourceConfig {
             id: row.id.to_string(),
             name: row.name.to_string(),
@@ -376,7 +419,9 @@ pub fn collect(
     };
     let pattern = state.get_file_name_pattern();
     config.output.file_name_pattern = pattern.trim().to_owned();
+    config.output.clips_subfolder = state.get_clips_subfolder().trim().to_owned();
     config.recording.subfolder = state.get_recording_subfolder().trim().to_owned();
+    config.output.edited_subfolder = state.get_edited_subfolder().trim().to_owned();
 
     config.audio.enabled = state.get_audio_enabled();
     config.audio.separate_tracks = state.get_separate_tracks();
@@ -390,13 +435,7 @@ pub fn collect(
     };
     config.games.profiles = collect_game_profiles(state, monitors);
 
-    config.hotkeys.save = collect_save_hotkeys(state)?;
-    config.hotkeys.toggle_replay_buffer =
-        parse_hotkey("Start or stop buffer", &state.get_hotkey_toggle_buffer())?;
-    config.hotkeys.toggle_recording = parse_hotkey(
-        "Start or stop recording",
-        &state.get_hotkey_toggle_recording(),
-    )?;
+    config.hotkeys.bindings = collect_hotkeys(state)?;
 
     config.validate().map_err(|e| e.to_string())?;
     Ok(config)

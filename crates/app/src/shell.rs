@@ -66,3 +66,27 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
 pub fn disk_space(_path: &Path) -> Option<(u64, u64)> {
     None
 }
+
+/// Hands a mouse press on the custom title bar (or a window edge) to the
+/// system so it moves or resizes the window like a native frame would.
+/// `hit` is a WM_NCHITTEST code such as HTCAPTION.
+#[cfg(windows)]
+pub fn drag_window(hwnd: isize, hit: u32) {
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN};
+
+    // SAFETY: plain Win32 calls with a window handle that Slint owns.
+    unsafe {
+        let _ = ReleaseCapture();
+        SendMessageW(
+            HWND(hwnd as *mut _),
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(hit as usize)),
+            Some(LPARAM(0)),
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn drag_window(_hwnd: isize, _hit: u32) {}

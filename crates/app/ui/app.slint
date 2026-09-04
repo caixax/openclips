@@ -1,19 +1,108 @@
 import { Theme } from "theme.slint";
+import { Icon, IconData, Icons } from "icons.slint";
 import { Sidebar, NavPage } from "sidebar.slint";
 import { TopBar } from "topbar.slint";
 import { HomePage } from "home.slint";
 import { ClipsPage, LibraryState } from "clips.slint";
 import { PlayerPage, PlayerState } from "player.slint";
 import { SettingsPage, SettingsState } from "settings.slint";
-import { AppInfo, AudioSourceRow, ClipCard, GameProfileRow, SaveHotkeyRow } from "types.slint";
+import { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, HotkeyRow } from "types.slint";
 
 export { TrayIcon } from "tray.slint";
 
-export { AppInfo, AudioSourceRow, ClipCard, GameProfileRow, SaveHotkeyRow, SettingsState, LibraryState, PlayerState, NavPage }
+export { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, HotkeyRow, SettingsState, LibraryState, PlayerState, NavPage }
+
+component TitleButton inherits Rectangle {
+    in property <IconData> icon;
+    in property <bool> danger: false;
+    callback clicked();
+    width: 46px;
+    background: touch.has-hover ? (root.danger ? #c42b1c : Theme.surface-hover) : transparent;
+    touch := TouchArea { clicked => { root.clicked(); } }
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        size: 11px;
+        data: root.icon;
+        color: touch.has-hover && root.danger ? white : Theme.text-muted;
+    }
+}
+
+
+/// Our own title bar: the window has no native frame, so moving and the
+/// three buttons are forwarded to the OS by the app.
+component TitleBar inherits Rectangle {
+    in property <bool> maximized;
+    callback drag();
+    callback minimize();
+    callback maximize();
+    callback close();
+
+    height: 34px;
+    background: Theme.background;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.divider;
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 8px;
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 18px;
+            height: 18px;
+            border-radius: 5px;
+            background: Theme.accent;
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                size: 10px;
+                data: Icons.scissors;
+                color: Theme.accent-text;
+            }
+        }
+        Text {
+            text: "OpenClips";
+            font-size: 12px;
+            font-weight: 600;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            TouchArea {
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                        root.drag();
+                    }
+                }
+                double-clicked => { root.maximize(); }
+            }
+        }
+        TitleButton { icon: Icons.minus; clicked => { root.minimize(); } }
+        TitleButton { icon: root.maximized ? Icons.layer-group : Icons.expand; clicked => { root.maximize(); } }
+        TitleButton { icon: Icons.xmark; danger: true; clicked => { root.close(); } }
+    }
+}
+
+/// Invisible strip along one edge that starts a system resize.
+component ResizeEdge inherits TouchArea {
+    in property <int> hit;
+    callback resize(int);
+    pointer-event(e) => {
+        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+            root.resize(root.hit);
+        }
+    }
+}
 
 export component MainWindow inherits Window {
     title: "OpenClips";
     icon: @image-url("../assets/icon.png");
+    no-frame: true;
     min-width: 900px;
     min-height: 560px;
     preferred-width: 1180px;
@@ -55,72 +144,98 @@ export component MainWindow inherits Window {
     callback recording-finished();
     callback library-changed();
     callback clip-saved(string, string);
+    callback clip-written(string, string);
     callback navigated(NavPage);
     callback open-clip(string);
+    callback window-drag(int);
+    callback window-resize(int);
+    callback window-minimize();
+    callback window-maximize();
+    callback window-close();
 
     in-out property <NavPage> page: NavPage.home;
+    property <length> edge: 6px;
 
-    HorizontalLayout {
-        Sidebar {
-            current: root.page;
-            storage-line: root.storage-line;
-            buffer-active: root.buffer-active;
-            recording-active: root.recording-active;
-            selected(p) => { root.page = p; root.navigated(p); }
+    VerticalLayout {
+        TitleBar {
+            maximized: root.maximized;
+            drag => { root.window-drag(2); }
+            minimize => { root.window-minimize(); }
+            maximize => { root.window-maximize(); }
+            close => { root.window-close(); }
         }
-
-        VerticalLayout {
-            TopBar {
-                game-name: root.detected-game;
-                game-icon: root.game-icon;
-                has-game-icon: root.has-game-icon;
+        HorizontalLayout {
+            Sidebar {
+                current: root.page;
+                storage-line: root.storage-line;
                 buffer-active: root.buffer-active;
-                buffer-label: root.buffer-label;
-                save-keys: root.save-keys;
-                save-label: root.save-label;
-                quality: root.quality-label;
                 recording-active: root.recording-active;
-                toggle-buffer => { root.toggle-buffer(); }
-                save-clip => { root.save-clip(); }
-                toggle-recording => { root.toggle-recording(); }
+                selected(p) => { root.page = p; root.navigated(p); }
             }
 
-            Rectangle {
-                vertical-stretch: 1;
-                background: Theme.background;
-                if root.page == NavPage.home: HomePage {
-                    info: root.info;
-                    startup-warning: root.startup-warning;
+            VerticalLayout {
+                TopBar {
+                    game-name: root.detected-game;
+                    game-icon: root.game-icon;
+                    has-game-icon: root.has-game-icon;
                     buffer-active: root.buffer-active;
-                    buffer-status: root.buffer-status;
-                    buffer-detail: root.buffer-detail;
-                    encoder-name: root.encoder-name;
-                    capture-error: root.capture-error;
-                    capture-notice: root.capture-notice;
-                    save-status: root.save-status;
-                    last-clip: root.last-clip;
-                    recording-active: root.recording-active;
-                    recording-status: root.recording-status;
-                    recording-message: root.recording-message;
-                    last-recording: root.last-recording;
-                    detected-game: root.detected-game;
+                    buffer-label: root.buffer-label;
                     save-keys: root.save-keys;
                     save-label: root.save-label;
-                    buffer-keys: root.buffer-keys;
-                    recording-keys: root.recording-keys;
-                    recent: root.recent-clips;
-                    open-config-dir => { root.open-config-dir(); }
-                    open-clips-dir => { root.open-clips-dir(); }
+                    quality: root.quality-label;
+                    recording-active: root.recording-active;
                     toggle-buffer => { root.toggle-buffer(); }
                     save-clip => { root.save-clip(); }
                     toggle-recording => { root.toggle-recording(); }
-                    open-clip(id) => { root.open-clip(id); }
-                    show-clips => { root.page = NavPage.clips; root.navigated(NavPage.clips); }
                 }
-                if root.page == NavPage.clips: ClipsPage { }
-                if root.page == NavPage.player: PlayerPage { }
-                if root.page == NavPage.settings: SettingsPage { }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: Theme.background;
+                    if root.page == NavPage.home: HomePage {
+                        info: root.info;
+                        startup-warning: root.startup-warning;
+                        buffer-active: root.buffer-active;
+                        buffer-status: root.buffer-status;
+                        buffer-detail: root.buffer-detail;
+                        encoder-name: root.encoder-name;
+                        capture-error: root.capture-error;
+                        capture-notice: root.capture-notice;
+                        save-status: root.save-status;
+                        last-clip: root.last-clip;
+                        recording-active: root.recording-active;
+                        recording-status: root.recording-status;
+                        recording-message: root.recording-message;
+                        last-recording: root.last-recording;
+                        detected-game: root.detected-game;
+                        save-keys: root.save-keys;
+                        save-label: root.save-label;
+                        buffer-keys: root.buffer-keys;
+                        recording-keys: root.recording-keys;
+                        recent: root.recent-clips;
+                        open-config-dir => { root.open-config-dir(); }
+                        open-clips-dir => { root.open-clips-dir(); }
+                        toggle-buffer => { root.toggle-buffer(); }
+                        save-clip => { root.save-clip(); }
+                        toggle-recording => { root.toggle-recording(); }
+                        open-clip(id) => { root.open-clip(id); }
+                        show-clips => { root.page = NavPage.clips; root.navigated(NavPage.clips); }
+                    }
+                    if root.page == NavPage.clips: ClipsPage { }
+                    if root.page == NavPage.player: PlayerPage { }
+                    if root.page == NavPage.settings: SettingsPage { }
+                }
             }
         }
     }
+
+    // Resize handles along the edges and corners (WM_NCHITTEST codes).
+    if !root.maximized: ResizeEdge { x: 0; y: root.edge; width: root.edge; height: root.height - 2 * root.edge; hit: 10; mouse-cursor: ew-resize; resize(h) => { root.window-resize(h); } }
+    if !root.maximized: ResizeEdge { x: root.width - root.edge; y: root.edge; width: root.edge; height: root.height - 2 * root.edge; hit: 11; mouse-cursor: ew-resize; resize(h) => { root.window-resize(h); } }
+    if !root.maximized: ResizeEdge { x: root.edge; y: 0; width: root.width - 2 * root.edge; height: root.edge; hit: 12; mouse-cursor: ns-resize; resize(h) => { root.window-resize(h); } }
+    if !root.maximized: ResizeEdge { x: root.edge; y: root.height - root.edge; width: root.width - 2 * root.edge; height: root.edge; hit: 15; mouse-cursor: ns-resize; resize(h) => { root.window-resize(h); } }
+    if !root.maximized: ResizeEdge { x: 0; y: 0; width: root.edge; height: root.edge; hit: 13; mouse-cursor: nwse-resize; resize(h) => { root.window-resize(h); } }
+    if !root.maximized: ResizeEdge { x: root.width - root.edge; y: 0; width: root.edge; height: root.edge; hit: 14; mouse-cursor: nesw-resize; resize(h) => { root.window-resize(h); } }
+    if !root.maximized: ResizeEdge { x: 0; y: root.height - root.edge; width: root.edge; height: root.edge; hit: 16; mouse-cursor: nesw-resize; resize(h) => { root.window-resize(h); } }
+    if !root.maximized: ResizeEdge { x: root.width - root.edge; y: root.height - root.edge; width: root.edge; height: root.edge; hit: 17; mouse-cursor: nwse-resize; resize(h) => { root.window-resize(h); } }
 }

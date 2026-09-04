@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use openclips_core::config::{Hotkey, HotkeyConfig, Key};
+use openclips_core::config::{Hotkey, HotkeyActionKind, HotkeyConfig, Key};
 use tracing::{info, warn};
 
 use crate::error::AppError;
@@ -23,27 +23,29 @@ pub enum HotkeyAction {
 impl HotkeyAction {
     pub fn label(self) -> String {
         match self {
-            HotkeyAction::SaveReplay { index } => format!("Save hotkey {}", index + 1),
+            HotkeyAction::SaveReplay { index } => format!("Hotkey {}", index + 1),
             HotkeyAction::ToggleReplayBuffer => "Start or stop buffer".to_owned(),
             HotkeyAction::ToggleRecording => "Start or stop recording".to_owned(),
         }
     }
 }
 
-/// Every configured binding paired with its action.
+/// Every configured binding paired with its action. The index of a save
+/// action points back into the config so the length can be looked up.
 pub fn bindings(config: &HotkeyConfig) -> Vec<(HotkeyAction, Hotkey)> {
-    let mut out: Vec<(HotkeyAction, Hotkey)> = config
-        .save
+    config
+        .bindings
         .iter()
         .enumerate()
-        .map(|(index, s)| (HotkeyAction::SaveReplay { index }, s.binding))
-        .collect();
-    out.push((
-        HotkeyAction::ToggleReplayBuffer,
-        config.toggle_replay_buffer,
-    ));
-    out.push((HotkeyAction::ToggleRecording, config.toggle_recording));
-    out
+        .map(|(index, b)| {
+            let action = match b.action {
+                HotkeyActionKind::SaveReplay => HotkeyAction::SaveReplay { index },
+                HotkeyActionKind::ToggleReplayBuffer => HotkeyAction::ToggleReplayBuffer,
+                HotkeyActionKind::ToggleRecording => HotkeyAction::ToggleRecording,
+            };
+            (action, b.binding)
+        })
+        .collect()
 }
 
 /// Outcome of registering the configured bindings.

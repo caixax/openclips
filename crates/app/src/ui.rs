@@ -19,9 +19,11 @@ use crate::settings;
 use crate::shell;
 use openclips_capture::TrimJob;
 use openclips_core::config::GameProfile;
+use openclips_core::config::{HotkeyActionKind, HotkeyBinding};
 use openclips_core::games::auto_capture;
 use openclips_core::library::ClipKind;
-use openclips_core::trim::{TrimMode, TrimRange, trimmed_path};
+use openclips_core::library::ClipRecord;
+use openclips_core::trim::{COMPRESS_PRESETS, TrimMode, TrimRange, edited_path};
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
 mod generated {
@@ -106,6 +108,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
 
     wire_folders(&window, &shared);
     wire_window_lifecycle(&window, &tray);
+    wire_title_bar(&window);
     wire_actions(&window, &tray, &shared);
     wire_settings(&window, &shared);
     wire_library(&window, &shared);
@@ -135,15 +138,30 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
 
 fn update_hotkey_labels(window: &MainWindow, config: &Config) {
     let hotkeys = &config.hotkeys;
-    if let Some(primary) = hotkeys.primary_save() {
-        window.set_save_keys(settings::key_parts(primary.binding));
-        window.set_save_label(settings::save_length_label(primary.seconds).into());
+    match hotkeys.primary_save() {
+        Some(primary) => {
+            window.set_save_keys(settings::key_parts(primary.binding));
+            window.set_save_label(primary.describe().into());
+        }
+        None => {
+            window.set_save_keys(keys_of(None));
+            window.set_save_label("no save hotkey set".into());
+        }
     }
-    window.set_buffer_keys(settings::key_parts(hotkeys.toggle_replay_buffer));
-    window.set_recording_keys(settings::key_parts(hotkeys.toggle_recording));
+    window.set_buffer_keys(keys_of(
+        hotkeys.first_of(HotkeyActionKind::ToggleReplayBuffer),
+    ));
+    window.set_recording_keys(keys_of(hotkeys.first_of(HotkeyActionKind::ToggleRecording)));
     window.set_quality_label(
         settings::quality_label(config.capture.fps, config.capture.bitrate_kbps).into(),
     );
+}
+
+fn keys_of(binding: Option<&HotkeyBinding>) -> ModelRc<SharedString> {
+    match binding {
+        Some(b) => settings::key_parts(b.binding),
+        None => ModelRc::new(VecModel::from(vec![SharedString::from("none")])),
+    }
 }
 
 fn wire_folders(window: &MainWindow, shared: &SharedRef) {
@@ -171,6 +189,56 @@ fn wire_window_lifecycle(window: &MainWindow, tray: &TrayIcon) {
         info!("quit requested from the tray");
         if let Err(err) = slint::quit_event_loop() {
             error!("could not stop the event loop: {err}");
+        }
+    });
+}
+
+/// The window draws its own title bar; moving, resizing and the three
+/// buttons go through the OS so they behave like a native frame.
+fn wire_title_bar(window: &MainWindow) {
+    fn native_handle(window: &MainWindow) -> Option<isize> {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let handle = window.window().window_handle();
+        match handle.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+            _ => None,
+        }
+    }
+
+    let w = window.as_weak();
+    window.on_window_drag(move |hit| {
+        if let Some(window) = w.upgrade()
+            && let Some(hwnd) = native_handle(&window)
+        {
+            shell::drag_window(hwnd, hit.max(0) as u32);
+        }
+    });
+    let w = window.as_weak();
+    window.on_window_resize(move |hit| {
+        if let Some(window) = w.upgrade()
+            && let Some(hwnd) = native_handle(&window)
+        {
+            shell::drag_window(hwnd, hit.max(0) as u32);
+        }
+    });
+    let w = window.as_weak();
+    window.on_window_minimize(move || {
+        if let Some(window) = w.upgrade() {
+            window.window().set_minimized(true);
+        }
+    });
+    let w = window.as_weak();
+    window.on_window_maximize(move || {
+        if let Some(window) = w.upgrade() {
+            let maximized = window.window().is_maximized();
+            window.window().set_maximized(!maximized);
+        }
+    });
+    let w = window.as_weak();
+    window.on_window_close(move || {
+        if let Some(window) = w.upgrade() {
+            info!("window closed, staying in the tray");
+            let _ = window.hide();
         }
     });
 }
@@ -334,40 +402,87 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         let Some(hotkey) = hotkeys::hotkey_from_press(&text, mods) else {
             return;
         };
-        let binding = hotkey.to_string().into();
-        match action {
-            0 => {
-                state.set_hotkey_toggle_buffer(binding);
-                state.set_hotkey_buffer_keys(settings::key_parts(hotkey));
-            }
-            1 => {
-                state.set_hotkey_toggle_recording(binding);
-                state.set_hotkey_recording_keys(settings::key_parts(hotkey));
-            }
-            a if a >= settings::SAVE_ACTION_BASE => {
-                settings::set_save_binding(
-                    &state,
-                    (a - settings::SAVE_ACTION_BASE) as usize,
-                    hotkey,
-                );
-            }
-            _ => {}
+        if action >= settings::SAVE_ACTION_BASE {
+            settings::set_hotkey_binding(
+                &state,
+                (action - settings::SAVE_ACTION_BASE) as usize,
+                hotkey,
+            );
         }
         state.set_listening_action(-1);
     });
 
     let w = window.as_weak();
-    state.on_add_save_hotkey(move || {
+    state.on_add_hotkey(move || {
         if let Some(window) = w.upgrade() {
-            settings::add_save_hotkey(&window.global::<SettingsState>());
+            settings::add_hotkey(&window.global::<SettingsState>());
         }
     });
     let w = window.as_weak();
-    state.on_remove_save_hotkey(move |index| {
+    state.on_remove_hotkey(move |index| {
         if let Some(window) = w.upgrade() {
-            settings::remove_save_hotkey(&window.global::<SettingsState>(), index.max(0) as usize);
+            settings::remove_hotkey(&window.global::<SettingsState>(), index.max(0) as usize);
         }
     });
+    let w = window.as_weak();
+    state.on_add_app_audio(move |exe| {
+        if let Some(window) = w.upgrade() {
+            let state = window.global::<SettingsState>();
+            settings::add_app_source(&state, &exe);
+            state.set_new_app_exe("".into());
+        }
+    });
+    let w = window.as_weak();
+    state.on_remove_audio_source(move |id| {
+        if let Some(window) = w.upgrade() {
+            settings::remove_audio_source(&window.global::<SettingsState>(), &id);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_refresh_apps(move || {
+        if let Some(window) = w.upgrade() {
+            refresh_app_candidates(&window, &s);
+        }
+    });
+    refresh_app_candidates(window, shared);
+}
+
+/// Fills the list of running executables offered as application audio
+/// sources. Windows system processes are left out to keep the list short.
+fn refresh_app_candidates(window: &MainWindow, shared: &SharedRef) {
+    const SKIP: [&str; 14] = [
+        "svchost.exe",
+        "csrss.exe",
+        "conhost.exe",
+        "dwm.exe",
+        "winlogon.exe",
+        "services.exe",
+        "lsass.exe",
+        "smss.exe",
+        "wininit.exe",
+        "fontdrvhost.exe",
+        "sihost.exe",
+        "taskhostw.exe",
+        "runtimebroker.exe",
+        "openclips.exe",
+    ];
+    let running = shared
+        .engine
+        .borrow()
+        .as_ref()
+        .and_then(|e| e.process_watcher().running().ok())
+        .unwrap_or_default();
+    let mut names: Vec<String> = running
+        .into_iter()
+        .map(|p| p.exe)
+        .filter(|exe| !SKIP.contains(&exe.as_str()) && !exe.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    let names: Vec<SharedString> = names.into_iter().map(SharedString::from).collect();
+    let state = window.global::<SettingsState>();
+    state.set_app_candidates(ModelRc::new(VecModel::from(names)));
+    state.set_app_candidate_index(0);
 }
 
 fn current_audio_devices(shared: &SharedRef) -> Vec<openclips_core::capture::AudioDeviceInfo> {
@@ -535,6 +650,10 @@ fn toggle_recording(shared: &SharedRef, window: &Weak<MainWindow>) {
                 match result {
                     Ok(clip) => {
                         window.set_last_recording(clip.path.display().to_string().into());
+                        window.invoke_clip_written(
+                            clip.path.display().to_string().into(),
+                            clip.audio_tracks.join("\u{1f}").into(),
+                        );
                         window.invoke_library_changed();
                         if let Some(game) = &clip.game {
                             window.invoke_clip_saved(
@@ -566,8 +685,8 @@ fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>, hotkey_index: Option
         return;
     };
     let length = hotkey_index
-        .and_then(|i| shared.config.borrow().hotkeys.save.get(i).copied())
-        .map(|s| Duration::from_secs(u64::from(s.seconds)));
+        .and_then(|i| shared.config.borrow().hotkeys.bindings.get(i).copied())
+        .map(|b| Duration::from_secs(u64::from(b.seconds)));
     let slot = shared.engine.borrow();
     let Some(engine) = slot.as_ref() else {
         strong.set_capture_error("Capture is unavailable on this system.".into());
@@ -581,6 +700,10 @@ fn save_clip(shared: &SharedRef, window: &Weak<MainWindow>, hotkey_index: Option
             let _ = weak.upgrade_in_event_loop(move |window| match result {
                 Ok(clip) => {
                     window.set_last_clip(clip.path.display().to_string().into());
+                    window.invoke_clip_written(
+                        clip.path.display().to_string().into(),
+                        clip.audio_tracks.join("\u{1f}").into(),
+                    );
                     window.invoke_library_changed();
                     if let Some(game) = &clip.game {
                         window.invoke_clip_saved(
@@ -810,6 +933,7 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
     let kind = match state.get_kind_index() {
         1 => Some(ClipKind::Replay),
         2 => Some(ClipKind::Recording),
+        3 => Some(ClipKind::Edited),
         _ => None,
     };
     let cards: Vec<ClipCard> = library
@@ -926,6 +1050,17 @@ fn open_clip(window: &MainWindow, shared: &SharedRef, id: &str) {
     state.set_confirm_delete(false);
     state.set_message("".into());
     state.set_editing(false);
+    state.set_save_prompt(false);
+    state.set_compress_open(false);
+    let tracks: Vec<AudioTrackRow> = record
+        .audio_tracks
+        .iter()
+        .map(|name| AudioTrackRow {
+            name: name.clone().into(),
+            enabled: true,
+        })
+        .collect();
+    state.set_audio_tracks(ModelRc::new(VecModel::from(tracks)));
     state.set_trim_busy(false);
     state.set_trim_message("".into());
     state.set_trim_in(0.0);
@@ -1178,25 +1313,161 @@ fn wire_editor(window: &MainWindow, shared: &SharedRef) {
         }
     });
     let (s, w) = (shared.clone(), window.as_weak());
-    state.on_save_trim(move || {
+    state.on_save_trim_as(move |overwrite| {
         if let Some(window) = w.upgrade() {
-            save_trim(&window, &s);
+            window.global::<PlayerState>().set_save_prompt(false);
+            save_trim(&window, &s, overwrite);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_compress(move || {
+        if let Some(window) = w.upgrade() {
+            window.global::<PlayerState>().set_compress_open(false);
+            compress_clip(&window, &s);
         }
     });
 }
 
-fn save_trim(window: &MainWindow, shared: &SharedRef) {
-    let state = window.global::<PlayerState>();
-    let Some(id) = current_clip_id(shared) else {
-        state.set_trim_message("Open a clip first.".into());
-        return;
-    };
-    let record = shared
+fn current_record(shared: &SharedRef) -> Option<ClipRecord> {
+    let id = current_clip_id(shared)?;
+    shared
         .library
         .borrow()
         .as_ref()
-        .and_then(|l| l.record(&id).cloned());
-    let Some(record) = record else {
+        .and_then(|l| l.record(&id).cloned())
+}
+
+fn edited_dir(shared: &SharedRef) -> PathBuf {
+    shared.config.borrow().edited_dir(&shared.paths)
+}
+
+/// Audio tracks kept for a cut, from the editor's toggles.
+fn kept_tracks(state: &PlayerState<'_>) -> Vec<bool> {
+    state.get_audio_tracks().iter().map(|t| t.enabled).collect()
+}
+
+fn compress_clip(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<PlayerState>();
+    let Some(record) = current_record(shared) else {
+        state.set_trim_message("Open a clip first.".into());
+        return;
+    };
+    let preset = COMPRESS_PRESETS
+        .get(state.get_compress_index().max(0) as usize)
+        .copied()
+        .unwrap_or(COMPRESS_PRESETS[0]);
+    let duration = if record.duration().is_zero() {
+        Duration::from_secs_f32(state.get_duration().max(0.0))
+    } else {
+        record.duration()
+    };
+    let range = match TrimRange::new(Duration::ZERO, duration, duration) {
+        Ok(range) => range,
+        Err(err) => {
+            state.set_trim_message(err.to_string().into());
+            return;
+        }
+    };
+    let output = edited_path(
+        &edited_dir(shared),
+        &record.path,
+        &record.title,
+        "compressed",
+    );
+    let job = TrimJob {
+        input: record.path.clone(),
+        output,
+        range,
+        mode: TrimMode::FrameAccurate,
+        video_bitrate_kbps: preset.2,
+        audio_bitrate_kbps: 128,
+        scale_height: (record.height > preset.1).then_some(preset.1),
+        keep_audio: kept_tracks(&state),
+        audio_labels: record.audio_tracks.clone(),
+    };
+    run_edit_job(
+        window,
+        shared,
+        job,
+        false,
+        "Compressing, this takes a moment...",
+    );
+}
+
+/// Runs a cut or a compression on a worker thread and reports into the
+/// editor. With `overwrite` the result replaces the original file.
+fn run_edit_job(
+    window: &MainWindow,
+    shared: &SharedRef,
+    job: TrimJob,
+    overwrite: bool,
+    busy_message: &str,
+) {
+    let state = window.global::<PlayerState>();
+    let tools = shared.engine.borrow().as_ref().map(|e| e.media_tools());
+    let Some(tools) = tools else {
+        state.set_trim_message("Editing is unavailable on this system.".into());
+        return;
+    };
+    if overwrite && let Some(player) = shared.player.borrow_mut().as_mut() {
+        player.stop(&state);
+    }
+    state.set_trim_busy(true);
+    state.set_trim_message(busy_message.into());
+    let original = job.input.clone();
+    let weak = window.as_weak();
+    let spawned = std::thread::Builder::new()
+        .name("edit".to_owned())
+        .spawn(move || {
+            let result = tools
+                .trim(&job)
+                .map_err(|e| e.to_string())
+                .and_then(|clip| {
+                    if overwrite {
+                        std::fs::rename(&clip.path, &original)
+                            .map_err(|e| format!("could not replace the original: {e}"))?;
+                    }
+                    Ok(clip)
+                });
+            let _ = weak.upgrade_in_event_loop(move |window| {
+                let state = window.global::<PlayerState>();
+                state.set_trim_busy(false);
+                match result {
+                    Ok(clip) => {
+                        let (name, path) = if overwrite {
+                            ("the original file".to_owned(), original.clone())
+                        } else {
+                            (file_name_of(&clip.path), clip.path.clone())
+                        };
+                        state.set_trim_message(
+                            format!(
+                                "Saved {} ({}, {:.1} MB)",
+                                name,
+                                format_duration(clip.duration),
+                                clip.bytes as f64 / (1024.0 * 1024.0)
+                            )
+                            .into(),
+                        );
+                        window.invoke_library_changed();
+                        window.invoke_clip_written(
+                            path.display().to_string().into(),
+                            clip.audio_tracks.join("\u{1f}").into(),
+                        );
+                    }
+                    Err(err) => state.set_trim_message(format!("Edit failed: {err}").into()),
+                }
+            });
+        });
+    if let Err(err) = spawned {
+        state.set_trim_busy(false);
+        state.set_trim_message(format!("Could not start the edit: {err}").into());
+    }
+}
+
+fn save_trim(window: &MainWindow, shared: &SharedRef, overwrite: bool) {
+    let state = window.global::<PlayerState>();
+    let Some(record) = current_record(shared) else {
+        state.set_trim_message("Open a clip first.".into());
         return;
     };
     let duration = if record.duration().is_zero() {
@@ -1215,8 +1486,12 @@ fn save_trim(window: &MainWindow, shared: &SharedRef) {
             return;
         }
     };
-    if range.is_whole(duration) {
-        state.set_trim_message("The selection covers the whole clip; nothing to trim.".into());
+    let keep_audio = kept_tracks(&state);
+    let drops_tracks = keep_audio.iter().any(|k| !k);
+    if range.is_whole(duration) && !drops_tracks {
+        state.set_trim_message(
+            "The selection covers the whole clip and every track is on; nothing to save.".into(),
+        );
         return;
     }
     let mode = if state.get_trim_mode_index() == 1 {
@@ -1224,87 +1499,31 @@ fn save_trim(window: &MainWindow, shared: &SharedRef) {
     } else {
         TrimMode::StreamCopy
     };
-    let overwrite = state.get_trim_overwrite();
     let output = if overwrite {
         record.path.with_extension("mp4.trimmed")
     } else {
-        trimmed_path(&record.path, &record.title)
+        edited_path(&edited_dir(shared), &record.path, &record.title, "trim")
     };
     let (video_bitrate, audio_bitrate) = {
         let config = shared.config.borrow();
         (config.capture.bitrate_kbps, config.audio.bitrate_kbps)
     };
-    let tools = shared.engine.borrow().as_ref().map(|e| e.media_tools());
-    let Some(tools) = tools else {
-        state.set_trim_message("Trimming is unavailable on this system.".into());
-        return;
-    };
-
-    if overwrite && let Some(player) = shared.player.borrow_mut().as_mut() {
-        player.stop(&state);
-    }
-    state.set_trim_busy(true);
-    state.set_trim_message(
-        match mode {
-            TrimMode::StreamCopy => "Cutting...".to_owned(),
-            TrimMode::FrameAccurate => {
-                "Re-encoding the selection, this takes a moment...".to_owned()
-            }
-        }
-        .into(),
-    );
     let job = TrimJob {
         input: record.path.clone(),
-        output: output.clone(),
+        output,
         range,
         mode,
         video_bitrate_kbps: video_bitrate,
         audio_bitrate_kbps: audio_bitrate,
+        scale_height: None,
+        keep_audio,
+        audio_labels: record.audio_tracks.clone(),
     };
-    let original = record.path.clone();
-    let weak = window.as_weak();
-    let spawned = std::thread::Builder::new()
-        .name("trim".to_owned())
-        .spawn(move || {
-            let result = tools
-                .trim(&job)
-                .map_err(|e| e.to_string())
-                .and_then(|clip| {
-                    if overwrite {
-                        std::fs::rename(&clip.path, &original)
-                            .map_err(|e| format!("could not replace the original: {e}"))?;
-                    }
-                    Ok(clip)
-                });
-            let _ = weak.upgrade_in_event_loop(move |window| {
-                let state = window.global::<PlayerState>();
-                state.set_trim_busy(false);
-                match result {
-                    Ok(clip) => {
-                        let name = if overwrite {
-                            "the original file".to_owned()
-                        } else {
-                            file_name_of(&clip.path)
-                        };
-                        state.set_trim_message(
-                            format!(
-                                "Saved {} ({}, {:.1} MB)",
-                                name,
-                                format_duration(clip.duration),
-                                clip.bytes as f64 / (1024.0 * 1024.0)
-                            )
-                            .into(),
-                        );
-                        window.invoke_library_changed();
-                    }
-                    Err(err) => state.set_trim_message(format!("Trim failed: {err}").into()),
-                }
-            });
-        });
-    if let Err(err) = spawned {
-        state.set_trim_busy(false);
-        state.set_trim_message(format!("Could not start the trim: {err}").into());
-    }
+    let message = match mode {
+        TrimMode::StreamCopy => "Cutting...",
+        TrimMode::FrameAccurate => "Re-encoding the selection, this takes a moment...",
+    };
+    run_edit_job(window, shared, job, overwrite, message);
 }
 
 fn init_games(shared: &SharedRef) {
@@ -1360,6 +1579,7 @@ fn poll_games(shared: &SharedRef, window: &MainWindow) {
         refresh_running_known(window, shared);
     }
     run_engine(shared, window, |e| e.set_game_state(active, auto));
+    run_engine(shared, window, |e| e.poll_app_audio());
 }
 
 fn refresh_running_known(window: &MainWindow, shared: &SharedRef) {
@@ -1561,6 +1781,21 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
             if let Some(library) = s.library.borrow_mut().as_mut() {
                 library.refresh();
                 library.tag_game(std::path::Path::new(path.as_str()), &game);
+            }
+            refresh_library_ui(&window, &s);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    window.on_clip_written(move |path, tracks| {
+        if let Some(window) = w.upgrade() {
+            let tracks: Vec<String> = tracks
+                .split('\u{1f}')
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if let Some(library) = s.library.borrow_mut().as_mut() {
+                library.refresh();
+                library.tag_tracks(std::path::Path::new(path.as_str()), &tracks);
             }
             refresh_library_ui(&window, &s);
         }
