@@ -155,21 +155,24 @@ pub enum EncoderPreference {
 }
 
 /// Which Windows screen capture API drives the source. Desktop duplication
-/// is the fast default; Windows Graphics Capture is the fallback when a
-/// game's presentation mode leaves duplication with black frames.
+/// delivers every frame of a game on a high refresh display, which the
+/// Desktop Duplication path in the GStreamer source does not (it repeats
+/// about one frame in seven at 60 fps against a 240 Hz display), so it is
+/// the default. Desktop Duplication stays as the fallback for systems
+/// where Graphics Capture is unavailable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureApi {
-    #[default]
     DesktopDuplication,
+    #[default]
     GraphicsCapture,
 }
 
 impl CaptureApi {
     pub const fn label(self) -> &'static str {
         match self {
-            CaptureApi::DesktopDuplication => "Desktop Duplication (default)",
-            CaptureApi::GraphicsCapture => "Windows Graphics Capture",
+            CaptureApi::DesktopDuplication => "Desktop Duplication",
+            CaptureApi::GraphicsCapture => "Windows Graphics Capture (default)",
         }
     }
 }

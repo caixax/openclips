@@ -1,8 +1,8 @@
 //! The live capture pipeline:
 //!
 //! ```text
-//! d3d11screencapturesrc -> capsfilter(fps) -> d3d11convert -> capsfilter(NV12)
-//!   -> videorate -> [d3d11download] -> encoder -> h264parse(config-interval=-1)
+//! d3d11screencapturesrc -> capsfilter(fps) -> videorate -> d3d11convert
+//!   -> capsfilter(NV12) -> [d3d11download] -> encoder -> h264parse(config-interval=-1)
 //!   -> appsink
 //! ```
 //!
@@ -208,6 +208,8 @@ fn build(
 
     let src = make("d3d11screencapturesrc")?;
     src.set_property("show-cursor", settings.show_cursor);
+    // The yellow capture border Windows draws for Graphics Capture.
+    super::props::set_bool(&src, "show-border", false);
     let api = match settings.api {
         CaptureApi::DesktopDuplication => "dxgi",
         CaptureApi::GraphicsCapture => "wgc",
@@ -288,7 +290,7 @@ fn build(
 
     let pipeline = gst::Pipeline::with_name("openclips-capture");
     let mut chain: Vec<gst::Element> =
-        vec![src, rate_filter, convert, nv12_filter, rate, grid_filter];
+        vec![src, rate_filter, rate, grid_filter, convert, nv12_filter];
     if !spec.d3d11_input {
         chain.push(make("d3d11download")?);
     }

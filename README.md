@@ -31,7 +31,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 - Hardware encoding through NVENC, Quick Sync or AMF, with Media Foundation and x264 as fallbacks; 1080p60 at 20 Mbps costs a few percent of a modern GPU.
 - Quality presets (Low, Standard, High) or your own frame rate and bitrate.
 - Full session recordings written as fragmented MP4, so a crash still leaves a playable file.
-- Desktop Duplication or Windows Graphics Capture, cursor on or off, any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
+- Windows Graphics Capture (default) or Desktop Duplication, cursor on or off, any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
 - Hotkeys are a key plus an action: save the last N seconds (one key for 15 seconds, another for two minutes), start or stop the buffer, start or stop recording. As many as you like.
 
 **Audio**
@@ -125,7 +125,7 @@ encoder = "auto"        # auto, nvenc, quick_sync, amf, software
 fps = 60
 bitrate_kbps = 20000
 show_cursor = false
-api = "desktop_duplication"   # or graphics_capture
+api = "graphics_capture"      # or desktop_duplication
 
 [capture.display]
 kind = "primary"        # or kind = "monitor", id = "\\\\.\\DISPLAY2"
@@ -285,7 +285,11 @@ Both trim paths are a seek with a segment: the pipeline prerolls, a seek with st
 
 ### Fullscreen games and black clips
 
-Desktop Duplication captures everything the display shows, including borderless and exclusive fullscreen games, and follows alt-tab and resolution changes: a mode change renegotiates the stream, the ring buffer restarts at the new size, and a capture error (a display going away, a driver reset) triggers an automatic restart, at most three times a minute before the failure is shown. Because a black clip must never be produced silently, the ring buffer watches the size of recent keyframes: a real picture at HD sizes never encodes below a few kilobytes per keyframe, so three tiny keyframes in a row raise a visible warning with the two fixes that work in practice (borderless windowed mode, or the Windows Graphics Capture method in Settings).
+Both capture methods see everything the display shows, including borderless and exclusive fullscreen games, and follow alt-tab and resolution changes: a mode change renegotiates the stream, the ring buffer restarts at the new size, and a capture error (a display going away, a driver reset) triggers an automatic restart, at most three times a minute before the failure is shown. Because a black clip must never be produced silently, the ring buffer watches the size of recent keyframes: a real picture at HD sizes never encodes below a few kilobytes per keyframe, so three tiny keyframes in a row raise a visible warning with the two fixes that work in practice (borderless windowed mode, or the Windows Graphics Capture method in Settings).
+
+### Why Windows Graphics Capture is the default
+
+Measured on a 240 Hz display with a test pattern moving at 240 fps, captured at 60 fps: the Desktop Duplication path of GStreamer's `d3d11screencapturesrc` repeated 14 percent of the frames (one in seven, evenly spread), independent of the rate the source was asked for, while Windows Graphics Capture repeated none. A real game clip showed the same 12 percent against 4 percent. Repeated frames read as micro stutter even though the file is a clean 60 fps, so Graphics Capture is the default and Desktop Duplication stays as a fallback. Frames still get repeated when the game itself does not present a new one within 16.7 ms.
 
 ### Game detection
 

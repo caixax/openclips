@@ -271,7 +271,7 @@ export component SettingsPage inherits ScrollView {
             }
             SettingRow {
                 title: "Capture method";
-                description: "Desktop Duplication is fastest. Windows Graphics Capture helps with some protected apps.";
+                description: "Windows Graphics Capture delivers every frame, also on high refresh displays. Desktop Duplication is the fallback and repeats frames under load.";
                 ComboBox { width: 240px; model: ["Desktop Duplication", "Windows Graphics Capture"]; current-index <=> SettingsState.capture-api-index; }
             }
             SettingRow {
