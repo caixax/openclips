@@ -129,7 +129,7 @@ action = "buffer"         # buffer, recording or ignore
 [discord]
 enabled = true
 show_game = true
-# Application ID from discord.com/developers; empty sends nothing.
+# Empty uses the built in OpenClips application on Discord.
 client_id = ""
 
 # Every hotkey is a key plus an action: save_replay, toggle_replay_buffer
@@ -167,7 +167,7 @@ Under Settings, Audio, an application (`discord.exe`, a browser, a music player)
 
 ## Discord
 
-With Discord running, OpenClips can show "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. Discord only accepts activities from a registered application, so paste an Application ID from <https://discord.com/developers/applications> (create an application called OpenClips) into the same section; without an id nothing is sent. In that application, upload `crates/app/assets/discord-logo.png` as the App Icon and again under Rich Presence, Art Assets with the name `logo`, which is the image the activity shows. Presence runs on its own thread and reconnects quietly when Discord starts later.
+With Discord running, OpenClips can show "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. It uses the OpenClips application registered on Discord, so it works out of the box; an own Application ID from <https://discord.com/developers/applications> can be pasted into the same section to show a different name or artwork (upload `crates/app/assets/discord-logo.png`, or your own image, as the App Icon and again under Rich Presence, Art Assets with the name `logo`). Presence runs on its own thread and reconnects quietly when Discord starts later.
 
 ## Architecture
 
