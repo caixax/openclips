@@ -21,5 +21,25 @@ fn main() {
             println!("cargo:rustc-link-arg-bins=/DELAYLOAD:{dll}");
         }
         println!("cargo:rustc-link-arg-bins=delayimp.lib");
+        embed_icon();
     }
 }
+
+/// The executable icon and version block, shown by Explorer, the taskbar
+/// and the installer shortcuts.
+#[cfg(windows)]
+fn embed_icon() {
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+    let result = winresource::WindowsResource::new()
+        .set_icon("assets/icon.ico")
+        .set("ProductName", "OpenClips")
+        .set("FileDescription", "OpenClips game clip recorder")
+        .set("LegalCopyright", "MIT License")
+        .compile();
+    if let Err(err) = result {
+        panic!("failed to embed the icon: {err}");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_icon() {}

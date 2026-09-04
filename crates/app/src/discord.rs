@@ -6,7 +6,7 @@
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use discord_rich_presence::activity::{Activity, Timestamps};
+use discord_rich_presence::activity::{Activity, Assets, Timestamps};
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use openclips_core::config::DiscordConfig;
 use tracing::{debug, info, warn};
@@ -143,6 +143,7 @@ fn run(receiver: Receiver<PresenceState>) {
         let activity = Activity::new()
             .details(signature.0.as_str())
             .state(signature.1)
+            .assets(Assets::new().large_image("logo").large_text("OpenClips"))
             .timestamps(Timestamps::new().start(start));
         let result = connection
             .as_mut()
