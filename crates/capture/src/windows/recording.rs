@@ -45,6 +45,7 @@ pub struct Mp4Session {
     pipeline: gst::Pipeline,
     video: gst_app::AppSrc,
     audio: Vec<AudioInput>,
+    labels: Vec<String>,
     path: PathBuf,
     partial: PathBuf,
     frame_duration_ns: u64,
@@ -132,6 +133,7 @@ impl Mp4Session {
             pipeline,
             video,
             audio,
+            labels: tracks.iter().map(|t| t.label.clone()).collect(),
             path: path.to_path_buf(),
             partial,
             frame_duration_ns: stream.frame_duration().as_nanos() as u64,
@@ -232,6 +234,7 @@ impl RecordingSession for Mp4Session {
             bytes,
             created: SystemTime::now(),
             game: None,
+            audio_tracks: self.labels.clone(),
         })
     }
 

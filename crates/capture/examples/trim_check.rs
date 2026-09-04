@@ -52,6 +52,9 @@ fn main() {
             mode,
             video_bitrate_kbps: 12_000,
             audio_bitrate_kbps: 160,
+            scale_height: None,
+            keep_audio: Vec::new(),
+            audio_labels: Vec::new(),
         };
         let started = Instant::now();
         match tools.trim(&job) {

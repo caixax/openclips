@@ -8,7 +8,7 @@
 //! fed with whatever the seeked source produces.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gstreamer as gst;
@@ -121,17 +121,60 @@ pub fn keyframes(path: &Path) -> Result<Vec<Duration>, CaptureError> {
     Ok(found)
 }
 
+/// Audio appsinks collected as the demuxer or decoder exposes streams,
+/// keyed by pad name so the order is stable.
+type AudioSinks = Arc<Mutex<Vec<(String, gst_app::AppSink)>>>;
+
 /// A seeked source pipeline with one appsink per stream.
 struct Source {
     pipeline: gst::Pipeline,
     video: gst_app::AppSink,
-    audio: gst_app::AppSink,
+    audio: AudioSinks,
     encoder: String,
+}
+
+impl Source {
+    fn audio_sinks(&self) -> Vec<gst_app::AppSink> {
+        let mut sinks = self.audio.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        sinks.sort_by(|a, b| a.0.cmp(&b.0));
+        sinks.into_iter().map(|(_, sink)| sink).collect()
+    }
 }
 
 impl Drop for Source {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
+/// Adds a chain for one audio pad while the pipeline is being built and
+/// returns its appsink. Errors are swallowed because this runs inside the
+/// pad-added callback; a missing sink surfaces as a track-less cut.
+fn attach_audio(
+    pipeline: &gst::Pipeline,
+    pad: &gst::Pad,
+    chain: Vec<gst::Element>,
+) -> Option<gst_app::AppSink> {
+    let sink = audio_appsink();
+    let mut elements = chain;
+    elements.push(sink.clone().upcast());
+    let refs: Vec<&gst::Element> = elements.iter().collect();
+    pipeline.add_many(&refs).ok()?;
+    gst::Element::link_many(&refs).ok()?;
+    for element in &elements {
+        element.sync_state_with_parent().ok()?;
+    }
+    let first = elements.first()?.static_pad("sink")?;
+    pad.link(&first).ok()?;
+    Some(sink)
+}
+
+fn remember(sinks: &AudioSinks, name: &str, sink: Option<gst_app::AppSink>) {
+    if let Some(sink) = sink {
+        sinks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((name.to_owned(), sink));
     }
 }
 
@@ -151,7 +194,8 @@ fn audio_appsink() -> gst_app::AppSink {
         .build()
 }
 
-/// filesrc -> qtdemux -> h264parse -> appsink, audio through aacparse.
+/// filesrc -> qtdemux -> h264parse -> appsink, every audio stream through
+/// aacparse into its own appsink.
 fn copy_source(input: &Path) -> Result<Source, CaptureError> {
     let pipeline = gst::Pipeline::with_name("openclips-trim-copy");
     let src = filesrc(input)?;
@@ -160,9 +204,6 @@ fn copy_source(input: &Path) -> Result<Source, CaptureError> {
     vparse.set_property("config-interval", -1i32);
     let vqueue = make("queue")?;
     let video = video_appsink();
-    let aparse = make("aacparse")?;
-    let aqueue = make("queue")?;
-    let audio = audio_appsink();
 
     pipeline
         .add_many([&src, &demux])
@@ -173,24 +214,26 @@ fn copy_source(input: &Path) -> Result<Source, CaptureError> {
         &[vparse.clone(), vqueue, video.clone().upcast()],
         input,
     )?;
-    add_and_link(
-        &pipeline,
-        &[aparse.clone(), aqueue, audio.clone().upcast()],
-        input,
-    )?;
 
     let vpad = vparse
         .static_pad("sink")
         .ok_or_else(|| media_error(input, "h264parse has no sink pad"))?;
-    let apad = aparse
-        .static_pad("sink")
-        .ok_or_else(|| media_error(input, "aacparse has no sink pad"))?;
+    let audio: AudioSinks = Arc::default();
+    let sinks = audio.clone();
+    let weak = pipeline.downgrade();
     demux.connect_pad_added(move |_, pad| {
         let name = pad.name();
-        if name.starts_with("video") && !vpad.is_linked() {
-            let _ = pad.link(&vpad);
-        } else if name.starts_with("audio") && !apad.is_linked() {
-            let _ = pad.link(&apad);
+        if name.starts_with("video") {
+            if !vpad.is_linked() {
+                let _ = pad.link(&vpad);
+            }
+        } else if name.starts_with("audio")
+            && let Some(pipeline) = weak.upgrade()
+        {
+            let chain: Option<Vec<gst::Element>> =
+                (|| Some(vec![make("aacparse").ok()?, make("queue").ok()?]))();
+            let sink = chain.and_then(|chain| attach_audio(&pipeline, pad, chain));
+            remember(&sinks, &name, sink);
         }
     });
 
@@ -202,7 +245,8 @@ fn copy_source(input: &Path) -> Result<Source, CaptureError> {
     })
 }
 
-/// uridecodebin -> encoders -> appsinks.
+/// uridecodebin -> encoders -> appsinks. Every audio stream gets its own
+/// AAC encoder and appsink.
 fn reencode_source(job: &TrimJob) -> Result<Source, CaptureError> {
     let input = &job.input;
     let pipeline = gst::Pipeline::with_name("openclips-trim-encode");
@@ -220,6 +264,20 @@ fn reencode_source(job: &TrimJob) -> Result<Source, CaptureError> {
         .ok_or_else(|| CaptureError::MissingElement(encoder_info.element.clone()))?;
     let vqueue = make("queue")?;
     let vconvert = make("videoconvert")?;
+    let mut chain = vec![vqueue.clone(), vconvert];
+    if let Some(height) = job.scale_height {
+        let scale = make("videoscale")?;
+        let size = make("capsfilter")?;
+        size.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("height", i32::try_from(height).unwrap_or(720))
+                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                .build(),
+        );
+        chain.push(scale);
+        chain.push(size);
+    }
     let nv12 = make("capsfilter")?;
     nv12.set_property(
         "caps",
@@ -246,58 +304,45 @@ fn reencode_source(job: &TrimJob) -> Result<Source, CaptureError> {
             .build(),
     );
     let video = video_appsink();
+    chain.extend([nv12, venc, vparse, profile, video.clone().upcast()]);
 
-    let aqueue = make("queue")?;
-    let aconvert = make("audioconvert")?;
-    let aresample = make("audioresample")?;
     let aenc_name = audio::choose_encoder().ok_or(CaptureError::NoAudioEncoder)?;
-    let aenc = make(aenc_name)?;
-    super::props::set_number(&aenc, "bitrate", i64::from(job.audio_bitrate_kbps) * 1000);
-    let aparse = make("aacparse")?;
-    let audio = audio_appsink();
+    let audio_bitrate = i64::from(job.audio_bitrate_kbps) * 1000;
 
     pipeline.add(&decode).map_err(|e| media_error(input, e))?;
-    add_and_link(
-        &pipeline,
-        &[
-            vqueue.clone(),
-            vconvert,
-            nv12,
-            venc,
-            vparse,
-            profile,
-            video.clone().upcast(),
-        ],
-        input,
-    )?;
-    add_and_link(
-        &pipeline,
-        &[
-            aqueue.clone(),
-            aconvert,
-            aresample,
-            aenc,
-            aparse,
-            audio.clone().upcast(),
-        ],
-        input,
-    )?;
+    add_and_link(&pipeline, &chain, input)?;
 
     let vpad = vqueue
         .static_pad("sink")
         .ok_or_else(|| media_error(input, "queue has no sink pad"))?;
-    let apad = aqueue
-        .static_pad("sink")
-        .ok_or_else(|| media_error(input, "queue has no sink pad"))?;
+    let audio: AudioSinks = Arc::default();
+    let sinks = audio.clone();
+    let weak = pipeline.downgrade();
     decode.connect_pad_added(move |_, pad| {
         let kind = pad
             .current_caps()
             .and_then(|c| c.structure(0).map(|s| s.name().to_string()))
             .unwrap_or_default();
-        if kind.starts_with("video/") && !vpad.is_linked() {
-            let _ = pad.link(&vpad);
-        } else if kind.starts_with("audio/") && !apad.is_linked() {
-            let _ = pad.link(&apad);
+        if kind.starts_with("video/") {
+            if !vpad.is_linked() {
+                let _ = pad.link(&vpad);
+            }
+        } else if kind.starts_with("audio/")
+            && let Some(pipeline) = weak.upgrade()
+        {
+            let chain: Option<Vec<gst::Element>> = (|| {
+                let aenc = make(aenc_name).ok()?;
+                super::props::set_number(&aenc, "bitrate", audio_bitrate);
+                Some(vec![
+                    make("queue").ok()?,
+                    make("audioconvert").ok()?,
+                    make("audioresample").ok()?,
+                    aenc,
+                    make("aacparse").ok()?,
+                ])
+            })();
+            let sink = chain.and_then(|chain| attach_audio(&pipeline, pad, chain));
+            remember(&sinks, &pad.name(), sink);
         }
     });
 
@@ -399,8 +444,29 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
         .map_err(|_| media_error(input, "the selection produced no video"))?;
     let stream = stream_info(&source.video, &source.encoder)
         .ok_or_else(|| media_error(input, "could not read the video format"))?;
-    let audio = audio_info(&source.audio);
-    let tracks: Vec<AudioTrackInfo> = audio.iter().cloned().collect();
+
+    // Every input track keeps its position; dropped ones are drained and
+    // discarded so the source never stalls.
+    let sinks = source.audio_sinks();
+    let mut outputs: Vec<Option<AudioTrackInfo>> = Vec::with_capacity(sinks.len());
+    let mut tracks = Vec::new();
+    for (i, sink) in sinks.iter().enumerate() {
+        let keep = job.keep_audio.get(i).copied().unwrap_or(true);
+        match audio_info(sink) {
+            Some(mut info) if keep => {
+                info.index = tracks.len() as u32;
+                info.label = job
+                    .audio_labels
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Track {}", i + 1));
+                tracks.push(info.clone());
+                outputs.push(Some(info));
+            }
+            _ => outputs.push(None),
+        }
+    }
+    let labels: Vec<String> = tracks.iter().map(|t| t.label.clone()).collect();
     let mut session = Mp4Session::open(&stream, &tracks, &job.output, false)?;
 
     let mut frames = 0u64;
@@ -437,14 +503,17 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
         return Err(media_error(input, "the selection produced no video"));
     }
 
-    if audio.is_some() {
-        while let Ok(sample) = source.audio.pull_sample() {
+    for (sink, output) in sinks.iter().zip(&outputs) {
+        while let Ok(sample) = sink.pull_sample() {
+            let Some(info) = output else {
+                continue;
+            };
             let Some(buffer) = sample.buffer() else {
                 continue;
             };
             let map = buffer.map_readable().map_err(|e| media_error(input, e))?;
             session.push_audio(&AudioPacket {
-                track: 0,
+                track: info.index,
                 pts: running_time(&sample, buffer.pts()),
                 duration: buffer.duration().map(|d| d.into()),
                 data: Arc::from(map.as_slice()),
@@ -452,5 +521,7 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
         }
     }
 
-    Box::new(session).finish()
+    let mut clip = Box::new(session).finish()?;
+    clip.audio_tracks = labels;
+    Ok(clip)
 }

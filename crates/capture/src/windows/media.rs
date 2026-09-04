@@ -60,6 +60,7 @@ impl MediaTools for GstMediaTools {
             width,
             height,
             has_audio: !info.audio_streams().is_empty(),
+            audio_tracks: info.audio_streams().len() as u32,
         })
     }
 

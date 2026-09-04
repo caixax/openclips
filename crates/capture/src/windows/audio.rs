@@ -77,6 +77,7 @@ pub fn list_devices() -> Result<Vec<AudioDeviceInfo>, CaptureError> {
             match kind {
                 AudioDeviceKind::Output => "Default output (follows Windows)".to_owned(),
                 AudioDeviceKind::Input => "Default microphone (follows Windows)".to_owned(),
+                AudioDeviceKind::Application => name.clone(),
             }
         } else {
             name
@@ -165,11 +166,35 @@ pub fn build_track(
         let src_name = format!("{SOURCE_NAME_PREFIX}{index}-{n}");
         let src = make_named("wasapi2src", &src_name)?;
         props::set_bool(&src, "low-latency", true);
-        if source.kind == AudioDeviceKind::Output {
-            src.set_property("loopback", true);
-        }
-        if source.id != DEFAULT_AUDIO_DEVICE_ID {
-            src.set_property("device", &source.id);
+        match source.kind {
+            AudioDeviceKind::Output => {
+                src.set_property("loopback", true);
+                if source.id != DEFAULT_AUDIO_DEVICE_ID {
+                    src.set_property("device", &source.id);
+                } else if source.process != 0 {
+                    // Leave the application that has its own track out of
+                    // the desktop mix. Process loopback only exists for the
+                    // default render device.
+                    src.set_property_from_str("loopback-mode", "exclude-process-tree");
+                    src.set_property("loopback-target-pid", source.process);
+                }
+            }
+            AudioDeviceKind::Input => {
+                if source.id != DEFAULT_AUDIO_DEVICE_ID {
+                    src.set_property("device", &source.id);
+                }
+            }
+            AudioDeviceKind::Application => {
+                if source.process == 0 {
+                    return Err(CaptureError::AudioSource {
+                        key,
+                        message: format!("{} is not running", source.name),
+                    });
+                }
+                src.set_property("loopback", true);
+                src.set_property_from_str("loopback-mode", "include-process-tree");
+                src.set_property("loopback-target-pid", source.process);
+            }
         }
         let queue = make("queue")?;
         let convert = make("audioconvert")?;

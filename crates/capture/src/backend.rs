@@ -18,6 +18,7 @@ pub struct MediaInfo {
     pub width: u32,
     pub height: u32,
     pub has_audio: bool,
+    pub audio_tracks: u32,
 }
 
 /// A cut to perform on a clip file.
@@ -30,6 +31,12 @@ pub struct TrimJob {
     /// Used by the re-encode path only.
     pub video_bitrate_kbps: u32,
     pub audio_bitrate_kbps: u32,
+    /// Re-encode path only: scale the video down to this height.
+    pub scale_height: Option<u32>,
+    /// One flag per audio track of the input; missing entries mean keep.
+    pub keep_audio: Vec<bool>,
+    /// Names of the input tracks, carried over to the output.
+    pub audio_labels: Vec<String>,
 }
 
 /// Reads files back: metadata for the library and thumbnails for the

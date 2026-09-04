@@ -66,6 +66,11 @@ impl ClipWriter for Mp4Writer {
             bytes,
             created: SystemTime::now(),
             game: None,
+            audio_tracks: snapshot
+                .audio
+                .iter()
+                .map(|a| a.info.label.clone())
+                .collect(),
         })
     }
 }
