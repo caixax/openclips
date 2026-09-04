@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, Icons } from "icons.slint";
 import { TextButton, Notice, KeyPill } from "widgets.slint";
 import { ClipCard } from "types.slint";
@@ -125,7 +126,7 @@ export component HomePage inherits ScrollView {
                         color: Theme.text;
                     }
                     Text {
-                        text: root.buffer-active ? root.buffer-detail : "Start the buffer to keep the last moments in memory.";
+                        text: root.buffer-active ? root.buffer-detail : I18n.tr("Start the buffer to keep the last moments in memory.");
                         font-size: 11px;
                         color: Theme.text-muted;
                         overflow: elide;
@@ -135,13 +136,13 @@ export component HomePage inherits ScrollView {
                 KeyPill { y: (parent.height - self.height) / 2; keys: root.save-keys; }
                 Text { text: root.save-label; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
                 TextButton {
-                    text: root.buffer-active ? "Stop buffer" : "Start buffer";
+                    text: root.buffer-active ? I18n.tr("Stop buffer") : I18n.tr("Start buffer");
                     icon: root.buffer-active ? Icons.stop : Icons.play;
                     has-icon: true;
                     clicked => { root.toggle-buffer(); }
                 }
                 TextButton {
-                    text: "Save clip";
+                    text: I18n.tr("Save clip");
                     icon: Icons.scissors;
                     has-icon: true;
                     kind: 1;
@@ -149,7 +150,7 @@ export component HomePage inherits ScrollView {
                     clicked => { root.save-clip(); }
                 }
                 TextButton {
-                    text: root.recording-active ? "Stop recording" : "Record";
+                    text: root.recording-active ? I18n.tr("Stop recording") : I18n.tr("Record");
                     icon: root.recording-active ? Icons.stop : Icons.circle-dot;
                     has-icon: true;
                     kind: root.recording-active ? 2 : 0;
@@ -166,12 +167,12 @@ export component HomePage inherits ScrollView {
 
         HorizontalLayout {
             spacing: 10px;
-            Text { text: "Recent clips"; font-size: 18px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
-            TextButton { text: "All clips"; icon: Icons.film; has-icon: true; kind: 3; clicked => { root.show-clips(); } }
+            Text { text: I18n.tr("Recent clips"); font-size: 18px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
+            TextButton { text: I18n.tr("All clips"); icon: Icons.film; has-icon: true; kind: 3; clicked => { root.show-clips(); } }
         }
 
         if root.recent.length == 0: Text {
-            text: "No clips yet. Save one with the hotkey while the buffer is running.";
+            text: I18n.tr("No clips yet. Save one with the hotkey while the buffer is running.");
             font-size: 13px;
             color: Theme.text-muted;
         }
@@ -192,7 +193,7 @@ export component HomePage inherits ScrollView {
         }
 
         Text {
-            text: "Closing the window keeps OpenClips in the tray. Quit from the tray menu.";
+            text: I18n.tr("Closing the window keeps OpenClips in the tray. Quit from the tray menu.");
             font-size: 11px;
             color: Theme.text-faint;
         }

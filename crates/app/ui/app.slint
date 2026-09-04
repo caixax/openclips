@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, IconData, Icons } from "icons.slint";
 import { IconButton, TextButton } from "widgets.slint";
 import { Sidebar, NavPage } from "sidebar.slint";
@@ -11,6 +12,7 @@ import { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, Hotke
 
 export { TrayIcon } from "tray.slint";
 export { Theme }
+export { I18n }
 
 export { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, HotkeyRow, SettingsState, LibraryState, PlayerState, NavPage }
 
@@ -107,9 +109,9 @@ component UpdateBanner inherits Rectangle {
         spacing: 10px;
         Icon { y: (parent.height - self.height) / 2; size: 14px; data: Icons.download; color: Theme.accent; }
         Text { text: root.message; font-size: 12px; color: Theme.text; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
-        if root.ready: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: "Install now"; kind: 1; clicked => { root.install(); } }
-        if root.ready: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: "On next start"; kind: 3; clicked => { root.dismiss(); } }
-        if !root.ready && root.has-page: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: "Open release page"; kind: 1; clicked => { root.open-page(); } }
+        if root.ready: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: I18n.tr("Install now"); kind: 1; clicked => { root.install(); } }
+        if root.ready: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: I18n.tr("On next start"); kind: 3; clicked => { root.dismiss(); } }
+        if !root.ready && root.has-page: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: I18n.tr("Open release page"); kind: 1; clicked => { root.open-page(); } }
         IconButton { y: (parent.height - self.height) / 2; size: 28px; icon-size: 11px; icon: Icons.xmark; clicked => { root.dismiss(); } }
     }
 }

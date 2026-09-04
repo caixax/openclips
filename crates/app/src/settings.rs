@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use openclips_core::capture::{AudioDeviceInfo, AudioDeviceKind, MonitorInfo};
 use openclips_core::config::{AudioSourceConfig, Config, DisplaySelection, EncoderPreference};
-use openclips_core::config::{CaptureApi, CaptureScope, GameAction, GameProfile};
+use openclips_core::config::{CaptureApi, CaptureScope, GameAction, GameProfile, Language};
 use openclips_core::config::{Hotkey, HotkeyActionKind, HotkeyBinding};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
@@ -210,6 +210,12 @@ pub fn populate(
     state.set_launch_on_startup(config.general.launch_on_startup);
     state.set_clip_sound(config.general.clip_sound);
     state.set_animations(config.general.animations);
+    state.set_language_index(
+        Language::ALL
+            .iter()
+            .position(|l| *l == config.general.language)
+            .unwrap_or(0) as i32,
+    );
 
     let seconds = config.replay.length_seconds;
     if seconds >= 60 && seconds.is_multiple_of(60) {
@@ -407,6 +413,10 @@ pub fn collect(
     config.general.launch_on_startup = state.get_launch_on_startup();
     config.general.clip_sound = state.get_clip_sound();
     config.general.animations = state.get_animations();
+    config.general.language = Language::ALL
+        .get(state.get_language_index().max(0) as usize)
+        .copied()
+        .unwrap_or_default();
 
     let value = state.get_replay_length_value().max(1) as u32;
     config.replay.length_seconds = if state.get_replay_unit_index() == UNIT_MINUTES {

@@ -1,5 +1,6 @@
 import { LineEdit, Slider, ComboBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, Icons } from "icons.slint";
 import { IconButton, TextButton, Notice, Toggle, OptionCard } from "widgets.slint";
 import { AudioTrackRow } from "types.slint";
@@ -158,22 +159,22 @@ component TrimPanel inherits Rectangle {
             spacing: 10px;
             alignment: start;
             Icon { y: (parent.height - self.height) / 2; size: 14px; data: Icons.scissors; color: Theme.accent; }
-            Text { text: "Edit"; font-size: 14px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+            Text { text: I18n.tr("Edit"); font-size: 14px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
             Text { text: PlayerState.trim-summary; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
         }
         HorizontalLayout {
             spacing: 10px;
             alignment: start;
-            TextButton { text: "Set in"; icon: Icons.chevron-right; has-icon: true; clicked => { PlayerState.set-in(); } }
+            TextButton { text: I18n.tr("Set in"); icon: Icons.chevron-right; has-icon: true; clicked => { PlayerState.set-in(); } }
             Text { text: PlayerState.trim-in-text; vertical-alignment: center; font-size: 13px; color: Theme.text; width: 80px; }
-            TextButton { text: "Set out"; icon: Icons.chevron-right; has-icon: true; clicked => { PlayerState.set-out(); } }
+            TextButton { text: I18n.tr("Set out"); icon: Icons.chevron-right; has-icon: true; clicked => { PlayerState.set-out(); } }
             Text { text: PlayerState.trim-out-text; vertical-alignment: center; font-size: 13px; color: Theme.text; width: 80px; }
-            TextButton { text: "Preview"; icon: Icons.play; has-icon: true; clicked => { PlayerState.preview-selection(); } }
+            TextButton { text: I18n.tr("Preview"); icon: Icons.play; has-icon: true; clicked => { PlayerState.preview-selection(); } }
             Rectangle { horizontal-stretch: 1; }
             ComboBox {
                 width: 220px;
-                model: ["Fast (cuts on keyframes)", "Exact (re-encodes)"];
+                model: [I18n.tr("Fast (cuts on keyframes)"), I18n.tr("Exact (re-encodes)")];
                 current-index <=> PlayerState.trim-mode-index;
                 selected => { PlayerState.trim-changed(); }
             }
@@ -181,7 +182,7 @@ component TrimPanel inherits Rectangle {
         if PlayerState.audio-tracks.length > 0: HorizontalLayout {
             spacing: 16px;
             alignment: start;
-            Text { text: "Audio tracks"; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
+            Text { text: I18n.tr("Audio tracks"); font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
             for track in PlayerState.audio-tracks: HorizontalLayout {
                 spacing: 6px;
                 Toggle { y: (parent.height - self.height) / 2; checked <=> track.enabled; }
@@ -192,7 +193,7 @@ component TrimPanel inherits Rectangle {
             spacing: 12px;
             alignment: start;
             TextButton {
-                text: PlayerState.trim-busy ? "Working..." : "Save";
+                text: PlayerState.trim-busy ? I18n.tr("Working...") : I18n.tr("Save");
                 icon: Icons.floppy-disk;
                 has-icon: true;
                 kind: 1;
@@ -200,7 +201,7 @@ component TrimPanel inherits Rectangle {
                 clicked => { PlayerState.save-prompt = true; }
             }
             TextButton {
-                text: "Compress";
+                text: I18n.tr("Compress");
                 icon: Icons.bolt;
                 has-icon: true;
                 enabled: !PlayerState.trim-busy;
@@ -209,7 +210,7 @@ component TrimPanel inherits Rectangle {
             if PlayerState.trim-message != "": Text { text: PlayerState.trim-message; font-size: 12px; color: Theme.text; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
         }
         Text {
-            text: "Drag the handles on the timeline or use Set in and Set out at the playhead. Muted tracks are left out of the saved file. Saving asks whether to keep the original.";
+            text: I18n.tr("Drag the handles on the timeline or use Set in and Set out at the playhead. Muted tracks are left out of the saved file. Saving asks whether to keep the original.");
             font-size: 11px;
             color: Theme.text-faint;
             wrap: word-wrap;
@@ -246,10 +247,10 @@ component Modal inherits Rectangle {
 }
 
 component SaveDialog inherits Modal {
-    title: "Save the edit";
+    title: I18n.tr("Save the edit");
     dismiss => { PlayerState.save-prompt = false; }
     Text {
-        text: "Save as a new file in the Edited folder, or replace the original clip? Replacing cannot be undone.";
+        text: I18n.tr("Save as a new file in the Edited folder, or replace the original clip? Replacing cannot be undone.");
         font-size: 13px;
         color: Theme.text-muted;
         wrap: word-wrap;
@@ -257,18 +258,18 @@ component SaveDialog inherits Modal {
     HorizontalLayout {
         spacing: 8px;
         alignment: end;
-        TextButton { text: "Cancel"; clicked => { PlayerState.save-prompt = false; } }
-        TextButton { text: "Replace original"; icon: Icons.triangle-exclamation; has-icon: true; kind: 2; clicked => { PlayerState.save-trim-as(true); } }
-        TextButton { text: "Save as new"; icon: Icons.floppy-disk; has-icon: true; kind: 1; clicked => { PlayerState.save-trim-as(false); } }
+        TextButton { text: I18n.tr("Cancel"); clicked => { PlayerState.save-prompt = false; } }
+        TextButton { text: I18n.tr("Replace original"); icon: Icons.triangle-exclamation; has-icon: true; kind: 2; clicked => { PlayerState.save-trim-as(true); } }
+        TextButton { text: I18n.tr("Save as new"); icon: Icons.floppy-disk; has-icon: true; kind: 1; clicked => { PlayerState.save-trim-as(false); } }
     }
 }
 
 component CompressDialog inherits Modal {
-    title: "Compress clip";
+    title: I18n.tr("Compress clip");
     card-width: 560px;
     dismiss => { PlayerState.compress-open = false; }
     Text {
-        text: "Re-encodes the whole clip with a smaller size. The result goes to the Edited folder; the original stays untouched. Muted tracks are left out.";
+        text: I18n.tr("Re-encodes the whole clip with a smaller size. The result goes to the Edited folder; the original stays untouched. Muted tracks are left out.");
         font-size: 13px;
         color: Theme.text-muted;
         wrap: word-wrap;
@@ -283,8 +284,8 @@ component CompressDialog inherits Modal {
     HorizontalLayout {
         spacing: 8px;
         alignment: end;
-        TextButton { text: "Cancel"; clicked => { PlayerState.compress-open = false; } }
-        TextButton { text: "Compress"; icon: Icons.bolt; has-icon: true; kind: 1; clicked => { PlayerState.compress(); } }
+        TextButton { text: I18n.tr("Cancel"); clicked => { PlayerState.compress-open = false; } }
+        TextButton { text: I18n.tr("Compress"); icon: Icons.bolt; has-icon: true; kind: 1; clicked => { PlayerState.compress(); } }
     }
 }
 
@@ -312,7 +313,7 @@ export component PlayerPage inherits Rectangle {
                 horizontal-stretch: 1;
                 accepted => { PlayerState.rename(); }
             }
-            if PlayerState.renaming: TextButton { text: "Save name"; kind: 1; clicked => { PlayerState.rename(); } }
+            if PlayerState.renaming: TextButton { text: I18n.tr("Save name"); kind: 1; clicked => { PlayerState.rename(); } }
             if PlayerState.renaming: IconButton { icon: Icons.xmark; filled: true; clicked => { PlayerState.renaming = false; } }
             if !PlayerState.renaming: IconButton {
                 icon: Icons.pen;
@@ -326,8 +327,8 @@ export component PlayerPage inherits Rectangle {
             IconButton { icon: Icons.bolt; filled: true; clicked => { PlayerState.compress-open = true; } }
             IconButton { icon: Icons.folder-open; filled: true; clicked => { PlayerState.reveal(); } }
             if !PlayerState.confirm-delete: IconButton { icon: Icons.trash; filled: true; icon-color: Theme.danger; clicked => { PlayerState.confirm-delete = true; } }
-            if PlayerState.confirm-delete: TextButton { text: "Delete clip"; icon: Icons.trash; has-icon: true; kind: 2; clicked => { PlayerState.delete(); } }
-            if PlayerState.confirm-delete: TextButton { text: "Keep"; clicked => { PlayerState.confirm-delete = false; } }
+            if PlayerState.confirm-delete: TextButton { text: I18n.tr("Delete clip"); icon: Icons.trash; has-icon: true; kind: 2; clicked => { PlayerState.delete(); } }
+            if PlayerState.confirm-delete: TextButton { text: I18n.tr("Keep"); clicked => { PlayerState.confirm-delete = false; } }
         }
 
         Text { text: PlayerState.details; font-size: 12px; color: Theme.text-muted; overflow: elide; }

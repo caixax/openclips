@@ -1,13 +1,14 @@
 import { ComboBox, SpinBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, Icons } from "icons.slint";
 import { IconButton, TextButton, Toggle, SectionCard, SettingRow, Divider, KeyPill, Badge, Notice, AddButton, OptionCard, PageHeader } from "widgets.slint";
 import { AppInfo, AudioSourceRow, GameProfileRow, HotkeyRow } from "types.slint";
 
 export global SettingsState {
-    in-out property <[string]> display-names: ["Primary display"];
+    in-out property <[string]> display-names: [I18n.tr("Primary display")];
     in-out property <int> display-index: 0;
-    in-out property <[string]> encoder-names: ["Automatic (best available)", "NVIDIA NVENC", "Intel Quick Sync", "AMD AMF", "Software (x264)"];
+    in-out property <[string]> encoder-names: [I18n.tr("Automatic (best available)"), "NVIDIA NVENC", "Intel Quick Sync", "AMD AMF", I18n.tr("Software (x264)")];
     in-out property <int> encoder-index: 0;
     in-out property <int> quality-index: 1;
     in-out property <int> fps: 60;
@@ -17,6 +18,7 @@ export global SettingsState {
     in-out property <bool> launch-on-startup: false;
     in-out property <bool> clip-sound: false;
     in-out property <bool> animations: true;
+    in-out property <int> language-index: 0;
 
     in-out property <int> replay-length-value: 30;
     in-out property <int> replay-unit-index: 0;
@@ -46,7 +48,7 @@ export global SettingsState {
 
     in-out property <int> games-scope-index: 0;
     in-out property <[GameProfileRow]> game-profiles: [];
-    in-out property <[string]> profile-display-names: ["Use the global display"];
+    in-out property <[string]> profile-display-names: [I18n.tr("Use the global display")];
     in-out property <string> running-games;
     in-out property <[string]> running-known: [];
     in-out property <int> running-known-index: 0;
@@ -162,16 +164,16 @@ export component SettingsPage inherits ScrollView {
             spacing: 12px;
             PageHeader {
                 icon: Icons.gear;
-                title: "Settings";
-                description: "Capture, audio, games, storage and hotkeys. Changes apply when you save.";
+                title: I18n.tr("Settings");
+                description: I18n.tr("Capture, audio, games, storage and hotkeys. Changes apply when you save.");
             }
             Rectangle { horizontal-stretch: 1; }
             VerticalLayout {
                 alignment: center;
                 HorizontalLayout {
                     spacing: 8px;
-                    TextButton { text: "Revert"; icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
-                    TextButton { text: "Save changes"; icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
+                    TextButton { text: I18n.tr("Revert"); icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
+                    TextButton { text: I18n.tr("Save changes"); icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
                 }
             }
         }
@@ -179,8 +181,8 @@ export component SettingsPage inherits ScrollView {
         if SettingsState.message != "": Notice { message: SettingsState.message; kind: SettingsState.message-is-error ? 2 : 3; }
 
         SectionCard {
-            heading: "Hotkeys";
-            subtitle: "Global shortcuts that work while a game has focus. Click a key to change it, Escape cancels. Every row is a key plus what it does.";
+            heading: I18n.tr("Hotkeys");
+            subtitle: I18n.tr("Global shortcuts that work while a game has focus. Click a key to change it, Escape cancels. Every row is a key plus what it does.");
 
             for hk[i] in SettingsState.hotkeys: HorizontalLayout {
                 spacing: 12px;
@@ -188,19 +190,19 @@ export component SettingsPage inherits ScrollView {
                 HotkeyCapture { action: 100 + i; keys: hk.keys; }
                 ComboBox {
                     width: 210px;
-                    model: ["Save replay", "Start or stop the buffer", "Start or stop recording"];
+                    model: [I18n.tr("Save replay"), I18n.tr("Start or stop the buffer"), I18n.tr("Start or stop recording")];
                     current-index <=> hk.action-index;
                 }
                 if hk.action-index == 0: HorizontalLayout {
                     spacing: 8px;
                     alignment: start;
-                    Label { text: "last"; }
+                    Label { text: I18n.tr("last"); }
                     SpinBox { width: 90px; minimum: 0; maximum: 60; value <=> hk.minutes; }
-                    Label { text: "min"; }
+                    Label { text: I18n.tr("min"); }
                     SpinBox { width: 90px; minimum: 0; maximum: 59; value <=> hk.seconds; }
-                    Label { text: "s"; }
+                    Label { text: I18n.tr("s"); }
                     Label {
-                        text: hk.minutes == 0 && hk.seconds == 0 ? "= whole buffer" : "";
+                        text: hk.minutes == 0 && hk.seconds == 0 ? I18n.tr("= whole buffer") : "";
                         color: Theme.text-faint;
                     }
                 }
@@ -212,35 +214,35 @@ export component SettingsPage inherits ScrollView {
                     clicked => { SettingsState.remove-hotkey(i); }
                 }
             }
-            AddButton { text: "Add hotkey"; clicked => { SettingsState.add-hotkey(); } }
-            Hint { text: "A save hotkey with 0 min 0 s saves everything the buffer holds. Longer lengths are capped by the buffer length below."; }
+            AddButton { text: I18n.tr("Add hotkey"); clicked => { SettingsState.add-hotkey(); } }
+            Hint { text: I18n.tr("A save hotkey with 0 min 0 s saves everything the buffer holds. Longer lengths are capped by the buffer length below."); }
         }
 
         SectionCard {
-            heading: "Quality";
-            subtitle: "Resolution follows the captured display. Presets set frame rate and bitrate.";
+            heading: I18n.tr("Quality");
+            subtitle: I18n.tr("Resolution follows the captured display. Presets set frame rate and bitrate.");
             HorizontalLayout {
                 spacing: 12px;
                 OptionCard {
-                    title: "Low";
-                    detail: "30 fps, 8 Mbps. Small files.";
+                    title: I18n.tr("Low");
+                    detail: I18n.tr("30 fps, 8 Mbps. Small files.");
                     selected: SettingsState.quality-index == 0;
                     clicked => { SettingsState.quality-index = 0; SettingsState.fps = 30; SettingsState.bitrate-kbps = 8000; }
                 }
                 OptionCard {
-                    title: "Standard";
-                    detail: "60 fps, 15 Mbps. Good for sharing.";
+                    title: I18n.tr("Standard");
+                    detail: I18n.tr("60 fps, 15 Mbps. Good for sharing.");
                     selected: SettingsState.quality-index == 1;
                     clicked => { SettingsState.quality-index = 1; SettingsState.fps = 60; SettingsState.bitrate-kbps = 15000; }
                 }
                 OptionCard {
-                    title: "High";
-                    detail: "60 fps, 30 Mbps. Best detail.";
+                    title: I18n.tr("High");
+                    detail: I18n.tr("60 fps, 30 Mbps. Best detail.");
                     selected: SettingsState.quality-index == 2;
                     clicked => { SettingsState.quality-index = 2; SettingsState.fps = 60; SettingsState.bitrate-kbps = 30000; }
                 }
                 OptionCard {
-                    title: "Custom";
+                    title: I18n.tr("Custom");
                     detail: "\{SettingsState.fps} fps, \{round(SettingsState.bitrate-kbps / 100) / 10} Mbps";
                     selected: SettingsState.quality-index == 3;
                     clicked => { SettingsState.quality-index = 3; }
@@ -249,20 +251,20 @@ export component SettingsPage inherits ScrollView {
             if SettingsState.quality-index == 3: HorizontalLayout {
                 spacing: 16px;
                 alignment: start;
-                Label { text: "Frame rate"; }
+                Label { text: I18n.tr("Frame rate"); }
                 SpinBox { width: 110px; minimum: 15; maximum: 240; value <=> SettingsState.fps; }
-                Label { text: "Bitrate (kbps)"; }
+                Label { text: I18n.tr("Bitrate (kbps)"); }
                 SpinBox { width: 130px; minimum: 1000; maximum: 200000; step-size: 1000; value <=> SettingsState.bitrate-kbps; }
             }
             Divider { }
             SettingRow {
-                title: "Encoder";
-                description: "Automatic prefers the GPU encoder and falls back to software.";
+                title: I18n.tr("Encoder");
+                description: I18n.tr("Automatic prefers the GPU encoder and falls back to software.");
                 ComboBox { width: 240px; model: SettingsState.encoder-names; current-index <=> SettingsState.encoder-index; }
             }
             SettingRow {
-                title: "Display";
-                description: "The screen that gets captured.";
+                title: I18n.tr("Display");
+                description: I18n.tr("The screen that gets captured.");
                 HorizontalLayout {
                     spacing: 6px;
                     ComboBox { width: 240px; model: SettingsState.display-names; current-index <=> SettingsState.display-index; }
@@ -270,51 +272,51 @@ export component SettingsPage inherits ScrollView {
                 }
             }
             SettingRow {
-                title: "Capture method";
-                description: "Windows Graphics Capture delivers every frame, also on high refresh displays. Desktop Duplication is the fallback and repeats frames under load.";
-                ComboBox { width: 240px; model: ["Desktop Duplication", "Windows Graphics Capture"]; current-index <=> SettingsState.capture-api-index; }
+                title: I18n.tr("Capture method");
+                description: I18n.tr("Windows Graphics Capture delivers every frame, also on high refresh displays. Desktop Duplication is the fallback and repeats frames under load.");
+                ComboBox { width: 240px; model: [I18n.tr("Desktop Duplication"), I18n.tr("Windows Graphics Capture")]; current-index <=> SettingsState.capture-api-index; }
             }
             SettingRow {
-                title: "Show cursor";
-                description: "Draw the mouse pointer into clips.";
+                title: I18n.tr("Show cursor");
+                description: I18n.tr("Draw the mouse pointer into clips.");
                 Toggle { checked <=> SettingsState.show-cursor; }
             }
         }
 
         SectionCard {
-            heading: "Replay buffer";
-            subtitle: "The last moments stay in memory and never touch the disk until you save.";
+            heading: I18n.tr("Replay buffer");
+            subtitle: I18n.tr("The last moments stay in memory and never touch the disk until you save.");
             SettingRow {
-                title: "Buffer length";
-                description: "How far back a save can reach. Longer buffers use more memory.";
+                title: I18n.tr("Buffer length");
+                description: I18n.tr("How far back a save can reach. Longer buffers use more memory.");
                 HorizontalLayout {
                     spacing: 6px;
                     SpinBox { width: 100px; minimum: 1; maximum: 3600; value <=> SettingsState.replay-length-value; }
-                    ComboBox { width: 110px; model: ["seconds", "minutes"]; current-index <=> SettingsState.replay-unit-index; }
+                    ComboBox { width: 110px; model: [I18n.tr("seconds"), I18n.tr("minutes")]; current-index <=> SettingsState.replay-unit-index; }
                 }
             }
             SettingRow {
-                title: "Memory cap";
-                description: "Upper bound in MB. The buffer shrinks to fit.";
+                title: I18n.tr("Memory cap");
+                description: I18n.tr("Upper bound in MB. The buffer shrinks to fit.");
                 SpinBox { width: 120px; minimum: 64; maximum: 32768; step-size: 64; value <=> SettingsState.memory-cap-mb; }
             }
             SettingRow {
-                title: "Start buffer on launch";
-                description: "Begin capturing as soon as OpenClips opens.";
+                title: I18n.tr("Start buffer on launch");
+                description: I18n.tr("Begin capturing as soon as OpenClips opens.");
                 Toggle { checked <=> SettingsState.start-on-launch; }
             }
         }
 
         SectionCard {
-            heading: "Storage";
-            subtitle: "Where clips, recordings and edits are written. Type a path or browse for a folder.";
+            heading: I18n.tr("Storage");
+            subtitle: I18n.tr("Where clips, recordings and edits are written. Type a path or browse for a folder.");
             SettingRow {
-                title: "Root folder";
-                description: "Everything goes under this folder.";
+                title: I18n.tr("Root folder");
+                description: I18n.tr("Everything goes under this folder.");
                 HorizontalLayout {
                     spacing: 6px;
                     LineEdit { width: 360px; text <=> SettingsState.clips-dir; }
-                    TextButton { text: "Browse"; icon: Icons.folder-open; has-icon: true; clicked => { SettingsState.browse-clips-dir(); } }
+                    TextButton { text: I18n.tr("Browse"); icon: Icons.folder-open; has-icon: true; clicked => { SettingsState.browse-clips-dir(); } }
                 }
             }
             VerticalLayout {
@@ -323,38 +325,38 @@ export component SettingsPage inherits ScrollView {
                 Hint { text: SettingsState.storage-line; }
             }
             SettingRow {
-                title: "Subfolders";
-                description: "Clips, recordings and edited files each get their own subfolder. Leave one empty to use the root.";
+                title: I18n.tr("Subfolders");
+                description: I18n.tr("Clips, recordings and edited files each get their own subfolder. Leave one empty to use the root.");
                 HorizontalLayout {
                     spacing: 6px;
-                    LineEdit { width: 120px; placeholder-text: "Clips"; text <=> SettingsState.clips-subfolder; }
-                    LineEdit { width: 120px; placeholder-text: "Recordings"; text <=> SettingsState.recording-subfolder; }
-                    LineEdit { width: 120px; placeholder-text: "Edited"; text <=> SettingsState.edited-subfolder; }
+                    LineEdit { width: 120px; placeholder-text: I18n.tr("Clips"); text <=> SettingsState.clips-subfolder; }
+                    LineEdit { width: 120px; placeholder-text: I18n.tr("Recordings"); text <=> SettingsState.recording-subfolder; }
+                    LineEdit { width: 120px; placeholder-text: I18n.tr("Edited"); text <=> SettingsState.edited-subfolder; }
                 }
             }
             SettingRow {
-                title: "File name pattern";
-                description: "Placeholders: {game} {date} {time}";
+                title: I18n.tr("File name pattern");
+                description: I18n.tr("Placeholders: {game} {date} {time}");
                 LineEdit { width: 260px; text <=> SettingsState.file-name-pattern; }
             }
         }
 
         SectionCard {
-            heading: "Audio";
-            subtitle: "Outputs are captured through loopback, inputs are microphones. Volume and mute apply live.";
+            heading: I18n.tr("Audio");
+            subtitle: I18n.tr("Outputs are captured through loopback, inputs are microphones. Volume and mute apply live.");
             SettingRow {
-                title: "Record audio";
-                description: "Turn off to save video only.";
+                title: I18n.tr("Record audio");
+                description: I18n.tr("Turn off to save video only.");
                 Toggle { checked <=> SettingsState.audio-enabled; }
             }
             SettingRow {
-                title: "Separate tracks";
-                description: "Desktop and microphone on their own tracks so you can mute one later.";
+                title: I18n.tr("Separate tracks");
+                description: I18n.tr("Desktop and microphone on their own tracks so you can mute one later.");
                 Toggle { checked <=> SettingsState.separate-tracks; enabled: SettingsState.audio-enabled; }
             }
             SettingRow {
-                title: "Audio bitrate";
-                description: "AAC kbps per track.";
+                title: I18n.tr("Audio bitrate");
+                description: I18n.tr("AAC kbps per track.");
                 SpinBox { width: 110px; minimum: 64; maximum: 320; step-size: 32; value <=> SettingsState.audio-bitrate-kbps; }
             }
             Divider { }
@@ -369,14 +371,14 @@ export component SettingsPage inherits ScrollView {
                     color: row.connected ? Theme.text : Theme.text-faint;
                 }
                 Text {
-                    text: row.connected ? row.name : row.name + " (not connected)";
+                    text: row.connected ? row.name : row.name + I18n.tr(" (not connected)");
                     width: 260px;
                     vertical-alignment: center;
                     font-size: 13px;
                     overflow: elide;
                     color: row.connected ? Theme.text : Theme.text-faint;
                 }
-                Badge { y: (parent.height - self.height) / 2; text: row.kind == "output" ? "Output" : (row.kind == "app" ? "App track" : "Input"); }
+                Badge { y: (parent.height - self.height) / 2; text: row.kind == "output" ? I18n.tr("Output") : (row.kind == "app" ? I18n.tr("App track") : I18n.tr("Input")); }
                 Slider {
                     y: (parent.height - self.height) / 2;
                     width: 150px;
@@ -403,12 +405,12 @@ export component SettingsPage inherits ScrollView {
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
-                TextButton { text: "Refresh devices"; icon: Icons.arrows-rotate; has-icon: true; clicked => { SettingsState.refresh-audio-devices(); } }
+                TextButton { text: I18n.tr("Refresh devices"); icon: Icons.arrows-rotate; has-icon: true; clicked => { SettingsState.refresh-audio-devices(); } }
             }
             Divider { }
             SettingRow {
-                title: "Application audio";
-                description: "Give one program (Discord, Spotify, a browser) its own track, so you can mute it in the editor. Pick a running program or type its executable.";
+                title: I18n.tr("Application audio");
+                description: I18n.tr("Give one program (Discord, Spotify, a browser) its own track, so you can mute it in the editor. Pick a running program or type its executable.");
                 HorizontalLayout {
                     spacing: 6px;
                     ComboBox {
@@ -419,26 +421,26 @@ export component SettingsPage inherits ScrollView {
                     }
                     IconButton { icon: Icons.arrows-rotate; filled: true; size: 32px; clicked => { SettingsState.refresh-apps(); } }
                     TextButton {
-                        text: "Add";
+                        text: I18n.tr("Add");
                         icon: Icons.plus;
                         has-icon: true;
                         enabled: SettingsState.app-candidates.length > 0;
                         clicked => { SettingsState.add-app-audio(SettingsState.app-candidates[SettingsState.app-candidate-index]); }
                     }
                     LineEdit { width: 140px; placeholder-text: "discord.exe"; text <=> SettingsState.new-app-exe; accepted => { SettingsState.add-app-audio(SettingsState.new-app-exe); } }
-                    TextButton { text: "Add typed"; clicked => { SettingsState.add-app-audio(SettingsState.new-app-exe); } }
+                    TextButton { text: I18n.tr("Add typed"); clicked => { SettingsState.add-app-audio(SettingsState.new-app-exe); } }
                 }
             }
-            Hint { text: "The first application track is left out of the default desktop output so it is not recorded twice. The program has to be running when capture starts; capture restarts on its own when it opens or closes."; }
+            Hint { text: I18n.tr("The first application track is left out of the default desktop output so it is not recorded twice. The program has to be running when capture starts; capture restarts on its own when it opens or closes."); }
         }
 
         SectionCard {
-            heading: "Games";
-            subtitle: "Capture only while a known game runs, with a profile per game. Names, actions and folders are editable.";
+            heading: I18n.tr("Games");
+            subtitle: I18n.tr("Capture only while a known game runs, with a profile per game. Names, actions and folders are editable.");
             SettingRow {
-                title: "Capture scope";
-                description: "Always capture, or only while one of the games below is running.";
-                ComboBox { width: 300px; model: ["Always capture the selected display", "Only while a known game is running"]; current-index <=> SettingsState.games-scope-index; }
+                title: I18n.tr("Capture scope");
+                description: I18n.tr("Always capture, or only while one of the games below is running.");
+                ComboBox { width: 300px; model: [I18n.tr("Always capture the selected display"), I18n.tr("Only while a known game is running")]; current-index <=> SettingsState.games-scope-index; }
             }
             Hint { text: SettingsState.running-games; }
             for profile in SettingsState.game-profiles: HorizontalLayout {
@@ -457,16 +459,16 @@ export component SettingsPage inherits ScrollView {
                     width: 190px;
                     spacing: 2px;
                     alignment: center;
-                    LineEdit { placeholder-text: "Display name"; text <=> profile.name; }
+                    LineEdit { placeholder-text: I18n.tr("Display name"); text <=> profile.name; }
                     Text { text: profile.exe; font-size: 11px; color: Theme.text-faint; overflow: elide; }
                 }
-                ComboBox { width: 150px; model: ["Replay buffer", "Full recording", "Do nothing"]; current-index <=> profile.action-index; }
+                ComboBox { width: 150px; model: [I18n.tr("Replay buffer"), I18n.tr("Full recording"), I18n.tr("Do nothing")]; current-index <=> profile.action-index; }
                 SpinBox { width: 90px; minimum: 0; maximum: 3600; value <=> profile.replay-seconds; }
-                LineEdit { width: 120px; placeholder-text: "Subfolder"; text <=> profile.subfolder; }
+                LineEdit { width: 120px; placeholder-text: I18n.tr("Subfolder"); text <=> profile.subfolder; }
                 ComboBox { width: 160px; model: SettingsState.profile-display-names; current-index <=> profile.display-index; }
                 IconButton { icon: Icons.trash; icon-color: Theme.danger; size: 32px; clicked => { SettingsState.remove-game(profile.exe); } }
             }
-            Hint { text: "Columns: name, action when the game starts, buffer length override in seconds (0 keeps the global one), clip subfolder, display."; }
+            Hint { text: I18n.tr("Columns: name, action when the game starts, buffer length override in seconds (0 keeps the global one), clip subfolder, display."); }
             Divider { }
             HorizontalLayout {
                 spacing: 8px;
@@ -478,7 +480,7 @@ export component SettingsPage inherits ScrollView {
                     enabled: SettingsState.running-known.length > 0;
                 }
                 TextButton {
-                    text: "Add running game";
+                    text: I18n.tr("Add running game");
                     icon: Icons.plus;
                     has-icon: true;
                     enabled: SettingsState.running-known.length > 0;
@@ -489,10 +491,10 @@ export component SettingsPage inherits ScrollView {
                 spacing: 8px;
                 alignment: start;
                 LineEdit { width: 200px; placeholder-text: "game.exe"; text <=> SettingsState.new-game-exe; }
-                LineEdit { width: 200px; placeholder-text: "Display name (optional)"; text <=> SettingsState.new-game-name; }
-                TextButton { text: "Add"; icon: Icons.plus; has-icon: true; clicked => { SettingsState.add-game(); } }
+                LineEdit { width: 200px; placeholder-text: I18n.tr("Display name (optional)"); text <=> SettingsState.new-game-name; }
+                TextButton { text: I18n.tr("Add"); icon: Icons.plus; has-icon: true; clicked => { SettingsState.add-game(); } }
                 TextButton {
-                    text: SettingsState.steam-busy ? "Asking Steam..." : "Suggest names from Steam";
+                    text: SettingsState.steam-busy ? I18n.tr("Asking Steam...") : I18n.tr("Suggest names from Steam");
                     icon: Icons.download;
                     has-icon: true;
                     kind: 3;
@@ -501,65 +503,70 @@ export component SettingsPage inherits ScrollView {
                 }
             }
             if SettingsState.games-message != "": Hint { text: SettingsState.games-message; color: Theme.text-muted; }
-            Hint { text: "Names come from the bundled database. The Steam lookup only runs when you press the button and fills empty names."; }
+            Hint { text: I18n.tr("Names come from the bundled database. The Steam lookup only runs when you press the button and fills empty names."); }
         }
 
         SectionCard {
-            heading: "General";
+            heading: I18n.tr("General");
             subtitle: "";
             SettingRow {
-                title: "Start minimized";
-                description: "Open straight into the tray.";
+                title: I18n.tr("Language");
+                description: I18n.tr("The interface language. Applied when you save.");
+                ComboBox { width: 200px; model: ["English", "Español", "Français", "Deutsch", "Русский", "Português", "Italiano"]; current-index <=> SettingsState.language-index; }
+            }
+            SettingRow {
+                title: I18n.tr("Start minimized");
+                description: I18n.tr("Open straight into the tray.");
                 Toggle { checked <=> SettingsState.start-minimized; }
             }
             SettingRow {
-                title: "Launch with Windows";
-                description: "Adds OpenClips to the current user's startup entries.";
+                title: I18n.tr("Launch with Windows");
+                description: I18n.tr("Adds OpenClips to the current user's startup entries.");
                 Toggle { checked <=> SettingsState.launch-on-startup; }
             }
             SettingRow {
-                title: "Animations";
-                description: "Short fades on hover, toggles and page changes. Off makes every change instant.";
+                title: I18n.tr("Animations");
+                description: I18n.tr("Short fades on hover, toggles and page changes. Off makes every change instant.");
                 Toggle { checked <=> SettingsState.animations; }
             }
             SettingRow {
-                title: "Sound when a clip is saved";
-                description: "A short click confirms the save, so you know the hotkey worked without looking.";
+                title: I18n.tr("Sound when a clip is saved");
+                description: I18n.tr("A short click confirms the save, so you know the hotkey worked without looking.");
                 Toggle { checked <=> SettingsState.clip-sound; }
             }
             SettingRow {
-                title: "Check for updates at start";
-                description: "Looks at the GitHub releases once when the app opens. A new version is downloaded in the background and installed on the next start, or right away from the banner.";
+                title: I18n.tr("Check for updates at start");
+                description: I18n.tr("Looks at the GitHub releases once when the app opens. A new version is downloaded in the background and installed on the next start, or right away from the banner.");
                 Toggle { checked <=> SettingsState.updates-check; }
             }
         }
 
         SectionCard {
-            heading: "Discord";
-            subtitle: "Shows \"Clipping <game>\" as your Discord activity while the buffer or a recording runs, like Medal does.";
+            heading: I18n.tr("Discord");
+            subtitle: I18n.tr("Shows \"Clipping <game>\" as your Discord activity while the buffer or a recording runs, like Medal does.");
             SettingRow {
-                title: "Discord Rich Presence";
-                description: "Turn off to show nothing in Discord.";
+                title: I18n.tr("Discord Rich Presence");
+                description: I18n.tr("Turn off to show nothing in Discord.");
                 Toggle { checked <=> SettingsState.discord-enabled; }
             }
             SettingRow {
-                title: "Show the game name";
-                description: "Off shows just \"Clipping\".";
+                title: I18n.tr("Show the game name");
+                description: I18n.tr("Off shows just \"Clipping\".");
                 Toggle { checked <=> SettingsState.discord-show-game; enabled: SettingsState.discord-enabled; }
             }
             SettingRow {
-                title: "Discord application id";
-                description: "Leave empty to use the built in OpenClips application. Paste your own Application ID from discord.com/developers to show a different name or artwork.";
-                LineEdit { width: 260px; placeholder-text: "Built in"; text <=> SettingsState.discord-client-id; enabled: SettingsState.discord-enabled; }
+                title: I18n.tr("Discord application id");
+                description: I18n.tr("Leave empty to use the built in OpenClips application. Paste your own Application ID from discord.com/developers to show a different name or artwork.");
+                LineEdit { width: 260px; placeholder-text: I18n.tr("Built in"); text <=> SettingsState.discord-client-id; enabled: SettingsState.discord-enabled; }
             }
         }
 
         SectionCard {
-            heading: "Status";
-            subtitle: "What capture is doing right now.";
+            heading: I18n.tr("Status");
+            subtitle: I18n.tr("What capture is doing right now.");
             SettingRow {
                 title: root.buffer-status;
-                description: root.buffer-active ? root.buffer-detail : "The replay buffer is stopped.";
+                description: root.buffer-active ? root.buffer-detail : I18n.tr("The replay buffer is stopped.");
                 Rectangle {
                     y: (parent.height - self.height) / 2;
                     width: 10px;
@@ -569,48 +576,48 @@ export component SettingsPage inherits ScrollView {
                 }
             }
             SettingRow {
-                title: "Encoder";
+                title: I18n.tr("Encoder");
                 description: root.encoder-name;
             }
             SettingRow {
-                title: "Game";
+                title: I18n.tr("Game");
                 description: root.detected-game;
             }
             SettingRow {
-                title: "Recording";
+                title: I18n.tr("Recording");
                 description: root.recording-status;
             }
         }
 
         SectionCard {
-            heading: "About";
+            heading: I18n.tr("About");
             subtitle: "OpenClips " + root.info.version + " for " + root.info.platform + ". MIT licensed, no cloud, no telemetry.";
             SettingRow {
-                title: "Version";
+                title: I18n.tr("Version");
                 description: root.info.version;
             }
             SettingRow {
-                title: "Config file";
+                title: I18n.tr("Config file");
                 description: root.info.config-path;
-                TextButton { text: "Open folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-config-dir(); } }
+                TextButton { text: I18n.tr("Open folder"); icon: Icons.folder-open; has-icon: true; clicked => { root.open-config-dir(); } }
             }
             SettingRow {
-                title: "Clips folder";
+                title: I18n.tr("Clips folder");
                 description: root.info.clips-dir;
-                TextButton { text: "Open folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-clips-dir(); } }
+                TextButton { text: I18n.tr("Open folder"); icon: Icons.folder-open; has-icon: true; clicked => { root.open-clips-dir(); } }
             }
             SettingRow {
-                title: "Logs";
+                title: I18n.tr("Logs");
                 description: root.info.log-dir;
-                TextButton { text: "Open folder"; icon: Icons.folder-open; has-icon: true; clicked => { root.open-logs-dir(); } }
+                TextButton { text: I18n.tr("Open folder"); icon: Icons.folder-open; has-icon: true; clicked => { root.open-logs-dir(); } }
             }
         }
 
         HorizontalLayout {
             alignment: end;
             spacing: 8px;
-            TextButton { text: "Revert"; icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
-            TextButton { text: "Save changes"; icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
+            TextButton { text: I18n.tr("Revert"); icon: Icons.rotate-left; has-icon: true; clicked => { SettingsState.revert(); } }
+            TextButton { text: I18n.tr("Save changes"); icon: Icons.check; has-icon: true; kind: 1; clicked => { SettingsState.save(); } }
         }
     }
 }

@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, IconData, Icons } from "icons.slint";
 
 /// A square button showing only an icon.
@@ -95,7 +96,7 @@ export component Toggle inherits Rectangle {
         spacing: 10px;
         alignment: end;
         Text {
-            text: root.checked ? "ON" : "OFF";
+            text: root.checked ? I18n.tr("ON") : I18n.tr("OFF");
             color: Theme.text-muted;
             font-size: 11px;
             font-weight: 700;
@@ -230,7 +231,7 @@ export component KeyPill inherits HorizontalLayout {
         Text {
             width: parent.width;
             height: parent.height;
-            text: "Press a key...";
+            text: I18n.tr("Press a key...");
             horizontal-alignment: center;
             vertical-alignment: center;
             font-size: 12px;

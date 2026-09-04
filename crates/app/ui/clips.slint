@@ -1,5 +1,6 @@
 import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, Icons } from "icons.slint";
 import { IconButton, TextButton, Notice } from "widgets.slint";
 import { ClipCard } from "types.slint";
@@ -104,7 +105,7 @@ component Card inherits Rectangle {
                 spacing: 8px;
                 alignment: start;
                 Icon { y: (parent.height - self.height) / 2; size: 13px; data: Icons.scissors; color: Theme.text; }
-                Text { text: "Open in editor"; font-size: 12px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                Text { text: I18n.tr("Open in editor"); font-size: 12px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
             }
         }
     }
@@ -127,7 +128,7 @@ export component ClipsPage inherits Rectangle {
             IconButton { icon: Icons.folder-open; filled: true; clicked => { LibraryState.open-folder(); } }
             ComboBox {
                 width: 150px;
-                model: ["All types", "Clips", "Recordings", "Edited"];
+                model: [I18n.tr("All types"), I18n.tr("Clips"), I18n.tr("Recordings"), I18n.tr("Edited")];
                 current-index <=> LibraryState.kind-index;
                 selected => { LibraryState.filter-changed(); }
             }
@@ -139,7 +140,7 @@ export component ClipsPage inherits Rectangle {
             }
             ComboBox {
                 width: 150px;
-                model: ["Newest first", "Oldest first", "Longest first", "Largest first"];
+                model: [I18n.tr("Newest first"), I18n.tr("Oldest first"), I18n.tr("Longest first"), I18n.tr("Largest first")];
                 current-index <=> LibraryState.sort-index;
                 selected => { LibraryState.filter-changed(); }
             }
@@ -157,7 +158,7 @@ export component ClipsPage inherits Rectangle {
                     Icon { y: (parent.height - self.height) / 2; size: 13px; data: Icons.magnifying-glass; color: Theme.text-muted; }
                     LineEdit {
                         horizontal-stretch: 1;
-                        placeholder-text: "Search";
+                        placeholder-text: I18n.tr("Search");
                         text <=> LibraryState.search;
                         edited => { LibraryState.filter-changed(); }
                     }
@@ -174,14 +175,14 @@ export component ClipsPage inherits Rectangle {
             spacing: 8px;
             Icon { x: (parent.width - self.width) / 2; size: 40px; data: Icons.film; color: Theme.text-faint; }
             Text {
-                text: "No clips yet";
+                text: I18n.tr("No clips yet");
                 horizontal-alignment: center;
                 font-size: 16px;
                 font-weight: 700;
                 color: Theme.text;
             }
             Text {
-                text: "Press the save hotkey while the buffer is running, or start a recording.";
+                text: I18n.tr("Press the save hotkey while the buffer is running, or start a recording.");
                 horizontal-alignment: center;
                 font-size: 13px;
                 color: Theme.text-muted;

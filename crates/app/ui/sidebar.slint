@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, IconData, Icons } from "icons.slint";
 
 export enum NavPage { home, clips, player, settings }
@@ -79,19 +80,19 @@ export component Sidebar inherits Rectangle {
 
         RailItem {
             icon: Icons.house;
-            label: "Home";
+            label: I18n.tr("Home");
             active: root.current == NavPage.home;
             clicked => { root.selected(NavPage.home); }
         }
         RailItem {
             icon: Icons.film;
-            label: "Clips";
+            label: I18n.tr("Clips");
             active: root.current == NavPage.clips || root.current == NavPage.player;
             clicked => { root.selected(NavPage.clips); }
         }
         RailItem {
             icon: Icons.gear;
-            label: "Settings";
+            label: I18n.tr("Settings");
             active: root.current == NavPage.settings;
             clicked => { root.selected(NavPage.settings); }
         }

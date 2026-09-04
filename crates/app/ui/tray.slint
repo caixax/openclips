@@ -1,3 +1,5 @@
+import { I18n } from "i18n.slint";
+
 export component TrayIcon inherits SystemTrayIcon {
     icon: @image-url("../assets/tray.png");
     tooltip: "OpenClips";
@@ -16,26 +18,26 @@ export component TrayIcon inherits SystemTrayIcon {
 
     Menu {
         MenuItem {
-            title: "Open OpenClips";
+            title: I18n.tr("Open OpenClips");
             activated => { root.open-window(); }
         }
         MenuSeparator { }
         MenuItem {
-            title: root.buffer-active ? "Stop replay buffer" : "Start replay buffer";
+            title: root.buffer-active ? I18n.tr("Stop replay buffer") : I18n.tr("Start replay buffer");
             activated => { root.toggle-buffer(); }
         }
         MenuItem {
-            title: "Save clip now";
+            title: I18n.tr("Save clip now");
             enabled: root.buffer-active;
             activated => { root.save-clip(); }
         }
         MenuItem {
-            title: root.recording-active ? "Stop recording" : "Start recording";
+            title: root.recording-active ? I18n.tr("Stop recording") : I18n.tr("Start recording");
             activated => { root.toggle-recording(); }
         }
         MenuSeparator { }
         MenuItem {
-            title: "Quit";
+            title: I18n.tr("Quit");
             activated => { root.quit(); }
         }
     }

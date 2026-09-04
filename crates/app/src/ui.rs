@@ -158,6 +158,10 @@ fn post(event: UiEvent) {
 
 pub fn build(ctx: Context) -> Result<App, AppError> {
     let tray = TrayIcon::new()?;
+    // The tray lives for the whole session; its menu is translated to the
+    // language at startup (a language change takes effect on the next start).
+    tray.global::<I18n>()
+        .on_tr(|text| crate::i18n::tr(&text).into());
     let shared: SharedRef = Rc::new(Shared {
         paths: ctx.paths,
         config: RefCell::new(ctx.config),
@@ -218,6 +222,11 @@ fn show_window(shared: &SharedRef) -> Result<(), AppError> {
 /// Builds the window and fills it from the shared state.
 fn create_window(shared: &SharedRef) -> Result<MainWindow, AppError> {
     let window = MainWindow::new()?;
+    // Every @tr-style string in the UI resolves through here against the
+    // language set at startup (and rebuilt on change).
+    window
+        .global::<I18n>()
+        .on_tr(|text| crate::i18n::tr(&text).into());
     window.set_info(AppInfo {
         version: APP_VERSION.into(),
         platform: Platform::current().name().into(),
@@ -287,6 +296,12 @@ fn apply_game(window: &MainWindow, shared: &SharedRef) {
     let icon = icon.and_then(|p| Image::load_from_path(&p).ok());
     window.set_has_game_icon(icon.is_some());
     window.set_game_icon(icon.unwrap_or_default());
+    // Only the "no game" placeholder is translated; real game names are not.
+    let name = if name == "No game detected" {
+        crate::i18n::tr(&name)
+    } else {
+        name
+    };
     window.set_detected_game(name.into());
 }
 
@@ -300,15 +315,18 @@ fn handle_event(shared: &SharedRef, event: UiEvent) {
                     }
                     let mut texts = shared.texts.borrow_mut();
                     texts.last_clip = clip.path.display().to_string();
-                    texts.save_status = format!(
-                        "Saved {} ({:.1} s, {:.1} MB)",
-                        file_name_of(&clip.path),
-                        clip.duration.as_secs_f64(),
-                        clip.bytes as f64 / (1024.0 * 1024.0)
-                    );
+                    texts.save_status = crate::i18n::tr("Saved {name} ({seconds} s, {mb} MB)")
+                        .replace("{name}", &file_name_of(&clip.path))
+                        .replace("{seconds}", &format!("{:.1}", clip.duration.as_secs_f64()))
+                        .replace(
+                            "{mb}",
+                            &format!("{:.1}", clip.bytes as f64 / (1024.0 * 1024.0)),
+                        );
                 }
                 Err(err) => {
-                    shared.texts.borrow_mut().save_status = format!("Could not save clip: {err}");
+                    shared.texts.borrow_mut().save_status =
+                        crate::i18n::tr("Could not save clip: {error}")
+                            .replace("{error}", &err.to_string());
                 }
             }
             if let Ok(clip) = &result {
@@ -324,16 +342,18 @@ fn handle_event(shared: &SharedRef, event: UiEvent) {
                 Ok(clip) => {
                     let mut texts = shared.texts.borrow_mut();
                     texts.last_recording = clip.path.display().to_string();
-                    texts.recording_message = format!(
-                        "Saved {} ({}, {:.1} MB)",
-                        file_name_of(&clip.path),
-                        format_duration(clip.duration),
-                        clip.bytes as f64 / (1024.0 * 1024.0)
-                    );
+                    texts.recording_message = crate::i18n::tr("Saved {name} ({duration}, {mb} MB)")
+                        .replace("{name}", &file_name_of(&clip.path))
+                        .replace("{duration}", &format_duration(clip.duration))
+                        .replace(
+                            "{mb}",
+                            &format!("{:.1}", clip.bytes as f64 / (1024.0 * 1024.0)),
+                        );
                 }
                 Err(err) => {
                     shared.texts.borrow_mut().recording_message =
-                        format!("Recording failed: {err}");
+                        crate::i18n::tr("Recording failed: {error}")
+                            .replace("{error}", &err.to_string());
                 }
             }
             if let Ok(clip) = &result {
@@ -349,18 +369,21 @@ fn handle_event(shared: &SharedRef, event: UiEvent) {
             let message = match &result {
                 Ok(clip) => {
                     let name = if overwrite {
-                        "the original file".to_owned()
+                        crate::i18n::tr("the original file")
                     } else {
                         file_name_of(&clip.path)
                     };
-                    format!(
-                        "Saved {} ({}, {:.1} MB)",
-                        name,
-                        format_duration(clip.duration),
-                        clip.bytes as f64 / (1024.0 * 1024.0)
-                    )
+                    crate::i18n::tr("Saved {name} ({duration}, {mb} MB)")
+                        .replace("{name}", &name)
+                        .replace("{duration}", &format_duration(clip.duration))
+                        .replace(
+                            "{mb}",
+                            &format!("{:.1}", clip.bytes as f64 / (1024.0 * 1024.0)),
+                        )
                 }
-                Err(err) => format!("Edit failed: {err}"),
+                Err(err) => {
+                    crate::i18n::tr("Edit failed: {error}").replace("{error}", &err.to_string())
+                }
             };
             if let Ok(clip) = &result {
                 let path = if overwrite {
@@ -683,7 +706,8 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         };
         let state = window.global::<SettingsState>();
         let current = PathBuf::from(state.get_clips_dir().as_str());
-        let mut dialog = rfd::FileDialog::new().set_title("Choose the clips folder");
+        let mut dialog =
+            rfd::FileDialog::new().set_title(crate::i18n::tr("Choose the clips folder"));
         if current.is_dir() {
             dialog = dialog.set_directory(&current);
         }
@@ -864,6 +888,7 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
         problems.push(err);
     }
     let mut rebind = shared.config.borrow().hotkeys_changed(&next);
+    let language_changed = shared.config.borrow().general.language != next.general.language;
     *shared.config.borrow_mut() = next.clone();
     if let Some(engine) = shared.engine.borrow_mut().as_mut() {
         match engine.apply_config(next.clone()) {
@@ -898,12 +923,36 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
 
     if problems.is_empty() {
         state.set_message_is_error(false);
-        state.set_message("Settings saved.".into());
+        state.set_message(crate::i18n::tr("Settings saved.").into());
     } else {
         state.set_message_is_error(true);
-        state.set_message(format!("Settings saved. {}", problems.join(" ")).into());
+        state.set_message(
+            crate::i18n::tr("Settings saved. {problems}")
+                .replace("{problems}", &problems.join(" "))
+                .into(),
+        );
     }
     info!("settings saved");
+
+    // The language is applied by rebuilding the window with the new catalog.
+    // Deferred so it runs after this callback returns, not mid frame.
+    if language_changed {
+        crate::i18n::set_language(next.general.language);
+        let s = shared.clone();
+        slint::Timer::single_shot(UNLOAD_DELAY, move || reload_window(&s));
+    }
+}
+
+/// Rebuilds the open window so every translated string is re-evaluated in the
+/// current language.
+fn reload_window(shared: &SharedRef) {
+    if shared.window.borrow().is_none() {
+        return;
+    }
+    unload_window(shared);
+    if let Err(err) = show_window(shared) {
+        error!("could not rebuild the window after a language change: {err}");
+    }
 }
 
 fn start_status_timer(shared: &SharedRef) {
@@ -959,7 +1008,9 @@ fn run_engine(
     let mut slot = shared.engine.borrow_mut();
     let Some(engine) = slot.as_mut() else {
         if let Some(window) = window {
-            window.set_capture_error("Capture is unavailable on this system.".into());
+            window.set_capture_error(
+                crate::i18n::tr("Capture is unavailable on this system.").into(),
+            );
         }
         return;
     };
@@ -996,11 +1047,12 @@ fn save_clip(shared: &SharedRef, hotkey_index: Option<usize>) {
         .map(|b| Duration::from_secs(u64::from(b.seconds)));
     let slot = shared.engine.borrow();
     let Some(engine) = slot.as_ref() else {
-        shared
-            .with_window(|w| w.set_capture_error("Capture is unavailable on this system.".into()));
+        shared.with_window(|w| {
+            w.set_capture_error(crate::i18n::tr("Capture is unavailable on this system.").into())
+        });
         return;
     };
-    shared.texts.borrow_mut().save_status = "Saving clip...".to_owned();
+    shared.texts.borrow_mut().save_status = crate::i18n::tr("Saving clip...");
     shared.with_window(|w| apply_texts(w, shared));
     engine.save_clip(length, Box::new(|result| post(UiEvent::ClipSaved(result))));
 }
@@ -1013,7 +1065,7 @@ fn refresh_status(shared: &SharedRef) {
     let Some(status) = status else {
         shared.with_window(|window| {
             window.set_buffer_active(false);
-            window.set_buffer_status("Unavailable".into());
+            window.set_buffer_status(crate::i18n::tr("Unavailable").into());
         });
         shared.tray.set_buffer_active(false);
         shared.tray.set_recording_active(false);
@@ -1035,12 +1087,15 @@ fn refresh_status(shared: &SharedRef) {
         recording,
     });
     if let RecordingState::Failed(reason) = &status.recording {
-        shared.texts.borrow_mut().recording_message = format!("Recording failed: {reason}");
+        shared.texts.borrow_mut().recording_message =
+            crate::i18n::tr("Recording failed: {error}").replace("{error}", reason);
     }
 
     shared.with_window(|window| {
         window.set_buffer_active(buffering);
-        window.set_buffer_label(if buffering { "Buffer on" } else { "Buffer off" }.into());
+        window.set_buffer_label(
+            crate::i18n::tr(if buffering { "Buffer on" } else { "Buffer off" }).into(),
+        );
         window.set_buffer_status(describe_buffer_state(&status).into());
         window.set_buffer_detail(describe_buffer(&status).into());
         window.set_encoder_name(
@@ -1054,9 +1109,9 @@ fn refresh_status(shared: &SharedRef) {
             if !notice.is_empty() {
                 notice.push(' ');
             }
-            notice.push_str(
+            notice.push_str(&crate::i18n::tr(
                 "The capture looks black. If the game runs in exclusive fullscreen, switch it to borderless windowed, or choose Windows Graphics Capture under Settings.",
-            );
+            ));
         }
         window.set_capture_notice(notice.into());
         window.set_recording_active(recording);
@@ -1069,9 +1124,9 @@ fn refresh_status(shared: &SharedRef) {
 
 fn describe_buffer_state(status: &EngineStatus) -> String {
     match &status.buffer {
-        BufferState::Stopped => "Stopped".to_owned(),
-        BufferState::Running => "Recording into memory".to_owned(),
-        BufferState::Failed(_) => "Failed".to_owned(),
+        BufferState::Stopped => crate::i18n::tr("Stopped"),
+        BufferState::Running => crate::i18n::tr("Recording into memory"),
+        BufferState::Failed(_) => crate::i18n::tr("Failed"),
     }
 }
 
@@ -1095,29 +1150,31 @@ fn describe_buffer(status: &EngineStatus) -> String {
         .unwrap_or_default();
     let audio = match status.audio_tracks {
         0 => String::new(),
-        1 => ", 1 audio track".to_owned(),
-        n => format!(", {n} audio tracks"),
+        1 => crate::i18n::tr(", 1 audio track"),
+        n => crate::i18n::tr(", {n} audio tracks").replace("{n}", &n.to_string()),
     };
-    format!(
-        "{available:.0} of {} s buffered, {:.0} MB in memory{resolution}{audio}",
-        status.replay_length.as_secs(),
-        stats.bytes as f64 / (1024.0 * 1024.0)
-    )
+    crate::i18n::tr("{available} of {total} s buffered, {mb} MB in memory{resolution}{audio}")
+        .replace("{available}", &format!("{available:.0}"))
+        .replace("{total}", &status.replay_length.as_secs().to_string())
+        .replace(
+            "{mb}",
+            &format!("{:.0}", stats.bytes as f64 / (1024.0 * 1024.0)),
+        )
+        .replace("{resolution}", &resolution)
+        .replace("{audio}", &audio)
 }
 
 fn describe_recording(state: &RecordingState) -> String {
     match state {
-        RecordingState::Idle => "Not recording".to_owned(),
-        RecordingState::Starting => "Starting...".to_owned(),
+        RecordingState::Idle => crate::i18n::tr("Not recording"),
+        RecordingState::Starting => crate::i18n::tr("Starting..."),
         RecordingState::Active { path, duration } => {
-            format!(
-                "Recording {} ({})",
-                file_name_of(path),
-                format_duration(*duration)
-            )
+            crate::i18n::tr("Recording {name} ({duration})")
+                .replace("{name}", &file_name_of(path))
+                .replace("{duration}", &format_duration(*duration))
         }
-        RecordingState::Finishing => "Finishing file...".to_owned(),
-        RecordingState::Failed(_) => "Failed".to_owned(),
+        RecordingState::Finishing => crate::i18n::tr("Finishing file..."),
+        RecordingState::Failed(_) => crate::i18n::tr("Failed"),
     }
 }
 
@@ -1213,7 +1270,7 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
         return;
     };
     let games = library.games();
-    let mut names: Vec<SharedString> = vec!["All games".into()];
+    let mut names: Vec<SharedString> = vec![crate::i18n::tr("All games").into()];
     names.extend(games.iter().map(|g| SharedString::from(g.as_str())));
     let selected = state.get_game_index().max(0) as usize;
     let filter = (selected > 0)
@@ -1251,8 +1308,8 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
     state.set_summary(
         match total {
             0 => String::new(),
-            1 => "1 clip".to_owned(),
-            n => format!("{n} clips"),
+            1 => crate::i18n::tr("1 clip"),
+            n => crate::i18n::tr("{n} clips").replace("{n}", &n.to_string()),
         }
         .into(),
     );
@@ -1312,9 +1369,16 @@ fn update_storage(window: &MainWindow, used: u64, clips_dir: &Path) {
             settings.set_storage_fraction(((total - free) as f64 / total as f64) as f32);
         }
         _ => {
-            window.set_storage_line(format!("{} used", format_size(used)).into());
-            settings
-                .set_storage_line(format!("{} of clips in this folder.", format_size(used)).into());
+            window.set_storage_line(
+                crate::i18n::tr("{size} used")
+                    .replace("{size}", &format_size(used))
+                    .into(),
+            );
+            settings.set_storage_line(
+                crate::i18n::tr("{size} of clips in this folder.")
+                    .replace("{size}", &format_size(used))
+                    .into(),
+            );
             settings.set_storage_fraction(0.0);
         }
     }
