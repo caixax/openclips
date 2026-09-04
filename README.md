@@ -19,7 +19,7 @@ OpenClips replaces tools like ShadowPlay, ReLive and Medal with a strict philoso
 
 ## Install
 
-Download `OpenClips-<version>-setup.exe` and run it. The installer is per user (no administrator prompt), puts the app under `%LOCALAPPDATA%\Programs\OpenClips` together with the GStreamer runtime it needs, and offers a desktop shortcut and a "launch when Windows starts" option. There is also a portable `OpenClips-<version>-win64.zip`: unzip anywhere and start `openclips.exe`. Uninstalling or deleting the folder leaves your clips, settings and logs where they are.
+Download `OpenClips-<version>-setup.exe` and run it. The installer is per user (no administrator prompt), asks for its language (preselecting the Windows one, and the app starts in that language the first time), puts the app under `%LOCALAPPDATA%\Programs\OpenClips` together with the GStreamer runtime it needs, and offers a desktop shortcut and a "launch when Windows starts" option. There is also a portable `OpenClips-<version>-win64.zip`: unzip anywhere and start `openclips.exe`. Uninstalling or deleting the folder leaves your clips, settings and logs where they are.
 
 Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clips`. `Alt+9` starts or stops the buffer, `Alt+0` starts or stops a full recording. Every key can be changed, and any number of extra keys can be added, in Settings.
 
@@ -59,7 +59,8 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 - Discord Rich Presence: "Clipping <game>" as your Discord activity while the buffer runs, with switches to hide the game or turn it off.
 - Dark, Medal style interface with its own title bar, a tray icon with the same actions, launch with Windows, and a single human readable config file. Closing the window destroys the whole UI (scene, renderer, thumbnails) while capture, hotkeys, Discord presence and the clip sound keep running from the tray; opening it again rebuilds it.
 - Interface in English, Spanish, French, German, Russian, Portuguese and Italian, picked under Settings, General.
-- An optional confirmation sound when a clip is saved (off by default, Settings, General).
+- A small notice at the bottom right of the screen when a clip is saved, saying how many seconds were clipped, without taking the focus away from the game (on by default), and an optional confirmation sound (off by default). Both under Settings, General.
+- One running copy: starting OpenClips again just brings the window of the running one back. Opening the app yourself always shows the window; only the Windows startup launch can go straight to the tray.
 - Short fades on hover, toggles and page changes, which can be switched off in Settings, General. Settings also shows the live capture status and an About section with the version and the config, clips and log folders.
 
 ## Roadmap
@@ -182,6 +183,10 @@ action = "buffer"         # buffer, recording or ignore
 
 [general]
 language = "en"           # en, es, fr, de, ru, pt or it
+launch_on_startup = false
+start_minimized = false   # tray only, for the Windows startup launch
+clip_sound = false
+clip_toast = true         # on screen notice when a clip is saved
 
 [updates]
 check = true              # look at GitHub releases once at start
