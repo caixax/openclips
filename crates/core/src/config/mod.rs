@@ -177,6 +177,28 @@ impl CaptureApi {
     }
 }
 
+/// How a source is captured. Display capture samples the desktop and can drop
+/// frames when the GPU is saturated; game capture injects OBS Studio's signed
+/// hook into the game and reads its real backbuffer, so it does not. Game
+/// capture is opt in per game because kernel anti-cheats (for example
+/// Vanguard) block all injection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMethod {
+    #[default]
+    Display,
+    Game,
+}
+
+impl CaptureMethod {
+    pub const fn label(self) -> &'static str {
+        match self {
+            CaptureMethod::Display => "Display capture",
+            CaptureMethod::Game => "Game capture (OBS hook)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
@@ -186,6 +208,8 @@ pub struct CaptureConfig {
     pub bitrate_kbps: u32,
     pub show_cursor: bool,
     pub api: CaptureApi,
+    /// Default capture method for games without a per game override.
+    pub method: CaptureMethod,
 }
 
 impl Default for CaptureConfig {
@@ -197,6 +221,7 @@ impl Default for CaptureConfig {
             bitrate_kbps: 20_000,
             show_cursor: false,
             api: CaptureApi::default(),
+            method: CaptureMethod::default(),
         }
     }
 }
@@ -367,6 +392,8 @@ pub struct GameProfile {
     pub replay_length_seconds: Option<u32>,
     pub subfolder: Option<String>,
     pub display: Option<DisplaySelection>,
+    /// None falls back to the global capture method.
+    pub capture_method: Option<CaptureMethod>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -417,6 +417,7 @@ mod tests {
                 replay_length_seconds: Some(120),
                 subfolder: Some("MyGame".to_owned()),
                 display: Some(DisplaySelection::Primary),
+                capture_method: None,
             }],
         };
         let processes = [
@@ -455,6 +456,7 @@ mod tests {
                 replay_length_seconds: None,
                 subfolder: None,
                 display: None,
+                capture_method: None,
             }],
         };
         let detected = detect(&[process(2, "hl2.exe", true)], &db(), &config);

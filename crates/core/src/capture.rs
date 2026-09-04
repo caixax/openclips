@@ -224,6 +224,10 @@ pub struct CaptureSettings {
     pub temp_dir: Option<PathBuf>,
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub audio_bitrate_kbps: u32,
+    /// When set, capture the game with this process id through the injected
+    /// hook instead of the display. Falls back to display capture when the
+    /// hook cannot start.
+    pub game_capture_pid: Option<u32>,
 }
 
 impl CaptureSettings {
@@ -244,6 +248,7 @@ impl CaptureSettings {
             temp_dir,
             audio_tracks: plan_audio_tracks(audio),
             audio_bitrate_kbps: audio.bitrate_kbps,
+            game_capture_pid: None,
         }
     }
 }
