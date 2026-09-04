@@ -3838,7 +3838,7 @@ dependencies = [
 
 [[package]]
 name = "openclips-app"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "chrono",
  "discord-rich-presence",
@@ -3863,7 +3863,7 @@ dependencies = [
 
 [[package]]
 name = "openclips-capture"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "gstreamer",
  "gstreamer-app",
@@ -3877,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "openclips-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "directories",
  "serde",
