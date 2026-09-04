@@ -57,6 +57,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 
 - Discord Rich Presence: "Clipping <game>" as your Discord activity while the buffer runs, with switches to hide the game or turn it off.
 - Dark, Medal style interface with its own title bar, a tray icon with the same actions, launch with Windows, and a single human readable config file.
+- An optional confirmation sound when a clip is saved (off by default, Settings, General).
 
 ## Roadmap
 
@@ -221,6 +222,8 @@ Under Settings, Audio, an application (`discord.exe`, a browser, a music player)
 OpenClips checks the GitHub releases once, when it starts, never while you play. If a newer version exists the installer is downloaded in the background, verified against the release's `SHA256SUMS.txt`, and a banner under the title bar tells you it is ready: it installs on the next start on its own, or right away with Install now. The installer restarts the app when it is done. A portable copy (the zip) only shows a link to the release page. The check can be switched off under Settings, General, and `[updates] repo = "owner/name"` in the config file points a fork at its own releases.
 
 Releases are cut from the Actions tab: the Release workflow takes the part of the version to bump (or an exact version), writes it into `Cargo.toml`, commits and tags `vX.Y.Z`, builds the installer and the zip with the GStreamer runtime, and publishes the GitHub release with checksums. Nothing is released on plain pushes.
+
+The same release can be cut from a Windows machine with NSIS and the GitHub CLI installed, which is much faster than the hosted runners: `scriptselease.bat -Patch` (or `-Minor`, `-Major`, `-V 0.3.0`) runs the tests, builds, tags, pushes and publishes; add `-NoPublish` to stop before pushing.
 
 ## Discord
 

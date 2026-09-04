@@ -42,4 +42,4 @@ Please include your Windows version, GPU and driver version, the GStreamer versi
 
 ## Releasing
 
-Releases are made from the Actions tab with the Release workflow. Choose patch, minor or major (or type an exact version); the workflow bumps the version in `Cargo.toml`, commits and tags it, builds the installer and the portable zip and publishes the GitHub release with a `SHA256SUMS.txt`. Installed copies of the app pick the release up on their next start.
+Releases are made from the Actions tab with the Release workflow. Choose patch, minor or major (or type an exact version); the workflow bumps the version in `Cargo.toml`, commits and tags it, builds the installer and the portable zip and publishes the GitHub release with a `SHA256SUMS.txt`. Installed copies of the app pick the release up on their next start. `scriptselease.bat -Patch` (or `-Minor`, `-Major`, `-V x.y.z`) does the same from a local Windows machine with NSIS and `gh` installed.
