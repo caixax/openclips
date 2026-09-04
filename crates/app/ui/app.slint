@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { Icon, IconData, Icons } from "icons.slint";
+import { IconButton, TextButton } from "widgets.slint";
 import { Sidebar, NavPage } from "sidebar.slint";
 import { TopBar } from "topbar.slint";
 import { HomePage } from "home.slint";
@@ -88,6 +89,30 @@ component TitleBar inherits Rectangle {
     }
 }
 
+/// Strip under the title bar that announces a downloaded update.
+component UpdateBanner inherits Rectangle {
+    in property <string> message;
+    in property <bool> ready;
+    in property <bool> has-page;
+    callback install();
+    callback dismiss();
+    callback open-page();
+    height: 40px;
+    background: Theme.accent.with-alpha(0.14);
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.divider; }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 8px;
+        spacing: 10px;
+        Icon { y: (parent.height - self.height) / 2; size: 14px; data: Icons.download; color: Theme.accent; }
+        Text { text: root.message; font-size: 12px; color: Theme.text; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+        if root.ready: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: "Install now"; kind: 1; clicked => { root.install(); } }
+        if root.ready: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: "On next start"; kind: 3; clicked => { root.dismiss(); } }
+        if !root.ready && root.has-page: TextButton { y: (parent.height - self.height) / 2; height: 28px; text: "Open release page"; kind: 1; clicked => { root.open-page(); } }
+        IconButton { y: (parent.height - self.height) / 2; size: 28px; icon-size: 11px; icon: Icons.xmark; clicked => { root.dismiss(); } }
+    }
+}
+
 /// Invisible strip along one edge that starts a system resize.
 component ResizeEdge inherits TouchArea {
     in property <int> hit;
@@ -153,6 +178,14 @@ export component MainWindow inherits Window {
     callback window-maximize();
     callback window-close();
 
+    in property <string> update-message;
+    in property <bool> update-ready;
+    in property <string> update-page;
+    callback install-update();
+    callback dismiss-update();
+    callback open-update-page();
+    callback update-pending(string);
+
     in-out property <NavPage> page: NavPage.home;
     property <length> edge: 6px;
 
@@ -163,6 +196,14 @@ export component MainWindow inherits Window {
             minimize => { root.window-minimize(); }
             maximize => { root.window-maximize(); }
             close => { root.window-close(); }
+        }
+        if root.update-message != "": UpdateBanner {
+            message: root.update-message;
+            ready: root.update-ready;
+            has-page: root.update-page != "";
+            install => { root.install-update(); }
+            dismiss => { root.dismiss-update(); }
+            open-page => { root.open-update-page(); }
         }
         HorizontalLayout {
             Sidebar {

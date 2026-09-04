@@ -13,6 +13,7 @@ mod shell;
 mod startup;
 mod steam;
 mod ui;
+mod updater;
 
 use std::process::ExitCode;
 
@@ -60,6 +61,10 @@ fn run() -> Result<(), AppError> {
     );
 
     let (config, startup_warning) = load_config(&paths);
+    if config.updates.check && updater::apply_pending_at_start(&paths) {
+        info!("handing over to the installer");
+        return Ok(());
+    }
     if config.general.launch_on_startup
         && !startup::is_enabled()
         && let Err(err) = startup::apply(true)

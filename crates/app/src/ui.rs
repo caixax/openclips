@@ -18,6 +18,7 @@ use crate::library::{CardFilter, CardSort, LibraryService, format_duration, form
 use crate::player::PlayerController;
 use crate::settings;
 use crate::shell;
+use crate::updater::{self, UpdateEvent};
 use openclips_capture::TrimJob;
 use openclips_core::config::GameProfile;
 use openclips_core::config::{HotkeyActionKind, HotkeyBinding};
@@ -25,6 +26,7 @@ use openclips_core::games::auto_capture;
 use openclips_core::library::ClipKind;
 use openclips_core::library::ClipRecord;
 use openclips_core::trim::{COMPRESS_PRESETS, TrimMode, TrimRange, edited_path};
+use openclips_core::update::PendingUpdate;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
 mod generated {
@@ -67,6 +69,7 @@ struct Shared {
     games: RefCell<Option<GameService>>,
     ticks: RefCell<u32>,
     discord: DiscordPresence,
+    pending_update: RefCell<Option<PendingUpdate>>,
 }
 
 type SharedRef = Rc<Shared>;
@@ -95,6 +98,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         games: RefCell::new(None),
         ticks: RefCell::new(0),
         discord: DiscordPresence::start(),
+        pending_update: RefCell::new(None),
     });
     init_library_and_player(&window, &shared);
     init_games(&shared);
@@ -130,6 +134,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
     }
     poll_games(&shared, &window);
     refresh_status(&window, &tray, &shared);
+    wire_updates(&window, &shared);
 
     Ok(App {
         window,
@@ -165,6 +170,95 @@ fn keys_of(binding: Option<&HotkeyBinding>) -> ModelRc<SharedString> {
         Some(b) => settings::key_parts(b.binding),
         None => ModelRc::new(VecModel::from(vec![SharedString::from("none")])),
     }
+}
+
+/// The update banner: the check runs once at start, the installer is
+/// fetched in the background and runs on the next start unless the user
+/// presses Install now.
+fn wire_updates(window: &MainWindow, shared: &SharedRef) {
+    let (s, w) = (shared.clone(), window.as_weak());
+    window.on_install_update(move || {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let pending = s.pending_update.borrow().clone();
+        let Some(pending) = pending else {
+            return;
+        };
+        match updater::install_now(&s.paths, &pending) {
+            Ok(()) => {
+                info!("installing update {} now", pending.version);
+                if let Err(err) = slint::quit_event_loop() {
+                    error!("could not stop the event loop: {err}");
+                }
+            }
+            Err(err) => {
+                window.set_update_message(format!("Update failed: {err}").into());
+                window.set_update_ready(false);
+            }
+        }
+    });
+    let s = shared.clone();
+    window.on_update_pending(move |_version| {
+        *s.pending_update.borrow_mut() = PENDING.with(|slot| slot.borrow_mut().take());
+    });
+    let w = window.as_weak();
+    window.on_dismiss_update(move || {
+        if let Some(window) = w.upgrade() {
+            window.set_update_message("".into());
+        }
+    });
+    let w = window.as_weak();
+    window.on_open_update_page(move || {
+        if let Some(window) = w.upgrade() {
+            shell::open_url(&window.get_update_page());
+        }
+    });
+
+    let w = window.as_weak();
+    let config = shared.config.borrow().updates.clone();
+    updater::spawn_check(shared.paths.clone(), config, move |event| {
+        let _ = w.upgrade_in_event_loop(move |window| apply_update_event(&window, event));
+    });
+}
+
+fn apply_update_event(window: &MainWindow, event: UpdateEvent) {
+    match event {
+        UpdateEvent::Downloading { version } => {
+            window.set_update_ready(false);
+            window.set_update_page("".into());
+            window.set_update_message(
+                format!("OpenClips {version} is being downloaded in the background.").into(),
+            );
+        }
+        UpdateEvent::Ready(pending) => {
+            window.set_update_page(pending.release_url.clone().into());
+            window.set_update_message(
+                format!(
+                    "OpenClips {} is ready. It installs on the next start, or now if you prefer.",
+                    pending.version
+                )
+                .into(),
+            );
+            window.set_update_ready(true);
+            let version = pending.version.clone();
+            PENDING.with(|slot| *slot.borrow_mut() = Some(pending));
+            window.invoke_update_pending(version.into());
+        }
+        UpdateEvent::Available { version, url } => {
+            window.set_update_ready(false);
+            window.set_update_page(url.into());
+            window.set_update_message(
+                format!("OpenClips {version} is available. This portable copy does not update itself; download it from the release page.").into(),
+            );
+        }
+    }
+}
+
+thread_local! {
+    /// The downloaded update, handed from the event to the Shared state
+    /// through the `update-pending` callback (both live on the UI thread).
+    static PENDING: RefCell<Option<PendingUpdate>> = const { RefCell::new(None) };
 }
 
 fn wire_folders(window: &MainWindow, shared: &SharedRef) {

@@ -220,6 +220,7 @@ pub fn populate(
     state.set_memory_cap_mb(config.replay.memory_cap_mb as i32);
     state.set_start_on_launch(config.replay.start_on_launch);
     state.set_start_minimized(config.general.start_minimized);
+    state.set_updates_check(config.updates.check);
     state.set_discord_enabled(config.discord.enabled);
     state.set_discord_show_game(config.discord.show_game);
     state.set_discord_client_id(config.discord.client_id.clone().into());
@@ -412,6 +413,7 @@ pub fn collect(
     config.replay.memory_cap_mb = state.get_memory_cap_mb().max(1) as u32;
     config.replay.start_on_launch = state.get_start_on_launch();
     config.general.start_minimized = state.get_start_minimized();
+    config.updates.check = state.get_updates_check();
     config.discord.enabled = state.get_discord_enabled();
     config.discord.show_game = state.get_discord_show_game();
     config.discord.client_id = state.get_discord_client_id().trim().to_owned();

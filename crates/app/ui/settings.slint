@@ -21,6 +21,7 @@ export global SettingsState {
     in-out property <int> memory-cap-mb: 1024;
     in-out property <bool> start-on-launch: true;
     in-out property <bool> start-minimized: false;
+    in-out property <bool> updates-check: true;
     in-out property <bool> discord-enabled: true;
     in-out property <bool> discord-show-game: true;
     in-out property <string> discord-client-id;
@@ -502,6 +503,11 @@ export component SettingsPage inherits ScrollView {
                 title: "Launch with Windows";
                 description: "Adds OpenClips to the current user's startup entries.";
                 Toggle { checked <=> SettingsState.launch-on-startup; }
+            }
+            SettingRow {
+                title: "Check for updates at start";
+                description: "Looks at the GitHub releases once when the app opens. A new version is downloaded in the background and installed on the next start, or right away from the banner.";
+                Toggle { checked <=> SettingsState.updates-check; }
             }
         }
 

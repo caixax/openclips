@@ -22,6 +22,23 @@ pub fn open_folder(path: &Path) {
     }
 }
 
+/// Opens a web page in the default browser.
+pub fn open_url(url: &str) {
+    if !url.starts_with("https://") {
+        return;
+    }
+    let result = if cfg!(target_os = "windows") {
+        Command::new("cmd").args(["/C", "start", "", url]).spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).spawn()
+    } else {
+        Command::new("xdg-open").arg(url).spawn()
+    };
+    if let Err(err) = result {
+        warn!("could not open {url}: {err}");
+    }
+}
+
 /// Opens the file manager with `path` selected.
 pub fn reveal_file(path: &Path) {
     let result = if cfg!(target_os = "windows") {
