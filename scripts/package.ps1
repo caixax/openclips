@@ -29,6 +29,10 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
+# Make cargo find GStreamer wherever it is installed on this machine (also
+# sets GSTREAMER_1_0_ROOT_MSVC_X86_64, used below to bundle the runtime).
+. (Join-Path $PSScriptRoot "gstreamer-env.ps1")
+
 $version = (Select-String -Path "Cargo.toml" -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 $name = "OpenClips-$version-win64"
 $stage = Join-Path $repo "dist\$name"

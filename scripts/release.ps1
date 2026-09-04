@@ -46,6 +46,9 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
+# Make cargo find GStreamer wherever it is installed on this machine.
+. (Join-Path $PSScriptRoot "gstreamer-env.ps1")
+
 function Step($text) { Write-Host "`n== $text" -ForegroundColor Cyan }
 function Run($command) {
     Write-Host "> $command" -ForegroundColor DarkGray
