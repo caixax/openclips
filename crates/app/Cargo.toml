@@ -18,6 +18,7 @@ openclips-core.workspace = true
 openclips-capture.workspace = true
 slint.workspace = true
 raw-window-handle.workspace = true
+discord-rich-presence.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 global-hotkey.workspace = true

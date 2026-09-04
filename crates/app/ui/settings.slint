@@ -21,6 +21,9 @@ export global SettingsState {
     in-out property <int> memory-cap-mb: 1024;
     in-out property <bool> start-on-launch: true;
     in-out property <bool> start-minimized: false;
+    in-out property <bool> discord-enabled: true;
+    in-out property <bool> discord-show-game: true;
+    in-out property <string> discord-client-id;
 
     in-out property <string> clips-dir;
     in-out property <string> file-name-pattern;
@@ -499,6 +502,26 @@ export component SettingsPage inherits ScrollView {
                 title: "Launch with Windows";
                 description: "Adds OpenClips to the current user's startup entries.";
                 Toggle { checked <=> SettingsState.launch-on-startup; }
+            }
+        }
+
+        SectionCard {
+            heading: "Discord";
+            subtitle: "Shows \"Clipping <game>\" as your Discord activity while the buffer or a recording runs, like Medal does.";
+            SettingRow {
+                title: "Discord Rich Presence";
+                description: "Turn off to show nothing in Discord.";
+                Toggle { checked <=> SettingsState.discord-enabled; }
+            }
+            SettingRow {
+                title: "Show the game name";
+                description: "Off shows just \"Clipping\".";
+                Toggle { checked <=> SettingsState.discord-show-game; enabled: SettingsState.discord-enabled; }
+            }
+            SettingRow {
+                title: "Discord application id";
+                description: "Discord only accepts a registered application. Create one named OpenClips at discord.com/developers, copy its Application ID here.";
+                LineEdit { width: 260px; placeholder-text: "Application ID"; text <=> SettingsState.discord-client-id; enabled: SettingsState.discord-enabled; }
             }
         }
 

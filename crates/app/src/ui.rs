@@ -9,6 +9,7 @@ use openclips_core::config::{AppPaths, Config};
 use slint::{CloseRequestResponse, ComponentHandle, Weak};
 use tracing::{error, info, warn};
 
+use crate::discord::{DiscordPresence, PresenceState};
 use crate::engine::{BufferState, Engine, EngineStatus, RecordingState, file_name_of};
 use crate::error::AppError;
 use crate::games::GameService;
@@ -65,6 +66,7 @@ struct Shared {
     player: RefCell<Option<PlayerController>>,
     games: RefCell<Option<GameService>>,
     ticks: RefCell<u32>,
+    discord: DiscordPresence,
 }
 
 type SharedRef = Rc<Shared>;
@@ -92,6 +94,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         player: RefCell::new(None),
         games: RefCell::new(None),
         ticks: RefCell::new(0),
+        discord: DiscordPresence::start(),
     });
     init_library_and_player(&window, &shared);
     init_games(&shared);
@@ -734,6 +737,7 @@ fn refresh_status(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
         window.set_buffer_status("Unavailable".into());
         tray.set_buffer_active(false);
         tray.set_recording_active(false);
+        shared.discord.update(PresenceState::default());
         return;
     };
     let status = engine.status();
@@ -764,6 +768,13 @@ fn refresh_status(window: &MainWindow, tray: &TrayIcon, shared: &SharedRef) {
     );
     window.set_recording_active(recording);
     tray.set_recording_active(recording);
+    let game = window.get_detected_game();
+    shared.discord.update(PresenceState {
+        config: shared.config.borrow().discord.clone(),
+        game: (game != "No game detected" && !game.is_empty()).then(|| game.to_string()),
+        buffering,
+        recording,
+    });
     window.set_recording_status(describe_recording(&status.recording).into());
     if let RecordingState::Failed(reason) = &status.recording {
         window.set_recording_message(format!("Recording failed: {reason}").into());
