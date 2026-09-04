@@ -520,8 +520,8 @@ export component SettingsPage inherits ScrollView {
             }
             SettingRow {
                 title: "Discord application id";
-                description: "Discord only accepts a registered application. Create one named OpenClips at discord.com/developers, copy its Application ID here.";
-                LineEdit { width: 260px; placeholder-text: "Application ID"; text <=> SettingsState.discord-client-id; enabled: SettingsState.discord-enabled; }
+                description: "Leave empty to use the built in OpenClips application. Paste your own Application ID from discord.com/developers to show a different name or artwork.";
+                LineEdit { width: 260px; placeholder-text: "Built in"; text <=> SettingsState.discord-client-id; enabled: SettingsState.discord-enabled; }
             }
         }
 

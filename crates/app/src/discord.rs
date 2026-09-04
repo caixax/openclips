@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use discord_rich_presence::activity::{Activity, Assets, Timestamps};
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use openclips_core::config::DiscordConfig;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 const RETRY_AFTER: Duration = Duration::from_secs(15);
 const IDLE_TICK: Duration = Duration::from_secs(5);
@@ -25,9 +25,7 @@ pub struct PresenceState {
 
 impl PresenceState {
     fn wanted(&self) -> bool {
-        self.config.enabled
-            && !self.config.client_id.trim().is_empty()
-            && (self.buffering || self.recording)
+        self.config.enabled && (self.buffering || self.recording)
     }
 
     fn details(&self) -> String {
@@ -104,7 +102,7 @@ fn run(receiver: Receiver<PresenceState>) {
             continue;
         }
 
-        let client_id = current.config.client_id.trim().to_owned();
+        let client_id = current.config.effective_client_id().to_owned();
         if connection
             .as_ref()
             .is_some_and(|c| c.client_id != client_id)
@@ -126,7 +124,7 @@ fn run(receiver: Receiver<PresenceState>) {
                 }
                 Err(err) => {
                     if !failed_once {
-                        debug!("Discord is not reachable ({err}); retrying quietly");
+                        warn!("Discord is not reachable ({err}); retrying quietly");
                         failed_once = true;
                     }
                     next_attempt = Instant::now() + RETRY_AFTER;
@@ -152,7 +150,7 @@ fn run(receiver: Receiver<PresenceState>) {
         match result {
             Ok(()) => shown = Some(signature),
             Err(err) => {
-                debug!("Discord presence update failed ({err}); reconnecting later");
+                warn!("Discord presence update failed ({err}); reconnecting later");
                 connection = None;
                 shown = None;
                 next_attempt = Instant::now() + RETRY_AFTER;
@@ -180,10 +178,7 @@ mod tests {
     #[test]
     fn presence_text_follows_settings() {
         let mut state = PresenceState {
-            config: DiscordConfig {
-                client_id: "123".to_owned(),
-                ..DiscordConfig::default()
-            },
+            config: DiscordConfig::default(),
             game: Some("Roblox".to_owned()),
             buffering: true,
             recording: false,
