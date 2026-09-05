@@ -33,7 +33,9 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 - Full session recordings written as fragmented MP4, so a crash still leaves a playable file.
 - Windows Graphics Capture (default) or Desktop Duplication, cursor on or off, any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
 - Game capture, opt in per game, that reads the game's real frames through OBS Studio's capture hook instead of sampling the desktop, so it does not drop frames when the GPU is saturated (see [Game capture](#game-capture)).
-- Hotkeys are a key plus an action: save the last N seconds (one key for 15 seconds, another for two minutes), start or stop the buffer, start or stop recording. As many as you like.
+- Hotkeys are a key plus an action: save the last N seconds (one key for 15 seconds, another for two minutes), start or stop the buffer, start or stop recording. As many as you like. The buffer grows on its own to fit the longest save key, and with per game capture the save key only fires while the game is in front.
+- A first start walkthrough: the clip key, whether to wait for a game or record the display all the time, how far back a clip reaches and where clips go. Every answer can be changed later in Settings.
+- Stretch to the display (Settings, Capture): games running in a 4:3 or other narrow fullscreen mode are scaled to the display's desktop resolution, so the clip looks like the stretched picture on the monitor instead of a narrow one.
 
 **Audio**
 
@@ -128,6 +130,7 @@ encoder = "auto"        # auto, nvenc, quick_sync, amf, software
 fps = 60
 bitrate_kbps = 20000
 show_cursor = false
+stretch = false               # scale 4:3 fullscreen modes to the desktop resolution
 api = "graphics_capture"      # or desktop_duplication
 method = "display"            # default capture method: display or game (see Game capture)
 
@@ -187,6 +190,7 @@ launch_on_startup = false
 start_minimized = false   # tray only, for the Windows startup launch
 clip_sound = false
 clip_toast = true         # on screen notice when a clip is saved
+intro_done = true         # false shows the first start walkthrough again
 
 [updates]
 check = true              # look at GitHub releases once at start
