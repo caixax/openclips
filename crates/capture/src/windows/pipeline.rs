@@ -434,7 +434,17 @@ fn build_display_head(
     fps: i32,
 ) -> Result<Vec<gst::Element>, CaptureError> {
     let src = make("d3d11screencapturesrc")?;
-    src.set_property("show-cursor", settings.show_cursor);
+    // Desktop Duplication draws the pointer itself and GStreamer 1.28 reads
+    // past the desktop image in that code (ProcessMonoMask) when a game
+    // changes the display mode, which kills the process. Graphics Capture
+    // leaves the pointer to the compositor, so it is only honoured there.
+    let draw_cursor = settings.show_cursor && settings.api != CaptureApi::DesktopDuplication;
+    if settings.show_cursor && !draw_cursor {
+        warn!(
+            "the cursor is left out of Desktop Duplication captures (GStreamer crashes drawing it on display mode changes)"
+        );
+    }
+    src.set_property("show-cursor", draw_cursor);
     // The yellow capture border Windows draws for Graphics Capture.
     super::props::set_bool(&src, "show-border", false);
     let api = match settings.api {
