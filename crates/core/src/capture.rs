@@ -220,6 +220,8 @@ pub struct CaptureSettings {
     pub keyframe_interval: u32,
     pub show_cursor: bool,
     pub api: CaptureApi,
+    /// Scale frames to the captured display's desktop resolution.
+    pub stretch: bool,
     /// Optional directory for backend scratch files, for example a RAM disk.
     pub temp_dir: Option<PathBuf>,
     pub audio_tracks: Vec<AudioTrackPlan>,
@@ -245,6 +247,7 @@ impl CaptureSettings {
             keyframe_interval: config.fps.max(1),
             show_cursor: config.show_cursor,
             api: config.api,
+            stretch: config.stretch,
             temp_dir,
             audio_tracks: plan_audio_tracks(audio),
             audio_bitrate_kbps: audio.bitrate_kbps,

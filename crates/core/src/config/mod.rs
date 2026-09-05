@@ -134,6 +134,9 @@ pub struct GeneralConfig {
     pub animations: bool,
     /// Interface language.
     pub language: Language,
+    /// The first start walkthrough was finished or skipped. Defaults to
+    /// true so existing installs never see it; a fresh install clears it.
+    pub intro_done: bool,
 }
 
 impl Default for GeneralConfig {
@@ -145,6 +148,7 @@ impl Default for GeneralConfig {
             clip_toast: true,
             animations: true,
             language: Language::default(),
+            intro_done: true,
         }
     }
 }
@@ -290,6 +294,9 @@ pub struct CaptureConfig {
     pub api: CaptureApi,
     /// Default capture method for games without a per game override.
     pub method: CaptureMethod,
+    /// Scale every frame to the display's desktop resolution, so a 4:3 game
+    /// that the monitor stretches to 16:9 comes out stretched in the clip too.
+    pub stretch: bool,
 }
 
 impl Default for CaptureConfig {
@@ -302,6 +309,7 @@ impl Default for CaptureConfig {
             show_cursor: false,
             api: CaptureApi::default(),
             method: CaptureMethod::default(),
+            stretch: false,
         }
     }
 }
