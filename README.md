@@ -8,6 +8,9 @@
 
 <p align="center"><a href="#install">Install</a> · <a href="#features">Features</a> · <a href="#building">Building</a> · <a href="#configuration">Configuration</a> · <a href="#architecture">Architecture</a> · <a href="#roadmap">Roadmap</a></p>
 
+<img width="1180" height="740" alt="image" src="https://github.com/user-attachments/assets/66568a9b-c46d-4eba-8af6-53b646689852" />
+
+
 ## Why
 
 OpenClips replaces tools like ShadowPlay, ReLive and Medal with a strict philosophy:
