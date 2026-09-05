@@ -7,8 +7,8 @@ use std::mem::size_of;
 use openclips_core::capture::MonitorInfo;
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
-    HDC, HMONITOR, MONITORINFOEXW,
+    DEVMODEW, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, ENUM_REGISTRY_SETTINGS,
+    EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::core::{BOOL, PCWSTR};
 
@@ -61,6 +61,32 @@ pub fn find_by_id(id: &str) -> Option<Monitor> {
     enumerate().into_iter().find(|m| m.info.id == id)
 }
 
+/// The desktop resolution stored for a display, which stays the same while
+/// a fullscreen game switches the display to a lower mode.
+pub fn desktop_size(device: &str) -> Option<(u32, u32)> {
+    let mode = display_settings(device, ENUM_REGISTRY_SETTINGS)?;
+    (mode.dmPelsWidth > 0 && mode.dmPelsHeight > 0).then_some((mode.dmPelsWidth, mode.dmPelsHeight))
+}
+
+/// The primary display's device name.
+pub fn primary_device() -> Option<String> {
+    enumerate()
+        .into_iter()
+        .find(|m| m.info.primary)
+        .map(|m| m.info.id)
+}
+
+fn display_settings(device: &str, which: ENUM_DISPLAY_SETTINGS_MODE) -> Option<DEVMODEW> {
+    let wide: Vec<u16> = device.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut mode = DEVMODEW {
+        dmSize: size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    // SAFETY: `wide` is null terminated and `mode` is a valid DEVMODEW.
+    let ok = unsafe { EnumDisplaySettingsW(PCWSTR(wide.as_ptr()), which, &mut mode) };
+    ok.as_bool().then_some(mode)
+}
+
 unsafe extern "system" fn collect(
     handle: HMONITOR,
     _hdc: HDC,
@@ -79,19 +105,9 @@ unsafe extern "system" fn collect(
 }
 
 fn refresh_rate(device: &str) -> u32 {
-    let wide: Vec<u16> = device.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut mode = DEVMODEW {
-        dmSize: size_of::<DEVMODEW>() as u16,
-        ..Default::default()
-    };
-    // SAFETY: `wide` is null terminated and `mode` is a valid DEVMODEW.
-    let ok =
-        unsafe { EnumDisplaySettingsW(PCWSTR(wide.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode) };
-    if ok.as_bool() {
-        mode.dmDisplayFrequency
-    } else {
-        0
-    }
+    display_settings(device, ENUM_CURRENT_SETTINGS)
+        .map(|mode| mode.dmDisplayFrequency)
+        .unwrap_or(0)
 }
 
 fn friendly_name(device: &str, primary: bool) -> String {

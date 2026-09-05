@@ -316,10 +316,21 @@ fn build(
         };
 
     let convert = make("d3d11convert")?;
-    let nv12_caps = gst::Caps::builder("video/x-raw")
+    let mut nv12_caps = gst::Caps::builder("video/x-raw")
         .features(["memory:D3D11Memory"])
-        .field("format", "NV12")
-        .build();
+        .field("format", "NV12");
+    // Stretching: every frame is scaled to the display's desktop size, so a
+    // 4:3 fullscreen mode fills the 16:9 frame the way the monitor shows it.
+    if settings.stretch
+        && let Some((width, height)) = stretch_target(&settings.display)
+    {
+        info!("stretching frames to {width}x{height}");
+        super::props::set_bool(&convert, "add-borders", false);
+        nv12_caps = nv12_caps
+            .field("width", width as i32)
+            .field("height", height as i32);
+    }
+    let nv12_caps = nv12_caps.build();
     let nv12_filter = make("capsfilter")?;
     nv12_filter.set_property("caps", &nv12_caps);
 
@@ -404,6 +415,16 @@ fn build(
         source_names: Arc::new(source_names),
         game_source,
     })
+}
+
+/// The desktop resolution of the captured display, even values only.
+fn stretch_target(display: &DisplaySelection) -> Option<(u32, u32)> {
+    let device = match display {
+        DisplaySelection::Primary => monitors::primary_device()?,
+        DisplaySelection::Monitor(id) => id.clone(),
+    };
+    let (width, height) = monitors::desktop_size(&device)?;
+    Some((width & !1, height & !1))
 }
 
 /// The display capture head: `d3d11screencapturesrc` re-gridded to the output
