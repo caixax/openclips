@@ -27,6 +27,10 @@ pub enum UpdateEvent {
     Ready(PendingUpdate),
     /// A newer version exists but this copy is portable, so only a link.
     Available { version: String, url: String },
+    /// The latest release is this version or older.
+    UpToDate { latest: String },
+    /// The check or the download did not go through.
+    Failed(String),
 }
 
 pub fn updates_dir(paths: &AppPaths) -> PathBuf {
@@ -116,6 +120,7 @@ pub fn spawn_check(
         .spawn(move || {
             if let Err(err) = check(&paths, &config, &report) {
                 warn!("update check failed: {err}");
+                report(UpdateEvent::Failed(err));
             }
         });
     if let Err(err) = spawned {
@@ -139,6 +144,9 @@ fn check(
     let current = Version::current();
     if release.version <= current {
         info!("up to date ({current}, latest {})", release.tag);
+        report(UpdateEvent::UpToDate {
+            latest: release.version.to_string(),
+        });
         return Ok(());
     }
     let version = release.version.to_string();

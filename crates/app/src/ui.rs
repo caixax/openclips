@@ -3,10 +3,10 @@
 //! decoded thumbnails; capture, hotkeys, Discord presence, the library and
 //! the sound keep running from `Shared`, which outlives every window.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openclips_capture::platform::Platform;
 use openclips_core::APP_VERSION;
@@ -56,6 +56,10 @@ const UNLOAD_DELAY: Duration = Duration::from_millis(50);
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
 /// How long the "saved" notice stays on the settings page.
 const SAVED_NOTICE: Duration = Duration::from_millis(2500);
+/// Opening the window this long after the last update check runs another
+/// one, so an app that lives in the tray for days still learns about a
+/// release without polling while a game runs.
+const UPDATE_RECHECK: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub struct Context {
     pub paths: AppPaths,
@@ -114,6 +118,9 @@ struct Shared {
     message_timer: RefCell<Option<slint::Timer>>,
     startup_warning: RefCell<String>,
     update_banner: RefCell<Option<UpdateEvent>>,
+    /// Text for the About section, kept while the window is unloaded.
+    update_status: RefCell<String>,
+    last_update_check: Cell<Option<Instant>>,
     texts: RefCell<StatusTexts>,
     /// Detected game name and its icon file, for the top bar.
     game: RefCell<(String, Option<PathBuf>)>,
@@ -193,6 +200,8 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         message_timer: RefCell::new(None),
         startup_warning: RefCell::new(ctx.startup_warning),
         update_banner: RefCell::new(None),
+        update_status: RefCell::new(String::new()),
+        last_update_check: Cell::new(None),
         texts: RefCell::new(StatusTexts::default()),
         game: RefCell::new(("No game detected".to_owned(), None)),
     });
@@ -214,12 +223,26 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
     poll_games(&shared);
     refresh_status(&shared);
 
+    start_update_check(&shared);
+
+    Ok(App { shared })
+}
+
+/// Looks at the releases in the background, once at start and again when the
+/// window is opened after a long while.
+fn start_update_check(shared: &SharedRef) {
     let config = shared.config.borrow().updates.clone();
+    if !config.check {
+        *shared.update_status.borrow_mut() = crate::i18n::tr("Automatic checks are off.");
+        shared.with_window(|w| w.set_update_status(shared.update_status.borrow().clone().into()));
+        return;
+    }
+    shared.last_update_check.set(Some(Instant::now()));
+    *shared.update_status.borrow_mut() = crate::i18n::tr("Checking for updates...");
+    shared.with_window(|w| w.set_update_status(shared.update_status.borrow().clone().into()));
     updater::spawn_check(shared.paths.clone(), config, |event| {
         post(UiEvent::Update(event));
     });
-
-    Ok(App { shared })
 }
 
 fn show_window(shared: &SharedRef) -> Result<(), AppError> {
@@ -227,6 +250,14 @@ fn show_window(shared: &SharedRef) -> Result<(), AppError> {
         let window = create_window(shared)?;
         *shared.window.borrow_mut() = Some(window);
         refresh_status(shared);
+    }
+    let stale = shared
+        .last_update_check
+        .get()
+        .is_none_or(|at| at.elapsed() >= UPDATE_RECHECK);
+    if stale && shared.pending_update.borrow().is_none() {
+        info!("window opened a while after the last update check, checking again");
+        start_update_check(shared);
     }
     if let Some(window) = shared.window.borrow().as_ref() {
         window.show()?;
@@ -270,6 +301,7 @@ fn create_window(shared: &SharedRef) -> Result<MainWindow, AppError> {
     wire_player(&window, shared);
     wire_games(&window, shared);
     wire_updates(&window, shared);
+    window.set_update_status(shared.update_status.borrow().clone().into());
     if let Some(event) = shared.update_banner.borrow().clone() {
         apply_update_event(&window, event);
     }
@@ -442,8 +474,14 @@ fn handle_event(shared: &SharedRef, event: UiEvent) {
             if let UpdateEvent::Ready(pending) = &event {
                 *shared.pending_update.borrow_mut() = Some(pending.clone());
             }
-            *shared.update_banner.borrow_mut() = Some(event.clone());
-            shared.with_window(|w| apply_update_event(w, event));
+            *shared.update_status.borrow_mut() = update_status_text(&event);
+            if !matches!(event, UpdateEvent::UpToDate { .. } | UpdateEvent::Failed(_)) {
+                *shared.update_banner.borrow_mut() = Some(event.clone());
+            }
+            shared.with_window(|w| {
+                w.set_update_status(shared.update_status.borrow().clone().into());
+                apply_update_event(w, event);
+            });
         }
         UiEvent::Steam(result) => {
             shared.with_window(|w| apply_steam_result(w, result));
@@ -511,7 +549,11 @@ fn wire_updates(window: &MainWindow, shared: &SharedRef) {
                 }
             }
             Err(err) => {
-                window.set_update_message(format!("Update failed: {err}").into());
+                window.set_update_message(
+                    crate::i18n::tr("Update failed: {error}")
+                        .replace("{error}", &err.to_string())
+                        .into(),
+                );
                 window.set_update_ready(false);
             }
         }
@@ -531,22 +573,50 @@ fn wire_updates(window: &MainWindow, shared: &SharedRef) {
     });
 }
 
+/// The one line shown under About.
+fn update_status_text(event: &UpdateEvent) -> String {
+    match event {
+        UpdateEvent::Downloading { version } => {
+            crate::i18n::tr("{version} is being downloaded.").replace("{version}", version)
+        }
+        UpdateEvent::Ready(pending) => {
+            crate::i18n::tr("{version} is downloaded and installs on the next start.")
+                .replace("{version}", &pending.version)
+        }
+        UpdateEvent::Available { version, .. } => {
+            crate::i18n::tr("{version} is available on the release page.")
+                .replace("{version}", version)
+        }
+        UpdateEvent::UpToDate { latest } => {
+            crate::i18n::tr("Up to date. The latest release is {version}.")
+                .replace("{version}", latest)
+        }
+        UpdateEvent::Failed(error) => {
+            crate::i18n::tr("The last check failed: {error}").replace("{error}", error)
+        }
+    }
+}
+
+/// The banner under the title bar; only the events that need attention
+/// show it.
 fn apply_update_event(window: &MainWindow, event: UpdateEvent) {
     match event {
         UpdateEvent::Downloading { version } => {
             window.set_update_ready(false);
             window.set_update_page("".into());
             window.set_update_message(
-                format!("OpenClips {version} is being downloaded in the background.").into(),
+                crate::i18n::tr("OpenClips {version} is being downloaded in the background.")
+                    .replace("{version}", &version)
+                    .into(),
             );
         }
         UpdateEvent::Ready(pending) => {
             window.set_update_page(pending.release_url.clone().into());
             window.set_update_message(
-                format!(
-                    "OpenClips {} is ready. It installs on the next start, or now if you prefer.",
-                    pending.version
+                crate::i18n::tr(
+                    "OpenClips {version} is ready. It installs on the next start, or now if you prefer.",
                 )
+                .replace("{version}", &pending.version)
                 .into(),
             );
             window.set_update_ready(true);
@@ -555,9 +625,12 @@ fn apply_update_event(window: &MainWindow, event: UpdateEvent) {
             window.set_update_ready(false);
             window.set_update_page(url.into());
             window.set_update_message(
-                format!("OpenClips {version} is available. This portable copy does not update itself; download it from the release page.").into(),
+                crate::i18n::tr("OpenClips {version} is available. This portable copy does not update itself; download it from the release page.")
+                    .replace("{version}", &version)
+                    .into(),
             );
         }
+        UpdateEvent::UpToDate { .. } | UpdateEvent::Failed(_) => {}
     }
 }
 

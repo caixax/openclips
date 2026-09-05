@@ -168,6 +168,8 @@ export component MainWindow inherits Window {
     callback window-close();
 
     in property <string> update-message;
+    /// One line for the About section: checking, up to date, downloaded...
+    in property <string> update-status;
     in property <bool> update-ready;
     in property <string> update-page;
     callback install-update();
@@ -249,6 +251,7 @@ export component MainWindow inherits Window {
                     if root.page == NavPage.player: PlayerPage { }
                     if root.page == NavPage.settings: SettingsPage {
                         info: root.info;
+                        update-status: root.update-status;
                         buffer-active: root.buffer-active;
                         buffer-status: root.buffer-status;
                         buffer-detail: root.buffer-detail;

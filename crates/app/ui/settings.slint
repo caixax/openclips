@@ -175,6 +175,7 @@ component StorageBar inherits Rectangle {
 
 export component SettingsPage inherits ScrollView {
     in property <AppInfo> info;
+    in property <string> update-status;
     in property <bool> buffer-active;
     in property <string> buffer-status;
     in property <string> buffer-detail;
@@ -622,6 +623,10 @@ export component SettingsPage inherits ScrollView {
             SettingRow {
                 title: I18n.tr("Version");
                 description: root.info.version;
+            }
+            SettingRow {
+                title: I18n.tr("Updates");
+                description: root.update-status;
             }
             SettingRow {
                 title: I18n.tr("Config file");
