@@ -1,0 +1,166 @@
+import { SpinBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
+import { Icon, Icons } from "icons.slint";
+import { TextButton, OptionCard } from "widgets.slint";
+import { HotkeyCapture } from "settings.slint";
+
+/// The first start walkthrough. The app fills it from the config and
+/// applies the answers when the last step is finished.
+export global IntroState {
+    in-out property <bool> visible: false;
+    in-out property <int> step: 0;
+    in-out property <[string]> hotkey-keys: ["Alt", "F1"];
+    /// 0 only while a game runs, 1 the whole screen always.
+    in-out property <int> scope-index: 0;
+    in-out property <int> minutes: 0;
+    in-out property <int> seconds: 30;
+    in-out property <string> clips-dir;
+    callback browse();
+    callback finish();
+    callback skip();
+}
+
+component StepDots inherits HorizontalLayout {
+    in property <int> count: 5;
+    in property <int> current: 0;
+    spacing: 6px;
+    alignment: start;
+    for i in root.count: Rectangle {
+        width: i == root.current ? 22px : 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: i <= root.current ? Theme.accent : Theme.border;
+        animate width { duration: Theme.quick; }
+    }
+}
+
+component Body inherits Text {
+    color: Theme.text-muted;
+    font-size: 14px;
+    wrap: word-wrap;
+    horizontal-alignment: left;
+}
+
+export component IntroOverlay inherits Rectangle {
+    background: Theme.background;
+    // Swallow clicks so the app underneath stays untouched.
+    TouchArea { }
+
+    card := Rectangle {
+        width: min(680px, parent.width - 48px);
+        height: min(560px, parent.height - 48px);
+        border-radius: Theme.radius;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        VerticalLayout {
+            padding: 36px;
+            spacing: 18px;
+
+            HorizontalLayout {
+                spacing: 14px;
+                alignment: start;
+                Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 12px;
+                    background: Theme.accent;
+                    Icon { data: Icons.scissors; size: 20px; color: Theme.accent-text; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    Text { text: "OpenClips"; color: Theme.text; font-size: 20px; font-weight: 700; }
+                    StepDots { current: IntroState.step; }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: start;
+                    spacing: 14px;
+
+                    if IntroState.step == 0: VerticalLayout {
+                        alignment: start;
+                        spacing: 14px;
+                        Text { text: I18n.tr("Welcome to OpenClips"); color: Theme.text; font-size: 24px; font-weight: 700; }
+                        Body { text: I18n.tr("OpenClips keeps the last moments of your game in memory. Press one key and those seconds become a clip on your disk. Nothing is uploaded and there is no account: the clips are yours."); }
+                        Body { text: I18n.tr("This takes a minute: the key, what to capture, how far back and where clips go. Everything can be changed later in Settings."); }
+                    }
+
+                    if IntroState.step == 1: VerticalLayout {
+                        alignment: start;
+                        spacing: 14px;
+                        Text { text: I18n.tr("Your clip key"); color: Theme.text; font-size: 24px; font-weight: 700; }
+                        Body { text: I18n.tr("Click the key and press the combination that saves a clip. It works while a game has the focus. Alt plus a function key is safe in most games."); }
+                        HotkeyCapture { action: 200; keys: IntroState.hotkey-keys; }
+                    }
+
+                    if IntroState.step == 2: VerticalLayout {
+                        alignment: start;
+                        spacing: 14px;
+                        Text { text: I18n.tr("What to capture"); color: Theme.text; font-size: 24px; font-weight: 700; }
+                        Body { text: I18n.tr("OpenClips knows a few thousand games by their executable. It can wait for one of them, or record the display all the time."); }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            OptionCard {
+                                horizontal-stretch: 1;
+                                title: I18n.tr("Only while a game runs");
+                                detail: I18n.tr("The buffer starts when a known game opens and stops when it closes. The key only works inside the game.");
+                                selected: IntroState.scope-index == 0;
+                                clicked => { IntroState.scope-index = 0; }
+                            }
+                            OptionCard {
+                                horizontal-stretch: 1;
+                                title: I18n.tr("The whole screen, always");
+                                detail: I18n.tr("Records the display from the moment OpenClips starts, game or not.");
+                                selected: IntroState.scope-index == 1;
+                                clicked => { IntroState.scope-index = 1; }
+                            }
+                        }
+                    }
+
+                    if IntroState.step == 3: VerticalLayout {
+                        alignment: start;
+                        spacing: 14px;
+                        Text { text: I18n.tr("How far back"); color: Theme.text; font-size: 24px; font-weight: 700; }
+                        Body { text: I18n.tr("How many seconds before the key press go into the clip. The buffer lives in memory, so longer clips use more of it; 30 seconds is a good start."); }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            SpinBox { width: 100px; minimum: 0; maximum: 60; value <=> IntroState.minutes; }
+                            Text { text: I18n.tr("min"); color: Theme.text-muted; vertical-alignment: center; }
+                            SpinBox { width: 100px; minimum: 0; maximum: 59; value <=> IntroState.seconds; }
+                            Text { text: I18n.tr("s"); color: Theme.text-muted; vertical-alignment: center; }
+                        }
+                    }
+
+                    if IntroState.step == 4: VerticalLayout {
+                        alignment: start;
+                        spacing: 14px;
+                        Text { text: I18n.tr("Where clips go"); color: Theme.text; font-size: 24px; font-weight: 700; }
+                        Body { text: I18n.tr("Clips, recordings and edits are written under this folder, each in its own subfolder. Pick a drive with room to spare."); }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            LineEdit { horizontal-stretch: 1; text <=> IntroState.clips-dir; }
+                            TextButton { text: I18n.tr("Browse"); icon: Icons.folder-open; has-icon: true; clicked => { IntroState.browse(); } }
+                        }
+                        Body { text: I18n.tr("That is all. The buffer starts by itself and the key is live as soon as you finish."); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                if IntroState.step == 0: TextButton { text: I18n.tr("Skip"); kind: 3; clicked => { IntroState.skip(); } }
+                Rectangle { horizontal-stretch: 1; }
+                if IntroState.step > 0: TextButton { text: I18n.tr("Back"); clicked => { IntroState.step -= 1; } }
+                if IntroState.step < 4: TextButton { text: I18n.tr("Next"); kind: 1; clicked => { IntroState.step += 1; } }
+                if IntroState.step == 4: TextButton { text: I18n.tr("Finish"); icon: Icons.check; has-icon: true; kind: 1; clicked => { IntroState.finish(); } }
+            }
+        }
+    }
+}

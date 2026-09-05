@@ -8,11 +8,13 @@ import { HomePage } from "home.slint";
 import { ClipsPage, LibraryState } from "clips.slint";
 import { PlayerPage, PlayerState } from "player.slint";
 import { SettingsPage, SettingsState } from "settings.slint";
+import { IntroOverlay, IntroState } from "intro.slint";
 import { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, HotkeyRow } from "types.slint";
 
 export { TrayIcon } from "tray.slint";
 export { ToastWindow } from "toast.slint";
 export { Theme }
+export { IntroState }
 export { I18n }
 
 export { AppInfo, AudioSourceRow, AudioTrackRow, ClipCard, GameProfileRow, HotkeyRow, SettingsState, LibraryState, PlayerState, NavPage }
@@ -267,4 +269,9 @@ export component MainWindow inherits Window {
         }
     }
 
+
+    if IntroState.visible: IntroOverlay {
+        width: parent.width;
+        height: parent.height;
+    }
 }

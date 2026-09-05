@@ -73,14 +73,17 @@ fn run() -> Result<(), AppError> {
     gpu::raise_gpu_priority();
     let first_run = !paths.config_file().exists();
     let (mut config, startup_warning) = load_config(&paths);
-    if first_run && let Some(language) = startup::installer_language() {
-        info!(
-            "first start, using the installer language {}",
-            language.code()
-        );
-        config.general.language = language;
+    if first_run {
+        if let Some(language) = startup::installer_language() {
+            info!(
+                "first start, using the installer language {}",
+                language.code()
+            );
+            config.general.language = language;
+        }
+        config.general.intro_done = false;
         if let Err(err) = config.save(&paths.config_file()) {
-            warn!("could not store the installer language: {err}");
+            warn!("could not store the first start settings: {err}");
         }
     }
     i18n::set_language(config.general.language);

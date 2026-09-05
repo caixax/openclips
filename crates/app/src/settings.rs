@@ -203,6 +203,7 @@ pub fn populate(
         config.capture.bitrate_kbps,
     ));
     state.set_show_cursor(config.capture.show_cursor);
+    state.set_stretch(config.capture.stretch);
     state.set_capture_api_index(match config.capture.api {
         CaptureApi::DesktopDuplication => 0,
         CaptureApi::GraphicsCapture => 1,
@@ -406,6 +407,7 @@ pub fn collect(
     config.capture.fps = state.get_fps().max(1) as u32;
     config.capture.bitrate_kbps = state.get_bitrate_kbps().max(1) as u32;
     config.capture.show_cursor = state.get_show_cursor();
+    config.capture.stretch = state.get_stretch();
     config.capture.api = if state.get_capture_api_index() == 1 {
         CaptureApi::GraphicsCapture
     } else {
@@ -460,6 +462,19 @@ pub fn collect(
     config.games.profiles = collect_game_profiles(state, monitors, &config.games.profiles);
 
     config.hotkeys.bindings = collect_hotkeys(state)?;
+    // A save hotkey longer than the buffer would be capped, so the buffer
+    // follows the longest one instead of asking for a second edit.
+    let longest = config
+        .hotkeys
+        .bindings
+        .iter()
+        .filter(|b| b.action == HotkeyActionKind::SaveReplay)
+        .map(|b| b.seconds)
+        .max()
+        .unwrap_or(0);
+    if longest > config.replay.length_seconds {
+        config.replay.length_seconds = longest;
+    }
 
     config.validate().map_err(|e| e.to_string())?;
     Ok(config)

@@ -14,6 +14,7 @@ export global SettingsState {
     in-out property <int> fps: 60;
     in-out property <int> bitrate-kbps: 15000;
     in-out property <bool> show-cursor: false;
+    in-out property <bool> stretch: false;
     in-out property <int> capture-api-index: 0;
     in-out property <bool> launch-on-startup: false;
     in-out property <bool> clip-sound: false;
@@ -72,6 +73,7 @@ export global SettingsState {
     changed fps => { root.changed(); }
     changed bitrate-kbps => { root.changed(); }
     changed show-cursor => { root.changed(); }
+    changed stretch => { root.changed(); }
     changed capture-api-index => { root.changed(); }
     changed launch-on-startup => { root.changed(); }
     changed clip-sound => { root.changed(); }
@@ -111,7 +113,7 @@ export global SettingsState {
     callback remove-audio-source(string);
 }
 
-component HotkeyCapture inherits FocusScope {
+export component HotkeyCapture inherits FocusScope {
     in property <int> action;
     in property <[string]> keys;
     property <bool> listening: SettingsState.listening-action == root.action;
@@ -238,7 +240,7 @@ export component SettingsPage inherits ScrollView {
                 }
             }
             AddButton { text: I18n.tr("Add hotkey"); clicked => { SettingsState.add-hotkey(); } }
-            Hint { text: I18n.tr("A save hotkey with 0 min 0 s saves everything the buffer holds. Longer lengths are capped by the buffer length below."); }
+            Hint { text: I18n.tr("A save hotkey with 0 min 0 s saves everything the buffer holds. The buffer below grows on its own to fit the longest save hotkey."); }
         }
 
         SectionCard {
@@ -298,6 +300,11 @@ export component SettingsPage inherits ScrollView {
                 title: I18n.tr("Capture method");
                 description: I18n.tr("Windows Graphics Capture delivers every frame, also on high refresh displays. Desktop Duplication is the fallback and repeats frames under load.");
                 ComboBox { width: 240px; model: [I18n.tr("Desktop Duplication"), I18n.tr("Windows Graphics Capture")]; current-index <=> SettingsState.capture-api-index; }
+            }
+            SettingRow {
+                title: I18n.tr("Stretch to the display");
+                description: I18n.tr("Games running in a 4:3 or other narrow fullscreen mode are scaled to the display's desktop resolution, so the clip looks like what you saw on the monitor.");
+                Toggle { checked <=> SettingsState.stretch; }
             }
             SettingRow {
                 title: I18n.tr("Show cursor");

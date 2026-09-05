@@ -35,6 +35,8 @@ use openclips_core::trim::{COMPRESS_PRESETS, TrimMode, TrimRange, edited_path};
 use openclips_core::update::PendingUpdate;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
+mod intro;
+
 mod generated {
     #![allow(
         clippy::all,
@@ -102,6 +104,8 @@ struct Shared {
     engine: RefCell<Option<Engine>>,
     hotkeys: RefCell<Option<Hotkeys>>,
     library: RefCell<Option<LibraryService>>,
+    /// The key chosen in the first start walkthrough, until it is applied.
+    intro_hotkey: RefCell<Option<openclips_core::config::Hotkey>>,
     player: RefCell<Option<PlayerController>>,
     games: RefCell<Option<GameService>>,
     ticks: RefCell<u32>,
@@ -186,6 +190,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         engine: RefCell::new(ctx.engine),
         hotkeys: RefCell::new(None),
         library: RefCell::new(None),
+        intro_hotkey: RefCell::new(None),
         player: RefCell::new(None),
         games: RefCell::new(None),
         ticks: RefCell::new(0),
@@ -301,6 +306,7 @@ fn create_window(shared: &SharedRef) -> Result<MainWindow, AppError> {
     wire_player(&window, shared);
     wire_games(&window, shared);
     wire_updates(&window, shared);
+    intro::wire(&window, shared);
     window.set_update_status(shared.update_status.borrow().clone().into());
     if let Some(event) = shared.update_banner.borrow().clone() {
         apply_update_event(&window, event);
@@ -843,7 +849,9 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         let Some(hotkey) = hotkeys::hotkey_from_press(&text, mods) else {
             return;
         };
-        if action >= settings::SAVE_ACTION_BASE {
+        if action == intro::HOTKEY_ACTION {
+            intro::set_hotkey(&window, &s, hotkey);
+        } else if action >= settings::SAVE_ACTION_BASE {
             settings::set_hotkey_binding(
                 &state,
                 (action - settings::SAVE_ACTION_BASE) as usize,
@@ -969,6 +977,14 @@ fn save_settings(shared: &SharedRef, window: &MainWindow) {
     if next == *shared.config.borrow() {
         return;
     }
+    apply_settings(shared, window, next);
+}
+
+/// Stores `next`, applies it everywhere (capture, hotkeys, library, startup
+/// entry, language) and refills the settings page.
+fn apply_settings(shared: &SharedRef, window: &MainWindow, next: Config) {
+    let state = window.global::<SettingsState>();
+    let monitors = current_monitors(shared);
     if let Err(err) = next.save(&shared.paths.config_file()) {
         state.set_message_is_error(true);
         state.set_message(format!("Could not save settings: {err}").into());
@@ -1169,6 +1185,25 @@ fn toggle_recording(shared: &SharedRef) {
 }
 
 fn save_clip(shared: &SharedRef, hotkey_index: Option<usize>) {
+    // With per game capture the key belongs to the game: a press while
+    // another window is in front is ignored instead of clipping the desktop.
+    if hotkey_index.is_some()
+        && shared.config.borrow().games.scope == openclips_core::config::CaptureScope::PerGame
+    {
+        let in_game = shared
+            .games
+            .borrow()
+            .as_ref()
+            .and_then(|g| g.active().map(|a| a.foreground))
+            .unwrap_or(false);
+        if !in_game {
+            info!("save hotkey ignored: no game in the foreground");
+            shared.texts.borrow_mut().save_status =
+                crate::i18n::tr("The save key only works while the game is in front.");
+            shared.with_window(|w| apply_texts(w, shared));
+            return;
+        }
+    }
     let length = hotkey_index
         .and_then(|i| shared.config.borrow().hotkeys.bindings.get(i).copied())
         .map(|b| Duration::from_secs(u64::from(b.seconds)));
