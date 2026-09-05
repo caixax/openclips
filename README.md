@@ -34,7 +34,8 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 - Hardware encoding through NVENC, Quick Sync or AMF, with Media Foundation and x264 as fallbacks; 1080p60 at 20 Mbps costs a few percent of a modern GPU.
 - Quality presets (Low, Standard, High) or your own frame rate and bitrate.
 - Full session recordings written as fragmented MP4, so a crash still leaves a playable file.
-- Windows Graphics Capture (default) or Desktop Duplication, cursor on or off, any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
+- Windows Graphics Capture (default) or Desktop Duplication, cursor on or off (Graphics Capture only: GStreamer 1.28 crashes drawing the pointer in the Desktop Duplication path when a game changes the display mode, so that path leaves it out), any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
+- If the process ever dies in native code, a minidump and a note with the faulting module land in `%LOCALAPPDATA%\OpenClips\data\crashes` (the log names the folder at start).
 - Game capture, opt in per game, that reads the game's real frames through OBS Studio's capture hook instead of sampling the desktop, so it does not drop frames when the GPU is saturated (see [Game capture](#game-capture)).
 - Hotkeys are a key plus an action: save the last N seconds (one key for 15 seconds, another for two minutes), start or stop the buffer, start or stop recording. As many as you like. The buffer grows on its own to fit the longest save key, and with per game capture the save key only fires while the game is in front.
 - A first start walkthrough: the clip key, whether to wait for a game or record the display all the time, how far back a clip reaches and where clips go. Every answer can be changed later in Settings.
