@@ -72,7 +72,7 @@
   "Display name (optional)": "Отображаемое имя (необязательно)",
   "Do nothing": "Ничего не делать",
   "Drag the handles on the timeline or use Set in and Set out at the playhead. Muted tracks are left out of the saved file. Saving asks whether to keep the original.": "Перетаскивайте маркеры на шкале времени или используйте Начало и Конец на позиции воспроизведения. Заглушённые дорожки не попадают в сохранённый файл. При сохранении спрашивается, оставить ли оригинал.",
-  "Draw the mouse pointer into clips.": "Отображать указатель мыши в клипах.",
+  "Draw the mouse pointer into clips. Only with Windows Graphics Capture: Desktop Duplication leaves it out, because GStreamer crashes drawing it when a game changes the display mode.": "Рисует указатель мыши в клипах. Только с Windows Graphics Capture: Desktop Duplication его не рисует, потому что GStreamer падает при этом, когда игра меняет режим экрана.",
   "Edit": "Изменить",
   "Edit failed: {error}": "Ошибка редактирования: {error}",
   "Edited": "Отредактированные",

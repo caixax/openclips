@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bootstrap;
+mod crash;
 mod discord;
 mod engine;
 mod error;
@@ -44,6 +45,11 @@ fn main() -> ExitCode {
 fn run() -> Result<(), AppError> {
     let paths = AppPaths::discover()?;
     let _log_guard = logging::init(&paths.log_dir)?;
+    crash::install(&paths.data_dir);
+    info!(
+        "crash dumps go to {}",
+        crash::dump_dir(&paths.data_dir).display()
+    );
     let runtime = match bootstrap::locate() {
         Ok(runtime) => runtime,
         Err(message) => {

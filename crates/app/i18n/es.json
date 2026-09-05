@@ -72,7 +72,7 @@
   "Display name (optional)": "Nombre visible (opcional)",
   "Do nothing": "No hacer nada",
   "Drag the handles on the timeline or use Set in and Set out at the playhead. Muted tracks are left out of the saved file. Saving asks whether to keep the original.": "Arrastra los tiradores de la línea de tiempo o usa Marcar inicio y Marcar fin en el cursor. Las pistas silenciadas se excluyen del archivo guardado. Al guardar se pregunta si conservar el original.",
-  "Draw the mouse pointer into clips.": "Dibujar el puntero del ratón en los clips.",
+  "Draw the mouse pointer into clips. Only with Windows Graphics Capture: Desktop Duplication leaves it out, because GStreamer crashes drawing it when a game changes the display mode.": "Dibuja el puntero del ratón en los clips. Solo con Windows Graphics Capture: Desktop Duplication lo deja fuera, porque GStreamer se cierra al dibujarlo cuando un juego cambia el modo de pantalla.",
   "Edit": "Editar",
   "Edit failed: {error}": "La edición falló: {error}",
   "Edited": "Editados",

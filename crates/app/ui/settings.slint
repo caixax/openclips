@@ -308,7 +308,7 @@ export component SettingsPage inherits ScrollView {
             }
             SettingRow {
                 title: I18n.tr("Show cursor");
-                description: I18n.tr("Draw the mouse pointer into clips.");
+                description: I18n.tr("Draw the mouse pointer into clips. Only with Windows Graphics Capture: Desktop Duplication leaves it out, because GStreamer crashes drawing it when a game changes the display mode.");
                 Toggle { checked <=> SettingsState.show-cursor; }
             }
         }
