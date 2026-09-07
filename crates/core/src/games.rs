@@ -2,7 +2,7 @@
 //! user's per game profiles, and the matching of running processes against
 //! both.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -104,19 +104,28 @@ impl DetectedGame {
 }
 
 /// Matches running processes against the user's profiles first, then the
-/// bundled database. One entry per executable name.
+/// bundled database. One entry per executable name; when several processes
+/// share it (a launcher and the game, two instances), the one in the
+/// foreground represents it, so the hotkey and the hook follow the window
+/// the player is looking at.
 pub fn detect(
     processes: &[RunningProcess],
     db: &GamesDatabase,
     config: &GamesConfig,
 ) -> Vec<DetectedGame> {
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut found = Vec::new();
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    let mut found: Vec<DetectedGame> = Vec::new();
     for process in processes {
         // Watchers report lower case names (see `RunningProcess`), so no
         // copy is made for the hundreds of processes that are not games.
         let exe = process.exe.as_str();
-        if seen.contains(exe) {
+        if let Some(&index) = seen.get(exe) {
+            if process.foreground && !found[index].foreground {
+                let game = &mut found[index];
+                game.pid = process.pid;
+                game.path = process.path.clone();
+                game.foreground = true;
+            }
             continue;
         }
         let profile = config
@@ -134,7 +143,7 @@ pub fn detect(
                 None => continue,
             },
         };
-        seen.insert(exe);
+        seen.insert(exe, found.len());
         found.push(DetectedGame {
             pid: process.pid,
             exe: exe.to_lowercase(),
@@ -432,7 +441,7 @@ mod tests {
         let processes = [
             process(1, "explorer.exe", false),
             process(2, "hl2.exe", false),
-            process(3, "MyGame-Win64-Shipping.exe", true),
+            process(3, "mygame-win64-shipping.exe", true),
             process(4, "hl2.exe", false),
         ];
         let detected = detect(&processes, &db(), &config);
@@ -452,6 +461,20 @@ mod tests {
             AutoCapture::None
         );
         assert_eq!(auto_capture(CaptureScope::PerGame, None), AutoCapture::None);
+    }
+
+    #[test]
+    fn the_foreground_instance_represents_a_shared_executable() {
+        let processes = [
+            process(10, "hl2.exe", false),
+            process(11, "hl2.exe", true),
+            process(12, "hl2.exe", false),
+        ];
+        let detected = detect(&processes, &db(), &GamesConfig::default());
+        assert_eq!(detected.len(), 1);
+        assert_eq!(detected[0].pid, 11);
+        assert!(detected[0].foreground);
+        assert!(active(&detected).is_some_and(|g| g.pid == 11));
     }
 
     #[test]
