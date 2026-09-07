@@ -133,6 +133,7 @@ fn run() -> Result<(), AppError> {
 
     slint::run_event_loop_until_quit()?;
     info!("event loop finished, shutting down");
+    app.shutdown();
     Ok(())
 }
 

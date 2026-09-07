@@ -4,6 +4,7 @@
 //! the sound keep running from `Shared`, which outlives every window.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -49,8 +50,10 @@ mod generated {
 pub use generated::*;
 
 const STATUS_REFRESH: Duration = Duration::from_millis(500);
+/// Running games are looked up every this many status ticks.
+const GAME_REFRESH_TICKS: u32 = 4;
 /// Displays are re-enumerated every this many status ticks.
-const MONITOR_REFRESH_TICKS: u32 = 4;
+const MONITOR_REFRESH_TICKS: u32 = 20;
 /// The window is dropped a moment after the close request so the request
 /// handler itself never runs inside a dying component.
 const UNLOAD_DELAY: Duration = Duration::from_millis(50);
@@ -84,6 +87,13 @@ impl App {
     pub fn show_tray(&self) -> Result<(), AppError> {
         self.shared.tray.show()?;
         Ok(())
+    }
+
+    /// Writes what is still pending before the process ends.
+    pub fn shutdown(&self) {
+        if let Some(library) = self.shared.library.borrow_mut().as_mut() {
+            library.flush();
+        }
     }
 }
 
@@ -128,6 +138,13 @@ struct Shared {
     texts: RefCell<StatusTexts>,
     /// Detected game name and its icon file, for the top bar.
     game: RefCell<(String, Option<PathBuf>)>,
+    /// Decoded thumbnails and icons by file, so a gallery refresh does not
+    /// read every PNG again. Entries go when the file is rewritten or the
+    /// record disappears.
+    images: RefCell<HashMap<PathBuf, Image>>,
+    /// The gallery models were not rebuilt after a change because no page
+    /// showing them was visible; rebuild when one is.
+    library_stale: Cell<bool>,
 }
 
 type SharedRef = Rc<Shared>;
@@ -144,6 +161,22 @@ impl Shared {
     /// Runs `f` against the window when one exists.
     fn with_window<R>(&self, f: impl FnOnce(&MainWindow) -> R) -> Option<R> {
         self.window.borrow().as_ref().map(f)
+    }
+
+    /// The picture in `path`, decoded once.
+    fn image(&self, path: &Path) -> Option<Image> {
+        if let Some(image) = self.images.borrow().get(path) {
+            return Some(image.clone());
+        }
+        let image = Image::load_from_path(path).ok()?;
+        self.images
+            .borrow_mut()
+            .insert(path.to_path_buf(), image.clone());
+        Some(image)
+    }
+
+    fn forget_image(&self, path: &Path) {
+        self.images.borrow_mut().remove(path);
     }
 }
 
@@ -209,6 +242,8 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         last_update_check: Cell::new(None),
         texts: RefCell::new(StatusTexts::default()),
         game: RefCell::new(("No game detected".to_owned(), None)),
+        images: RefCell::new(HashMap::new()),
+        library_stale: Cell::new(false),
     });
     SHARED.with(|slot| *slot.borrow_mut() = Some(shared.clone()));
     // Files closed on their own mid recording (a display change, a capture
@@ -326,12 +361,24 @@ fn create_window(shared: &SharedRef) -> Result<MainWindow, AppError> {
 /// Drops the window and the player so nothing of the UI stays in memory
 /// while the app lives in the tray.
 fn unload_window(shared: &SharedRef) {
+    // A settings change made just before closing is still waiting for its
+    // quiet time; save it now, while the page is there to read.
+    let pending = shared.autosave.borrow_mut().take();
+    if let Some(timer) = pending
+        && timer.running()
+    {
+        timer.stop();
+        if let Some(window) = shared.window.borrow().as_ref() {
+            save_settings(shared, window);
+        }
+    }
     if let Some(window) = shared.window.borrow().as_ref()
         && let Some(player) = shared.player.borrow_mut().as_mut()
     {
         player.stop(&window.global::<PlayerState>());
     }
     *shared.player.borrow_mut() = None;
+    shared.images.borrow_mut().clear();
     if let Some(window) = shared.window.borrow_mut().take() {
         // The backend keeps a shown window alive on its own, so dropping the
         // handle is not enough: hide it first or the old window lingers next
@@ -506,14 +553,14 @@ fn handle_event(shared: &SharedRef, event: UiEvent) {
 /// Puts a freshly written clip or recording into the library with its
 /// game and track names, and refreshes the gallery when it is visible.
 fn index_new_file(shared: &SharedRef, clip: &ClipFile) {
-    if let Some(library) = shared.library.borrow_mut().as_mut() {
-        library.refresh();
-        library.tag_tracks(&clip.path, &clip.audio_tracks);
-        if let Some(game) = &clip.game {
-            library.tag_game(&clip.path, game);
-        }
+    let changed = shared
+        .library
+        .borrow_mut()
+        .as_mut()
+        .is_some_and(|l| l.index_written(clip));
+    if changed {
+        shared.with_window(|w| refresh_library_ui(w, shared));
     }
-    shared.with_window(|w| refresh_library_ui(w, shared));
 }
 
 fn update_hotkey_labels(window: &MainWindow, config: &Config) {
@@ -1109,19 +1156,33 @@ fn start_status_timer(shared: &SharedRef) {
             *ticks = ticks.wrapping_add(1);
             *ticks
         };
-        if tick.is_multiple_of(MONITOR_REFRESH_TICKS) {
-            poll_monitors(&s);
-            poll_games(&s);
-        }
         if s.instance.take_show_request() {
             info!("another launch asked for the window");
             if let Err(err) = show_window(&s) {
                 error!("could not show the main window: {err}");
             }
         }
+        // In the tray nothing shows the status, so half the ticks are skipped.
+        if s.window.borrow().is_none() && !tick.is_multiple_of(2) {
+            return;
+        }
+        if tick.is_multiple_of(MONITOR_REFRESH_TICKS) {
+            poll_monitors(&s);
+        }
+        if tick.is_multiple_of(GAME_REFRESH_TICKS) {
+            poll_games(&s);
+        }
         refresh_status(&s);
-        let changed = s.library.borrow_mut().as_mut().is_some_and(|l| l.poll());
-        if changed {
+        let polled = s
+            .library
+            .borrow_mut()
+            .as_mut()
+            .map(|l| l.poll())
+            .unwrap_or_default();
+        for thumbnail in &polled.thumbnails {
+            s.forget_image(thumbnail);
+        }
+        if polled.changed {
             s.with_window(|w| refresh_library_ui(w, &s));
         }
         if let Some(window) = s.window.borrow().as_ref()
@@ -1425,13 +1486,24 @@ fn wire_library(window: &MainWindow, shared: &SharedRef) {
 
     let (s, w) = (shared.clone(), window.as_weak());
     window.on_navigated(move |page| {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
         if page != NavPage::Player
-            && let Some(window) = w.upgrade()
             && let Some(player) = s.player.borrow_mut().as_mut()
         {
             player.stop(&window.global::<PlayerState>());
         }
+        refresh_library_if_stale(&window, &s);
     });
+}
+
+/// Rebuilds the gallery models when a change was skipped while no page
+/// showing them was visible.
+fn refresh_library_if_stale(window: &MainWindow, shared: &SharedRef) {
+    if shared.library_stale.get() {
+        refresh_library_ui(window, shared);
+    }
 }
 
 fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
@@ -1440,6 +1512,15 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
     let Some(library) = library.as_ref() else {
         return;
     };
+    update_storage(window, library.total_bytes(), &shared.clips_dir());
+    // The card models are only read by Home and Clips; building them (and
+    // decoding new pictures) for a page that does not show them is wasted,
+    // so it waits until one of them is opened.
+    if !matches!(window.get_page(), NavPage::Home | NavPage::Clips) {
+        shared.library_stale.set(true);
+        return;
+    }
+    shared.library_stale.set(false);
     let games = library.games();
     let mut names: Vec<SharedString> = vec![crate::i18n::tr("All games").into()];
     names.extend(games.iter().map(|g| SharedString::from(g.as_str())));
@@ -1492,20 +1573,28 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
         .map(|c| to_card(shared, c))
         .collect();
     window.set_recent_clips(ModelRc::new(VecModel::from(recent)));
-    update_storage(window, library.total_bytes(), &shared.clips_dir());
+    // Pictures of records that are gone (deleted, moved, another folder)
+    // leave the cache with them.
+    let in_use: std::collections::HashSet<PathBuf> = library
+        .cards(&CardFilter::default())
+        .into_iter()
+        .filter_map(|c| c.thumbnail)
+        .collect();
+    let thumbnails = shared.paths.cache_dir.join("thumbnails");
+    shared
+        .images
+        .borrow_mut()
+        .retain(|path, _| in_use.contains(path) || !path.starts_with(&thumbnails));
 }
 
 fn to_card(shared: &SharedRef, c: crate::library::CardData) -> ClipCard {
-    let thumbnail = c
-        .thumbnail
-        .as_ref()
-        .and_then(|p| Image::load_from_path(p).ok());
+    let thumbnail = c.thumbnail.as_ref().and_then(|p| shared.image(p));
     let icon = shared
         .games
         .borrow()
         .as_ref()
         .and_then(|g| g.icon_for_name(&c.game, &shared.config.borrow().games))
-        .and_then(|p| Image::load_from_path(&p).ok());
+        .and_then(|p| shared.image(&p));
     ClipCard {
         id: c.id.into(),
         title: c.title.into(),
@@ -1671,6 +1760,7 @@ fn wire_player(window: &MainWindow, shared: &SharedRef) {
                 player.stop(&window.global::<PlayerState>());
             }
             window.set_page(NavPage::Clips);
+            refresh_library_if_stale(&window, &s);
         }
     });
     let (s, w) = (shared.clone(), window.as_weak());
@@ -1744,9 +1834,12 @@ fn wire_player(window: &MainWindow, shared: &SharedRef) {
             .unwrap_or_else(|| Err("Library unavailable.".to_owned()));
         state.set_confirm_delete(false);
         match result {
-            Ok(()) => {
-                refresh_library_ui(&window, &s);
+            Ok(thumbnail) => {
+                if let Some(thumbnail) = thumbnail {
+                    s.forget_image(&thumbnail);
+                }
                 window.set_page(NavPage::Clips);
+                refresh_library_ui(&window, &s);
             }
             Err(message) => state.set_message(message.into()),
         }
@@ -2091,7 +2184,9 @@ fn poll_games(shared: &SharedRef) {
     });
     let window = shared.window.borrow();
     run_engine(shared, window.as_ref(), |e| e.set_game_state(active, auto));
-    run_engine(shared, window.as_ref(), |e| e.poll_app_audio());
+    let games = shared.games.borrow();
+    let processes = games.as_ref().map(|g| g.processes()).unwrap_or(&[]);
+    run_engine(shared, window.as_ref(), |e| e.poll_app_audio(processes));
 }
 
 fn refresh_running_known(window: &MainWindow, shared: &SharedRef) {

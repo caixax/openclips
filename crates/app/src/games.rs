@@ -9,7 +9,7 @@ use std::sync::Arc;
 use openclips_capture::{IconExtractor, ProcessWatcher};
 use openclips_core::clip::sanitize_file_name;
 use openclips_core::config::{AppPaths, GamesConfig};
-use openclips_core::games::{DetectedGame, GamesDatabase, detect};
+use openclips_core::games::{DetectedGame, GamesDatabase, RunningProcess, detect};
 use tracing::{debug, info, warn};
 
 pub struct GameService {
@@ -18,6 +18,9 @@ pub struct GameService {
     icons: Arc<dyn IconExtractor>,
     icons_dir: PathBuf,
     detected: Vec<DetectedGame>,
+    /// The process list of the last refresh, shared with the audio watcher
+    /// so one snapshot per poll serves both.
+    processes: Vec<RunningProcess>,
     /// Executable name to icon path, `None` when extraction failed once.
     icon_cache: HashMap<String, Option<PathBuf>>,
 }
@@ -36,6 +39,7 @@ impl GameService {
             icons,
             icons_dir: paths.cache_dir.join("icons"),
             detected: Vec::new(),
+            processes: Vec::new(),
             icon_cache: HashMap::new(),
         }
     }
@@ -46,6 +50,11 @@ impl GameService {
 
     pub fn detected(&self) -> &[DetectedGame] {
         &self.detected
+    }
+
+    /// Every running process as of the last refresh.
+    pub fn processes(&self) -> &[RunningProcess] {
+        &self.processes
     }
 
     pub fn active(&self) -> Option<&DetectedGame> {
@@ -76,6 +85,7 @@ impl GameService {
             info!("detected games: [{}]", names.join(", "));
         }
         self.detected = detected;
+        self.processes = processes;
         for game in self.detected.clone() {
             if let Some(path) = &game.path {
                 self.icon_for_exe(&game.exe, path);

@@ -18,7 +18,7 @@ use openclips_core::capture::{
 };
 use openclips_core::clip::{ClipFile, LocalDateTime, clip_file_name, unique_path};
 use openclips_core::config::{AppPaths, CaptureMethod, Config, DisplaySelection};
-use openclips_core::games::{AutoCapture, DetectedGame};
+use openclips_core::games::{AutoCapture, DetectedGame, RunningProcess};
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo, Timestamp};
 use openclips_core::replay::{ReplayBuffer, ReplayLimits, ReplayStats};
 use tracing::{error, info, warn};
@@ -677,6 +677,23 @@ impl Engine {
     /// Process ids of the enabled application audio sources, zero when the
     /// application is not running.
     fn app_pids(&self) -> Vec<(String, u32)> {
+        if !self.has_app_audio() {
+            return Vec::new();
+        }
+        let running = self.backend.process_watcher().running().unwrap_or_default();
+        self.app_pids_from(&running)
+    }
+
+    fn has_app_audio(&self) -> bool {
+        self.config.audio.enabled
+            && self.config.audio.sources.iter().any(|s| {
+                s.enabled && s.kind == openclips_core::capture::AudioDeviceKind::Application
+            })
+    }
+
+    /// Same as [`Engine::app_pids`] over a process list the caller already
+    /// has, so the game watcher's snapshot serves both.
+    fn app_pids_from(&self, running: &[RunningProcess]) -> Vec<(String, u32)> {
         let apps: Vec<&openclips_core::config::AudioSourceConfig> = self
             .config
             .audio
@@ -689,7 +706,6 @@ impl Engine {
         if apps.is_empty() || !self.config.audio.enabled {
             return Vec::new();
         }
-        let running = self.backend.process_watcher().running().unwrap_or_default();
         apps.iter()
             .map(|s| {
                 let exe = s.id.to_lowercase();
@@ -705,16 +721,12 @@ impl Engine {
 
     /// Restarts the capture when an application with its own audio track
     /// starts or stops, so the track appears or disappears. Deferred while
-    /// recording.
-    pub fn poll_app_audio(&mut self) -> Result<(), AppError> {
-        if self.app_audio.is_empty()
-            && !self.config.audio.sources.iter().any(|s| {
-                s.enabled && s.kind == openclips_core::capture::AudioDeviceKind::Application
-            })
-        {
+    /// recording. `running` is the process list of this poll.
+    pub fn poll_app_audio(&mut self, running: &[RunningProcess]) -> Result<(), AppError> {
+        if self.app_audio.is_empty() && !self.has_app_audio() {
             return Ok(());
         }
-        let now = self.app_pids();
+        let now = self.app_pids_from(running);
         if now != self.app_audio && self.is_engaged() && !self.recording_wanted {
             info!("application audio changed, restarting capture");
             self.restart_capture()?;
@@ -1035,7 +1047,7 @@ impl Engine {
             recording,
             stats,
             stream: buffer.stream().cloned(),
-            audio_tracks: buffer.audio_tracks().len(),
+            audio_tracks: buffer.audio_track_count(),
             encoder: self.active.clone(),
             backend: self.backend.name(),
             replay_length: self.effective_replay_length(),

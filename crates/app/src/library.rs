@@ -2,17 +2,24 @@
 //! and fills in metadata and thumbnails on a worker thread.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use openclips_capture::{MediaInfo, MediaTools};
+use openclips_core::clip::ClipFile;
 use openclips_core::config::{AppPaths, Config};
-use openclips_core::library::{ClipKind, ClipRecord, LIBRARY_FILE_NAME, Library, scan_dir};
+use openclips_core::library::{
+    ClipKind, ClipRecord, LIBRARY_FILE_NAME, Library, WrittenFile, scan_tree,
+};
 use tracing::{error, info, warn};
 
 const THUMBNAIL_WIDTH: u32 = 480;
+/// Quiet time after the last change before the index is written. Edits
+/// come in bursts (a save tags a file twice, a scan touches many), and the
+/// index is rebuilt from the files anyway if the write never happens.
+const SAVE_DELAY: Duration = Duration::from_secs(2);
 
 /// What the gallery shows for one clip.
 #[derive(Debug, Clone)]
@@ -71,6 +78,15 @@ struct JobResult {
     thumbnail: Option<PathBuf>,
 }
 
+/// What [`LibraryService::poll`] applied.
+#[derive(Debug, Default)]
+pub struct Polled {
+    pub changed: bool,
+    /// Thumbnail files written or rewritten, so cached pictures of them
+    /// can be dropped.
+    pub thumbnails: Vec<PathBuf>,
+}
+
 pub struct LibraryService {
     library: Library,
     index_path: PathBuf,
@@ -84,6 +100,8 @@ pub struct LibraryService {
     sender: Sender<JobResult>,
     results: Receiver<JobResult>,
     in_flight: HashSet<String>,
+    /// When the index first diverged from the file, `None` when in sync.
+    dirty_since: Option<Instant>,
 }
 
 impl LibraryService {
@@ -109,9 +127,64 @@ impl LibraryService {
             sender,
             results,
             in_flight: HashSet::new(),
+            dirty_since: None,
         };
         service.refresh();
         service
+    }
+
+    /// The kind a file gets from the folder it lives in.
+    fn kind_for(&self, path: &Path) -> ClipKind {
+        if self.recordings_dir != self.clips_dir && path.starts_with(&self.recordings_dir) {
+            ClipKind::Recording
+        } else if self.edited_dir != self.clips_dir && path.starts_with(&self.edited_dir) {
+            ClipKind::Edited
+        } else {
+            ClipKind::Replay
+        }
+    }
+
+    /// Puts a file the application just wrote into the index with what is
+    /// known about it (no rescan) and queues its probe and thumbnail. A
+    /// file already indexed (an edit that replaced it) gets its game and
+    /// track names. Returns whether the gallery changed.
+    pub fn index_written(&mut self, clip: &ClipFile) -> bool {
+        let written = WrittenFile {
+            path: clip.path.clone(),
+            kind: self.kind_for(&clip.path),
+            bytes: clip.bytes,
+            created: clip.created,
+            duration: clip.duration,
+            game: clip.game.clone(),
+            audio_tracks: clip.audio_tracks.clone(),
+        };
+        match self.library.add_written(written) {
+            Some(id) => {
+                self.mark_dirty();
+                self.queue(vec![id]);
+                true
+            }
+            None => {
+                let id = self
+                    .library
+                    .clips
+                    .iter()
+                    .find(|c| c.path == clip.path)
+                    .map(|c| c.id.clone());
+                let Some(id) = id else {
+                    return false;
+                };
+                if !clip.audio_tracks.is_empty() {
+                    self.library
+                        .set_audio_tracks(&id, clip.audio_tracks.clone());
+                }
+                if let Some(game) = &clip.game {
+                    self.library.set_game(&id, Some(game.clone()));
+                }
+                self.mark_dirty();
+                true
+            }
+        }
     }
 
     pub fn set_dirs(&mut self, paths: &AppPaths, config: &Config) {
@@ -142,34 +215,63 @@ impl LibraryService {
     /// left behind by a crash are renamed so they show up as clips.
     pub fn refresh(&mut self) {
         // Folders scanned in priority order; a folder that doubles as
-        // another (empty subfolder setting) is only scanned once.
-        let mut seen: Vec<PathBuf> = Vec::new();
-        let mut files = Vec::new();
+        // another (empty subfolder setting) is only scanned once, and each
+        // scan leaves the other folders to their own pass (the root holds
+        // all three). Subfolders below each (per game folders) come along.
         let plan = [
             (self.clips_out_dir.clone(), ClipKind::Replay),
             (self.recordings_dir.clone(), ClipKind::Recording),
             (self.edited_dir.clone(), ClipKind::Edited),
             (self.clips_dir.clone(), ClipKind::Replay),
         ];
-        for (dir, kind) in plan {
-            if seen.contains(&dir) {
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let mut files = Vec::new();
+        for (dir, kind) in &plan {
+            if seen.contains(dir) {
                 continue;
             }
-            recover_partial_files(&dir);
-            files.extend(scan_dir(&dir, kind));
-            seen.push(dir);
+            let others: Vec<PathBuf> = plan
+                .iter()
+                .map(|(d, _)| d.clone())
+                .filter(|d| d != dir)
+                .collect();
+            recover_partial_files(dir);
+            files.extend(scan_tree(dir, *kind, &others));
+            seen.push(dir.clone());
         }
+        let mut changed = false;
         for record in &mut self.library.clips {
             if record.thumbnail.as_ref().is_some_and(|t| !t.exists()) {
                 record.thumbnail = None;
+                changed = true;
             }
         }
-        let pending = self.library.reconcile(&files);
-        self.save();
+        let (reconciled, pending) = self.library.reconcile_changed(&files);
+        if changed || reconciled {
+            self.mark_dirty();
+        }
         self.queue(pending);
     }
 
-    fn save(&self) {
+    fn mark_dirty(&mut self) {
+        self.dirty_since.get_or_insert_with(Instant::now);
+    }
+
+    /// Writes the index if it has been dirty for a while.
+    fn save_if_due(&mut self) {
+        if self
+            .dirty_since
+            .is_some_and(|since| since.elapsed() >= SAVE_DELAY)
+        {
+            self.flush();
+        }
+    }
+
+    /// Writes the index now when it changed. Called at exit.
+    pub fn flush(&mut self) {
+        if self.dirty_since.take().is_none() {
+            return;
+        }
         if let Err(err) = self.library.save(&self.index_path) {
             error!("could not save the library index: {err}");
         }
@@ -245,9 +347,10 @@ impl LibraryService {
         }
     }
 
-    /// Applies finished background work. Returns true when anything changed.
-    pub fn poll(&mut self) -> bool {
-        let mut changed = false;
+    /// Applies finished background work and writes the index when it has
+    /// been dirty long enough.
+    pub fn poll(&mut self) -> Polled {
+        let mut polled = Polled::default();
         while let Ok(result) = self.results.try_recv() {
             self.in_flight.remove(&result.id);
             if let Some(info) = result.info {
@@ -255,23 +358,25 @@ impl LibraryService {
                     .set_probe(&result.id, info.duration, info.width, info.height);
                 self.library
                     .default_audio_tracks(&result.id, info.audio_tracks);
-                changed = true;
+                polled.changed = true;
             } else if let Some(record) = self.library.get_mut(&result.id)
                 && !record.probed
             {
                 // The file could not be read; stop retrying it every refresh.
                 record.probed = true;
-                changed = true;
+                polled.changed = true;
             }
-            if result.thumbnail.is_some() {
-                self.library.set_thumbnail(&result.id, result.thumbnail);
-                changed = true;
+            if let Some(thumbnail) = result.thumbnail {
+                polled.thumbnails.push(thumbnail.clone());
+                self.library.set_thumbnail(&result.id, Some(thumbnail));
+                polled.changed = true;
             }
         }
-        if changed {
-            self.save();
+        if polled.changed {
+            self.mark_dirty();
         }
-        changed
+        self.save_if_due();
+        polled
     }
 
     pub fn record(&self, id: &str) -> Option<&ClipRecord> {
@@ -330,21 +435,7 @@ impl LibraryService {
             && !tracks.is_empty()
         {
             self.library.set_audio_tracks(&id, tracks.to_vec());
-            self.save();
-        }
-    }
-
-    /// Records the game of a freshly written file, once it is indexed.
-    pub fn tag_game(&mut self, path: &std::path::Path, game: &str) {
-        let id = self
-            .library
-            .clips
-            .iter()
-            .find(|c| c.path == path)
-            .map(|c| c.id.clone());
-        if let Some(id) = id {
-            self.library.set_game(&id, Some(game.to_owned()));
-            self.save();
+            self.mark_dirty();
         }
     }
 
@@ -357,13 +448,14 @@ impl LibraryService {
             std::fs::rename(&old, &new).map_err(|e| format!("Could not rename the file: {e}"))?;
         }
         self.library.apply_rename(id, title, new);
-        self.save();
+        self.mark_dirty();
         info!("renamed {} to {}", old.display(), title);
         Ok(())
     }
 
-    /// Moves the file to the recycle bin and forgets it.
-    pub fn delete(&mut self, id: &str) -> Result<(), String> {
+    /// Moves the file to the recycle bin and forgets it. Returns the
+    /// thumbnail file that went with it, for caches.
+    pub fn delete(&mut self, id: &str) -> Result<Option<PathBuf>, String> {
         let record = self
             .library
             .get(id)
@@ -376,9 +468,15 @@ impl LibraryService {
             let _ = std::fs::remove_file(thumbnail);
         }
         self.library.remove(id);
-        self.save();
+        self.mark_dirty();
         info!("deleted {}", record.path.display());
-        Ok(())
+        Ok(record.thumbnail)
+    }
+}
+
+impl Drop for LibraryService {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
