@@ -545,10 +545,17 @@ struct StreamTracker {
     sink: Arc<dyn FrameSink>,
     encoder: String,
     current: Option<StreamInfo>,
+    /// The caps the current info was read from; the same caps arrive with
+    /// every frame, and comparing them is cheaper than rebuilding the info.
+    caps: Option<gst::Caps>,
 }
 
 impl StreamTracker {
     fn update(&mut self, caps: &gst::CapsRef) {
+        if self.caps.as_deref().is_some_and(|known| known == caps) {
+            return;
+        }
+        self.caps = Some(caps.to_owned());
         let Some(s) = caps.structure(0) else {
             return;
         };
@@ -586,6 +593,7 @@ fn new_sample_handler(
         sink: sink.clone(),
         encoder,
         current: None,
+        caps: None,
     });
     move |appsink| {
         let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
