@@ -91,12 +91,8 @@ fn main() {
     let encoder = choose_encoder(backend.available_encoders(), EncoderPreference::Auto)
         .cloned()
         .expect("encoder");
-    let mut settings = CaptureSettings::from_config(
-        &CaptureConfig::default(),
-        &AudioConfig::default(),
-        encoder,
-        None,
-    );
+    let mut settings =
+        CaptureSettings::from_config(&CaptureConfig::default(), &AudioConfig::default(), encoder);
     // OPENCLIPS_MONITOR=\.\DISPLAY2 captures another display.
     for monitor in backend.list_monitors().unwrap_or_default() {
         println!("monitor {:?} {}", monitor.id, monitor.name);

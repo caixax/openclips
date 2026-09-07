@@ -65,22 +65,6 @@ impl TrimRange {
     pub fn is_whole(&self, duration: Duration) -> bool {
         self.start.is_zero() && self.end + Duration::from_millis(50) >= duration
     }
-
-    /// The range the stream copy path will really produce: the start moves
-    /// to the last keyframe at or before it, the end stays as requested
-    /// (frames after the cut are simply not written).
-    pub fn snapped_to_keyframes(&self, keyframes: &[Duration]) -> TrimRange {
-        let start = keyframes
-            .iter()
-            .copied()
-            .filter(|k| *k <= self.start)
-            .max()
-            .unwrap_or(Duration::ZERO);
-        TrimRange {
-            start,
-            end: self.end,
-        }
-    }
 }
 
 /// Picks a name for the trimmed file next to the original.
@@ -138,24 +122,6 @@ mod tests {
                 .expect("ok")
                 .is_whole(duration)
         );
-    }
-
-    #[test]
-    fn snaps_start_to_previous_keyframe() {
-        let keyframes = [Duration::ZERO, 2 * SEC, 4 * SEC, 6 * SEC];
-        let range = TrimRange {
-            start: 5 * SEC,
-            end: 7 * SEC,
-        };
-        let snapped = range.snapped_to_keyframes(&keyframes);
-        assert_eq!(snapped.start, 4 * SEC);
-        assert_eq!(snapped.end, 7 * SEC);
-        let exact = TrimRange {
-            start: 2 * SEC,
-            end: 3 * SEC,
-        };
-        assert_eq!(exact.snapped_to_keyframes(&keyframes).start, 2 * SEC);
-        assert_eq!(range.snapped_to_keyframes(&[]).start, Duration::ZERO);
     }
 
     #[test]

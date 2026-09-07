@@ -24,20 +24,13 @@ fn main() {
         "input: {:?} {}x{} audio={}",
         info.duration, info.width, info.height, info.has_audio
     );
-    let keyframes = tools.keyframes(&input).expect("keyframes");
-    println!(
-        "keyframes: {} (first {:?})",
-        keyframes.len(),
-        keyframes.iter().take(4).collect::<Vec<_>>()
-    );
-
     let range = TrimRange::new(
         Duration::from_secs_f64(start),
         Duration::from_secs_f64(end),
         info.duration,
     )
     .expect("range");
-    println!("snapped: {:?}", range.snapped_to_keyframes(&keyframes));
+    println!("range: {range:?}");
 
     for (mode, name) in [
         (TrimMode::StreamCopy, "copy.mp4"),

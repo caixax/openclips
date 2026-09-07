@@ -31,7 +31,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 **Capture**
 
 - Rolling replay buffer in memory (5 seconds to 20 minutes, with a memory cap) that never touches the disk until you save.
-- Hardware encoding through NVENC, Quick Sync or AMF, with Media Foundation and x264 as fallbacks; 1080p60 at 20 Mbps costs a few percent of a modern GPU.
+- Hardware encoding through NVENC, Quick Sync or AMF, with Media Foundation and x264 as fallbacks; 1080p60 at 20 Mbps costs a few percent of a modern GPU with display capture (game capture currently copies every frame through system memory and costs more).
 - Quality presets (Low, Standard, High) or your own frame rate and bitrate.
 - Full session recordings written as fragmented MP4, so a crash still leaves a playable file. A display mode change or a capture restart while recording closes the file as it is and continues in a numbered one next to it, so the recording is cut, not lost.
 - Windows Graphics Capture (default) or Desktop Duplication, cursor on or off (Graphics Capture only: GStreamer 1.28 crashes drawing the pointer in the Desktop Duplication path when a game changes the display mode, so that path leaves it out), any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.

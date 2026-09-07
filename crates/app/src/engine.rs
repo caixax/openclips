@@ -57,6 +57,8 @@ pub struct EngineStatus {
     pub encoder: EncoderInfo,
     pub backend: &'static str,
     pub replay_length: Duration,
+    /// The byte cap of the ring, to tell when it cuts the footage short.
+    pub memory_cap: usize,
     /// Non fatal information such as an encoder fallback.
     pub notice: Option<String>,
     /// The capture is producing black or empty frames.
@@ -535,6 +537,10 @@ impl Engine {
         (self.buffer_wanted || self.auto_buffer) && self.is_capturing()
     }
 
+    pub fn is_recording(&self) -> bool {
+        self.recording_wanted
+    }
+
     /// Starts a session recording, starting capture first when needed. The
     /// file opens at the next keyframe.
     pub fn start_recording(&mut self) -> Result<(), AppError> {
@@ -629,12 +635,8 @@ impl Engine {
     }
 
     fn capture_settings(&self, encoder: EncoderInfo, display: DisplaySelection) -> CaptureSettings {
-        let mut settings = CaptureSettings::from_config(
-            &self.config.capture,
-            &self.config.audio,
-            encoder,
-            self.config.replay.temp_dir.clone(),
-        );
+        let mut settings =
+            CaptureSettings::from_config(&self.config.capture, &self.config.audio, encoder);
         settings.display = display;
         settings.game_capture_pid = self.game_capture_pid();
         for track in &mut settings.audio_tracks {
@@ -754,9 +756,12 @@ impl Engine {
         if let DisplaySelection::Monitor(id) = &display
             && !self.monitors.iter().any(|m| &m.id == id)
         {
-            self.notice = Some(format!(
-                "Display {id} is not connected, capturing the primary display instead."
-            ));
+            self.notice = Some(
+                crate::i18n::tr(
+                    "Display {id} is not connected, capturing the primary display instead.",
+                )
+                .replace("{id}", id),
+            );
             display = DisplaySelection::Primary;
         }
 
@@ -832,21 +837,21 @@ impl Engine {
                 self.starting = None;
                 self.app_audio = self.app_pids();
                 if candidate != self.preferred {
-                    self.add_notice(format!(
-                        "{} could not start, using {} instead.",
-                        self.preferred.kind.label(),
-                        candidate.kind.label()
-                    ));
+                    self.add_notice(
+                        crate::i18n::tr("{encoder} could not start, using {other} instead.")
+                            .replace("{encoder}", self.preferred.kind.label())
+                            .replace("{other}", candidate.kind.label()),
+                    );
                 }
                 self.active = candidate;
             }
             Err(CaptureError::AudioSource { key, message }) => {
                 warn!("audio source {key} failed to start: {message}");
                 self.unavailable_audio.insert(key.clone());
-                self.add_notice(format!(
-                    "Audio device {} is unavailable, capturing without it.",
-                    self.audio_source_name(&key)
-                ));
+                self.add_notice(
+                    crate::i18n::tr("Audio device {name} is unavailable, capturing without it.")
+                        .replace("{name}", &self.audio_source_name(&key)),
+                );
                 self.launch_attempt();
             }
             Err(CaptureError::EncoderStart { encoder, reason }) => {
@@ -861,9 +866,10 @@ impl Engine {
             Err(CaptureError::GameCapture(message)) if !self.game_capture_unavailable => {
                 warn!("game capture failed to start: {message}");
                 self.game_capture_unavailable = true;
-                self.add_notice(format!(
-                    "Game capture failed ({message}), using display capture."
-                ));
+                self.add_notice(
+                    crate::i18n::tr("Game capture failed ({error}), using display capture.")
+                        .replace("{error}", &message),
+                );
                 self.launch_attempt();
             }
             Err(CaptureError::Cancelled) => {
@@ -921,8 +927,9 @@ impl Engine {
             if self.is_engaged() {
                 if self.recording_wanted {
                     self.restart_pending = true;
-                    self.notice =
-                        Some("Capture settings apply when the current recording stops.".to_owned());
+                    self.notice = Some(crate::i18n::tr(
+                        "Capture settings apply when the current recording stops.",
+                    ));
                 } else {
                     self.restart_capture()?;
                 }
@@ -980,9 +987,12 @@ impl Engine {
                     self.unavailable_audio.insert(key.clone());
                     let name = self.audio_source_name(&key);
                     match self.restart_capture() {
-                        Ok(()) => self.add_notice(format!(
-                            "Audio device {name} stopped working, capturing without it."
-                        )),
+                        Ok(()) => self.add_notice(
+                            crate::i18n::tr(
+                                "Audio device {name} stopped working, capturing without it.",
+                            )
+                            .replace("{name}", &name),
+                        ),
                         Err(err) => self.last_failure = Some(err.to_string()),
                     }
                 }
@@ -991,9 +1001,12 @@ impl Engine {
                 CaptureError::GameCapture(message) if self.wants_capture() => {
                     self.game_capture_unavailable = true;
                     match self.restart_capture() {
-                        Ok(()) => self.add_notice(format!(
-                            "Game capture failed ({message}), using display capture."
-                        )),
+                        Ok(()) => self.add_notice(
+                            crate::i18n::tr(
+                                "Game capture failed ({error}), using display capture.",
+                            )
+                            .replace("{error}", &message),
+                        ),
                         Err(err) => self.last_failure = Some(err.to_string()),
                     }
                 }
@@ -1001,8 +1014,10 @@ impl Engine {
                     if self.wants_capture() && self.allow_restart() =>
                 {
                     match self.restart_capture() {
-                        Ok(()) => self
-                            .add_notice(format!("Capture restarted after an error ({message}).")),
+                        Ok(()) => self.add_notice(
+                            crate::i18n::tr("Capture restarted after an error ({error}).")
+                                .replace("{error}", &message),
+                        ),
                         Err(err) => self.last_failure = Some(err.to_string()),
                     }
                 }
@@ -1051,6 +1066,7 @@ impl Engine {
             encoder: self.active.clone(),
             backend: self.backend.name(),
             replay_length: self.effective_replay_length(),
+            memory_cap: self.config.replay_memory_cap_bytes(),
             notice: self.notice.clone(),
             blank: self.blank_warned,
         }

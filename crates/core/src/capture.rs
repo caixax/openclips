@@ -1,8 +1,6 @@
 //! Platform neutral descriptions of what to capture and what is available.
 //! Backends consume these; the UI and config produce them.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
 use crate::config::{AudioConfig, CaptureApi, CaptureConfig, DisplaySelection, EncoderPreference};
@@ -222,8 +220,6 @@ pub struct CaptureSettings {
     pub api: CaptureApi,
     /// Scale frames to the captured display's desktop resolution.
     pub stretch: bool,
-    /// Optional directory for backend scratch files, for example a RAM disk.
-    pub temp_dir: Option<PathBuf>,
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub audio_bitrate_kbps: u32,
     /// When set, capture the game with this process id through the injected
@@ -233,12 +229,7 @@ pub struct CaptureSettings {
 }
 
 impl CaptureSettings {
-    pub fn from_config(
-        config: &CaptureConfig,
-        audio: &AudioConfig,
-        encoder: EncoderInfo,
-        temp_dir: Option<PathBuf>,
-    ) -> Self {
+    pub fn from_config(config: &CaptureConfig, audio: &AudioConfig, encoder: EncoderInfo) -> Self {
         Self {
             display: config.display.clone(),
             encoder,
@@ -248,7 +239,6 @@ impl CaptureSettings {
             show_cursor: config.show_cursor,
             api: config.api,
             stretch: config.stretch,
-            temp_dir,
             audio_tracks: plan_audio_tracks(audio),
             audio_bitrate_kbps: audio.bitrate_kbps,
             game_capture_pid: None,

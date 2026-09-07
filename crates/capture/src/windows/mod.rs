@@ -50,6 +50,9 @@ pub struct WindowsBackend {
     hooks: Option<game_capture::Hooks>,
     writer: Arc<mux::Mp4Writer>,
     recorder: Arc<recording::Mp4Recorder>,
+    tools: Arc<media::GstMediaTools>,
+    processes: Arc<processes::ToolHelpWatcher>,
+    icons: Arc<icons::ShellIconExtractor>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -142,6 +145,9 @@ impl WindowsBackend {
             hooks,
             writer: Arc::new(mux::Mp4Writer),
             recorder: Arc::new(recording::Mp4Recorder),
+            tools: Arc::new(media::GstMediaTools),
+            processes: Arc::new(processes::ToolHelpWatcher),
+            icons: Arc::new(icons::ShellIconExtractor),
         })
     }
 
@@ -275,7 +281,7 @@ impl CaptureBackend for WindowsBackend {
     }
 
     fn media_tools(&self) -> Arc<dyn MediaTools> {
-        Arc::new(media::GstMediaTools)
+        self.tools.clone()
     }
 
     fn create_player(&self, sink: Arc<dyn PlayerSink>) -> Result<Box<dyn Player>, CaptureError> {
@@ -283,11 +289,11 @@ impl CaptureBackend for WindowsBackend {
     }
 
     fn process_watcher(&self) -> Arc<dyn ProcessWatcher> {
-        Arc::new(processes::ToolHelpWatcher)
+        self.processes.clone()
     }
 
     fn icon_extractor(&self) -> Arc<dyn IconExtractor> {
-        Arc::new(icons::ShellIconExtractor)
+        self.icons.clone()
     }
 }
 

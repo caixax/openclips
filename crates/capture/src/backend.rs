@@ -54,9 +54,6 @@ pub trait MediaTools: Send + Sync {
         max_width: u32,
     ) -> Result<(), CaptureError>;
 
-    /// Keyframe timestamps of the video stream, sorted.
-    fn keyframes(&self, path: &Path) -> Result<Vec<Duration>, CaptureError>;
-
     fn trim(&self, job: &TrimJob) -> Result<ClipFile, CaptureError>;
 }
 

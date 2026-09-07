@@ -2,7 +2,8 @@
 //!
 //! Every field has a default so that a partial or missing file always loads.
 //! Unknown top level keys are rejected so that a typo in a hand edited file is
-//! reported instead of silently ignored.
+//! reported instead of silently ignored; keys inside a section are ignored,
+//! so a config written by a newer version still loads.
 
 mod hotkey;
 mod paths;
@@ -86,13 +87,13 @@ impl Language {
         Language::Italian,
     ];
 
-    /// The lower case code used as the translation catalog file name.
     /// The language for a `code()` value, for example from the installer.
     pub fn from_code(code: &str) -> Option<Language> {
         let code = code.trim().to_ascii_lowercase();
         Self::ALL.into_iter().find(|l| l.code() == code)
     }
 
+    /// The lower case code used as the translation catalog file name.
     pub const fn code(self) -> &'static str {
         match self {
             Language::English => "en",
@@ -238,9 +239,9 @@ pub enum EncoderPreference {
     Software,
 }
 
-/// Which Windows screen capture API drives the source. Desktop duplication
-/// delivers every frame of a game on a high refresh display, which the
-/// Desktop Duplication path in the GStreamer source does not (it repeats
+/// Which Windows screen capture API drives the source. Windows Graphics
+/// Capture delivers every frame of a game on a high refresh display, which
+/// the Desktop Duplication path in the GStreamer source does not (it repeats
 /// about one frame in seven at 60 fps against a 240 Hz display), so it is
 /// the default. Desktop Duplication stays as the fallback for systems
 /// where Graphics Capture is unavailable.
@@ -320,9 +321,6 @@ pub struct ReplayConfig {
     pub start_on_launch: bool,
     pub length_seconds: u32,
     pub memory_cap_mb: u32,
-    /// When set, buffer segments that must touch disk go here (for example a
-    /// RAM disk). Empty means pure in memory buffering.
-    pub temp_dir: Option<PathBuf>,
 }
 
 impl Default for ReplayConfig {
@@ -331,7 +329,6 @@ impl Default for ReplayConfig {
             start_on_launch: true,
             length_seconds: 30,
             memory_cap_mb: 1024,
-            temp_dir: None,
         }
     }
 }
@@ -551,22 +548,6 @@ impl Default for HotkeyBinding {
             binding: Hotkey::new(Modifiers::ALT, Key::Char('8')),
             action: HotkeyActionKind::SaveReplay,
             seconds: 0,
-        }
-    }
-}
-
-impl HotkeyBinding {
-    pub fn describe(&self) -> String {
-        match self.action {
-            HotkeyActionKind::SaveReplay if self.seconds == 0 => {
-                "saves the whole buffer".to_owned()
-            }
-            HotkeyActionKind::SaveReplay if self.seconds.is_multiple_of(60) => {
-                format!("saves the last {} min", self.seconds / 60)
-            }
-            HotkeyActionKind::SaveReplay => format!("saves the last {} s", self.seconds),
-            HotkeyActionKind::ToggleReplayBuffer => "starts or stops the buffer".to_owned(),
-            HotkeyActionKind::ToggleRecording => "starts or stops recording".to_owned(),
         }
     }
 }
@@ -858,9 +839,7 @@ impl Config {
     /// True when moving from `self` to `next` requires the capture pipeline
     /// to be rebuilt (anything the encoder or the source is configured with).
     pub fn capture_restart_needed(&self, next: &Config) -> bool {
-        self.capture != next.capture
-            || self.replay.temp_dir != next.replay.temp_dir
-            || self.audio.topology() != next.audio.topology()
+        self.capture != next.capture || self.audio.topology() != next.audio.topology()
     }
 
     pub fn audio_levels_changed(&self, next: &Config) -> bool {

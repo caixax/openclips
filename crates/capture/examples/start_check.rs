@@ -41,12 +41,8 @@ fn main() {
     let encoder = choose_encoder(backend.available_encoders(), EncoderPreference::Auto)
         .cloned()
         .expect("encoder");
-    let settings = CaptureSettings::from_config(
-        &CaptureConfig::default(),
-        &AudioConfig::default(),
-        encoder,
-        None,
-    );
+    let settings =
+        CaptureSettings::from_config(&CaptureConfig::default(), &AudioConfig::default(), encoder);
     let sink = Arc::new(Counter(Mutex::new(0)));
     let (tx, rx) = channel();
     let started = Instant::now();

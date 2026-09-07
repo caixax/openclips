@@ -64,10 +64,6 @@ impl MediaTools for GstMediaTools {
         })
     }
 
-    fn keyframes(&self, path: &Path) -> Result<Vec<Duration>, CaptureError> {
-        super::trim::keyframes(path)
-    }
-
     fn trim(&self, job: &TrimJob) -> Result<ClipFile, CaptureError> {
         super::trim::trim(job)
     }

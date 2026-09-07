@@ -118,60 +118,6 @@ fn add_and_link(
     gst::Element::link_many(&refs).map_err(|e| media_error(input, e))
 }
 
-/// Lists the keyframe timestamps of the first video stream without
-/// decoding anything.
-pub fn keyframes(path: &Path) -> Result<Vec<Duration>, CaptureError> {
-    let src = filesrc(path)?;
-    let demux = make("qtdemux")?;
-    let parse = make("h264parse")?;
-    let appsink = gst_app::AppSink::builder()
-        .caps(&gst::Caps::builder("video/x-h264").build())
-        .sync(false)
-        .max_buffers(0)
-        .build();
-    let sink: gst::Element = appsink.clone().upcast();
-
-    let pipeline = gst::Pipeline::with_name("openclips-keyframes");
-    pipeline
-        .add_many([&src, &demux, &parse, &sink])
-        .map_err(|e| media_error(path, e))?;
-    src.link(&demux).map_err(|e| media_error(path, e))?;
-    gst::Element::link_many([&parse, &sink]).map_err(|e| media_error(path, e))?;
-    let parse_pad = parse
-        .static_pad("sink")
-        .ok_or_else(|| media_error(path, "h264parse has no sink pad"))?;
-    demux.connect_pad_added(move |_, pad| {
-        if pad.name().starts_with("video") && !parse_pad.is_linked() {
-            let _ = pad.link(&parse_pad);
-        }
-    });
-
-    let bus = bus_of(&pipeline, path)?;
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|_| media_error(path, "could not open the file"))?;
-    let mut found = Vec::new();
-    let outcome = loop {
-        match next_sample(&appsink, &bus, path) {
-            Ok(Some(sample)) => {
-                if let Some(buffer) = sample.buffer()
-                    && !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT)
-                    && let Some(pts) = buffer.pts()
-                {
-                    found.push(Duration::from_nanos(pts.nseconds()));
-                }
-            }
-            Ok(None) => break Ok(()),
-            Err(err) => break Err(err),
-        }
-    };
-    let _ = pipeline.set_state(gst::State::Null);
-    outcome?;
-    found.sort();
-    found.dedup();
-    Ok(found)
-}
-
 /// Audio appsinks collected as the demuxer or decoder exposes streams,
 /// keyed by pad name so the order is stable.
 type AudioSinks = Arc<Mutex<Vec<(String, gst_app::AppSink)>>>;
