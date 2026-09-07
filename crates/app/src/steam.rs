@@ -5,6 +5,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+/// The cached catalog is downloaded again after this long.
+const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
 use serde::Deserialize;
 use tracing::info;
 
@@ -27,9 +30,19 @@ struct App {
 
 /// Downloads the catalog (or reads the cached copy) and returns app names.
 pub fn app_names(cache: &Path) -> Result<Vec<String>, String> {
-    let text = match std::fs::read_to_string(cache) {
-        Ok(text) => text,
-        Err(_) => {
+    let fresh = std::fs::metadata(cache)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|m| m.elapsed().ok())
+        .is_some_and(|age| age < CACHE_MAX_AGE);
+    let cached = if fresh {
+        std::fs::read_to_string(cache).ok()
+    } else {
+        None
+    };
+    let text = match cached {
+        Some(text) => text,
+        None => {
             info!("downloading the Steam app list");
             let text = ureq::get(APP_LIST_URL)
                 .config()
