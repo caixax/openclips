@@ -358,9 +358,15 @@ fn build(
     };
 
     let convert = make("d3d11convert")?;
+    // Square pixels always. When a game switches the display to a 4:3
+    // mode and the frames are stretched to the desktop size, the converter
+    // would otherwise keep the picture's shape through a pixel aspect
+    // ratio, which both undoes the stretch and changes the encoded
+    // parameters mid stream; a muxer cannot take that inside one file.
     let mut nv12_caps = gst::Caps::builder("video/x-raw")
         .features(["memory:D3D11Memory"])
-        .field("format", "NV12");
+        .field("format", "NV12")
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1));
     // Stretching: every frame is scaled to the display's desktop size, so a
     // 4:3 fullscreen mode fills the 16:9 frame the way the monitor shows it.
     if settings.stretch
@@ -615,14 +621,20 @@ impl StreamTracker {
             fps_den,
             encoder: self.encoder.clone(),
         };
+        // Every caps change goes to the sink, also when size and rate
+        // stayed the same: the encoded parameters changed in some other
+        // way (aspect, colour), and the ring and the recorder must not
+        // join frames across it.
         if self.current.as_ref() != Some(&info) {
             info!(
                 "stream: {}x{} @ {}/{} fps via {}",
                 width, height, fps_num, fps_den, self.encoder
             );
-            self.sink.on_stream(info.clone());
-            self.current = Some(info);
+        } else {
+            info!("stream parameters changed: {caps}");
         }
+        self.sink.on_stream(info.clone());
+        self.current = Some(info);
     }
 }
 

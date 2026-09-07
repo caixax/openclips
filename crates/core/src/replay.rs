@@ -79,6 +79,11 @@ pub struct ReplayBuffer {
     audio: Vec<AudioTrack>,
     bytes: usize,
     dropped_leading: u64,
+    /// Index of the first frame after the latest change of the encoded
+    /// stream's parameters that left the picture size and rate alone (a
+    /// pixel aspect or colour change). A muxer cannot switch parameters
+    /// inside one file, so a snapshot never reaches back across it.
+    cut_at: Option<usize>,
 }
 
 impl ReplayBuffer {
@@ -91,6 +96,7 @@ impl ReplayBuffer {
             audio: Vec::new(),
             bytes: 0,
             dropped_leading: 0,
+            cut_at: None,
         }
     }
 
@@ -107,10 +113,16 @@ impl ReplayBuffer {
         self.stream.as_ref()
     }
 
+    /// A new stream description. A different size or rate empties the ring;
+    /// the same description again means the encoded parameters changed in
+    /// some other way, and the frames so far are kept but no longer joined
+    /// with the ones to come (see `cut_at`).
     pub fn set_stream(&mut self, stream: StreamInfo) {
         if self.stream.as_ref() != Some(&stream) {
             self.clear();
             self.stream = Some(stream);
+        } else if !self.frames.is_empty() {
+            self.cut_at = Some(self.frames.len());
         }
     }
 
@@ -153,6 +165,7 @@ impl ReplayBuffer {
     pub fn clear(&mut self) {
         self.frames.clear();
         self.gops.clear();
+        self.cut_at = None;
         for track in &mut self.audio {
             track.packets.clear();
             track.bytes = 0;
@@ -218,7 +231,14 @@ impl ReplayBuffer {
                 .find(|(_, f)| f.keyframe && f.pts <= target)
                 .map(|(i, _)| i)
         });
-        let start = start.unwrap_or(0);
+        let mut start = start.unwrap_or(0);
+        // Never reach back across a parameter change; the first frame after
+        // it is a keyframe (a new group always starts with one).
+        if let Some(cut) = self.cut_at
+            && start < cut
+        {
+            start = cut;
+        }
         let frames: Vec<EncodedFrame> = self.frames.range(start..).cloned().collect();
         let first = frames.first()?;
         let duration = Self::extent(first, last, &stream);
@@ -298,6 +318,7 @@ impl ReplayBuffer {
                 }
             }
             self.gops.pop_front();
+            self.cut_at = self.cut_at.and_then(|cut| cut.checked_sub(next_gop));
         }
         self.trim_audio();
     }
@@ -466,6 +487,42 @@ mod tests {
         buffer.push(frame(GOP * 3, 10));
         check_gops(&buffer);
         assert_eq!(buffer.stats().keyframes, 1);
+    }
+
+    #[test]
+    fn a_parameter_change_cuts_snapshots_but_keeps_footage() {
+        let mut buffer = buffer(30, usize::MAX);
+        fill(&mut buffer, FPS * 10, 10);
+        // Same size and rate again: the encoder changed something else.
+        buffer.set_stream(stream());
+        assert_eq!(
+            buffer.stats().frames,
+            (FPS * 10) as usize,
+            "nothing dropped"
+        );
+        for i in FPS * 10..FPS * 14 {
+            buffer.push(frame(i, 10));
+        }
+        let snap = buffer
+            .snapshot_last(Duration::from_secs(8))
+            .expect("snapshot");
+        assert!(snap.truncated);
+        assert!(snap.frames[0].keyframe);
+        assert_eq!(
+            snap.frames[0].pts,
+            Timestamp::from_nanos(FPS * 10 * FRAME_NS)
+        );
+        assert_eq!(snap.frames.len(), (FPS * 4) as usize);
+        // Eviction moves the cut along and drops it once it is gone.
+        buffer.set_limits(ReplayLimits {
+            max_duration: Duration::from_secs(2),
+            max_bytes: usize::MAX,
+        });
+        let snap = buffer
+            .snapshot_last(Duration::from_secs(2))
+            .expect("snapshot");
+        assert!(!snap.truncated);
+        assert!(buffer.cut_at.is_none());
     }
 
     #[test]
