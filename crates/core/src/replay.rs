@@ -72,6 +72,10 @@ pub struct ReplayBuffer {
     limits: ReplayLimits,
     stream: Option<StreamInfo>,
     frames: VecDeque<EncodedFrame>,
+    /// Length in frames of every group of pictures in `frames`, in order.
+    /// Each group starts at a keyframe, so eviction, the keyframe count and
+    /// the blank check never walk the frames.
+    gops: VecDeque<usize>,
     audio: Vec<AudioTrack>,
     bytes: usize,
     dropped_leading: u64,
@@ -83,6 +87,7 @@ impl ReplayBuffer {
             limits,
             stream: None,
             frames: VecDeque::new(),
+            gops: VecDeque::new(),
             audio: Vec::new(),
             bytes: 0,
             dropped_leading: 0,
@@ -147,6 +152,7 @@ impl ReplayBuffer {
 
     pub fn clear(&mut self) {
         self.frames.clear();
+        self.gops.clear();
         for track in &mut self.audio {
             track.packets.clear();
             track.bytes = 0;
@@ -166,6 +172,11 @@ impl ReplayBuffer {
             return;
         }
         self.bytes += frame.size();
+        if frame.keyframe {
+            self.gops.push_back(1);
+        } else if let Some(last) = self.gops.back_mut() {
+            *last += 1;
+        }
         self.frames.push_back(frame);
         self.evict();
     }
@@ -184,7 +195,7 @@ impl ReplayBuffer {
         ReplayStats {
             frames: self.frames.len(),
             bytes: self.bytes,
-            keyframes: self.frames.iter().filter(|f| f.keyframe).count(),
+            keyframes: self.gops.len(),
             audio_packets: self.audio.iter().map(|t| t.packets.len()).sum(),
             duration: self.span(),
             looks_blank: self.looks_blank(),
@@ -244,16 +255,21 @@ impl ReplayBuffer {
         if !big_enough {
             return false;
         }
-        let recent: Vec<usize> = self
-            .frames
+        if self.gops.len() < BLANK_KEYFRAMES_REQUIRED {
+            return false;
+        }
+        // The keyframe of each group sits at the group's first index.
+        let mut index = self.frames.len();
+        self.gops
             .iter()
             .rev()
-            .filter(|f| f.keyframe)
             .take(BLANK_KEYFRAMES_REQUIRED)
-            .map(|f| f.size())
-            .collect();
-        recent.len() == BLANK_KEYFRAMES_REQUIRED
-            && recent.iter().all(|size| *size <= BLANK_KEYFRAME_MAX_BYTES)
+            .all(|len| {
+                index -= len;
+                self.frames
+                    .get(index)
+                    .is_some_and(|f| f.size() <= BLANK_KEYFRAME_MAX_BYTES)
+            })
     }
 
     fn span(&self) -> Duration {
@@ -269,7 +285,8 @@ impl ReplayBuffer {
     }
 
     fn evict(&mut self) {
-        while let Some(next_gop) = self.second_keyframe_index() {
+        while self.gops.len() >= 2 {
+            let next_gop = self.gops[0];
             let over_duration = self.duration_from(next_gop) >= self.limits.max_duration;
             let over_bytes = self.bytes > self.limits.max_bytes;
             if !over_duration && !over_bytes {
@@ -280,6 +297,7 @@ impl ReplayBuffer {
                     self.bytes -= frame.size();
                 }
             }
+            self.gops.pop_front();
         }
         self.trim_audio();
     }
@@ -312,15 +330,6 @@ impl ReplayBuffer {
                 self.bytes -= size;
             }
         }
-    }
-
-    fn second_keyframe_index(&self) -> Option<usize> {
-        self.frames
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find(|(_, f)| f.keyframe)
-            .map(|(i, _)| i)
     }
 
     fn duration_from(&self, index: usize) -> Duration {
@@ -409,6 +418,54 @@ mod tests {
         assert_eq!(buffer.dropped_leading_frames(), 30);
         buffer.push(frame(60, 10));
         assert_eq!(buffer.stats().frames, 1);
+    }
+
+    /// The bookkeeping the buffer relies on instead of walking the frames.
+    fn check_gops(buffer: &ReplayBuffer) {
+        assert_eq!(buffer.gops.iter().sum::<usize>(), buffer.frames.len());
+        assert_eq!(
+            buffer.gops.len(),
+            buffer.frames.iter().filter(|f| f.keyframe).count()
+        );
+        let mut index = 0;
+        for len in &buffer.gops {
+            assert!(
+                buffer.frames[index].keyframe,
+                "group at {index} starts at a keyframe"
+            );
+            assert!(
+                buffer
+                    .frames
+                    .range(index + 1..index + len)
+                    .all(|f| !f.keyframe),
+                "no keyframe inside a group"
+            );
+            index += len;
+        }
+    }
+
+    #[test]
+    fn gop_bookkeeping_survives_pushes_evictions_and_clears() {
+        let mut buffer = buffer(10, usize::MAX);
+        for i in 0..FPS * 60 + 17 {
+            buffer.push(frame(i, 10));
+            if i % 97 == 0 {
+                check_gops(&buffer);
+            }
+        }
+        check_gops(&buffer);
+        buffer.set_limits(ReplayLimits {
+            max_duration: Duration::from_secs(3),
+            max_bytes: usize::MAX,
+        });
+        check_gops(&buffer);
+        assert!(buffer.stats().keyframes <= 4);
+        buffer.clear();
+        check_gops(&buffer);
+        assert_eq!(buffer.stats().keyframes, 0);
+        buffer.push(frame(GOP * 3, 10));
+        check_gops(&buffer);
+        assert_eq!(buffer.stats().keyframes, 1);
     }
 
     #[test]
