@@ -13,6 +13,10 @@ use crate::error::AppError;
 use crate::ui::ToastWindow;
 
 const VISIBLE_FOR: Duration = Duration::from_millis(3500);
+/// Poll interval and count while waiting for the event loop to create the
+/// native window after `show`.
+const SETUP_DELAY: Duration = Duration::from_millis(250);
+const SETUP_ATTEMPTS: u32 = 40;
 const MARGIN: i32 = 24;
 
 #[derive(Default)]
@@ -22,11 +26,14 @@ pub struct Toast {
 }
 
 impl Toast {
-    /// Creates the window ahead of time, off screen and hidden, so its
-    /// extended styles are in place before a clip needs it. A window shown
-    /// for the first time with the default styles is activated by Windows,
-    /// which takes the focus from the game and drops an exclusive fullscreen
-    /// game to the desktop. Done at startup, while nothing is in front.
+    /// Creates the window ahead of time, off screen, so its extended styles
+    /// are in place before a clip needs it. A window shown with the default
+    /// styles is activated by Windows, which takes the focus from the game
+    /// and drops an exclusive fullscreen game to the desktop. Done at
+    /// startup, while nothing is in front. The window stays shown as far as
+    /// the toolkit knows: every visibility change through it rewrites the
+    /// extended styles and would drop ours, so later shows and hides go
+    /// straight to the OS (see `platform::set_visible`).
     pub fn prepare(&self) -> Result<(), AppError> {
         if self.window.borrow().is_some() {
             return Ok(());
@@ -36,8 +43,10 @@ impl Toast {
             .window()
             .set_position(slint::PhysicalPosition::new(-10_000, -10_000));
         window.show()?;
-        platform::keep_out_of_the_way(&window);
-        window.hide()?;
+        // The native window only exists once the event loop has created
+        // it, so the styles are applied (and the window parked) from a
+        // timer that retries until the handle is there.
+        finish_setup(window.as_weak(), SETUP_ATTEMPTS);
         *self.window.borrow_mut() = Some(window);
         Ok(())
     }
@@ -53,22 +62,35 @@ impl Toast {
         window.set_heading(heading.into());
         window.set_message(message.into());
         let previous = platform::foreground_window();
-        window.show()?;
         place(window, previous);
+        platform::set_visible(window, true);
         platform::restore_foreground(previous);
 
         let weak = window.as_weak();
         let timer = slint::Timer::default();
         timer.start(slint::TimerMode::SingleShot, VISIBLE_FOR, move || {
-            if let Some(window) = weak.upgrade()
-                && let Err(err) = window.hide()
-            {
-                warn!("could not hide the clip notice: {err}");
+            if let Some(window) = weak.upgrade() {
+                platform::set_visible(&window, false);
             }
         });
         *self.timer.borrow_mut() = Some(timer);
         Ok(())
     }
+}
+
+fn finish_setup(weak: slint::Weak<ToastWindow>, attempts_left: u32) {
+    slint::Timer::single_shot(SETUP_DELAY, move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        if platform::keep_out_of_the_way(&window) {
+            platform::set_visible(&window, false);
+        } else if attempts_left > 0 {
+            finish_setup(weak, attempts_left - 1);
+        } else {
+            warn!("the clip notice window never appeared; it may take the focus");
+        }
+    });
 }
 
 /// Bottom right corner of the work area of the display showing `focused`
@@ -92,13 +114,15 @@ mod platform {
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use slint::ComponentHandle;
+    use tracing::warn;
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, SPI_GETWORKAREA, SetForegroundWindow,
-        SetWindowLongPtrW, SystemParametersInfoW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, SPI_GETWORKAREA, SW_HIDE,
+        SW_SHOWNOACTIVATE, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
+        SystemParametersInfoW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
     use super::ToastWindow;
@@ -119,10 +143,23 @@ mod platform {
         }
     }
 
-    /// No taskbar button and no activation on later shows.
-    pub fn keep_out_of_the_way(window: &ToastWindow) {
+    /// Shows or hides the window without activating it and without the
+    /// toolkit touching its styles.
+    pub fn set_visible(window: &ToastWindow, visible: bool) {
         let Some(hwnd) = hwnd_of(window) else {
+            warn!("the clip notice has no window handle");
             return;
+        };
+        let command = if visible { SW_SHOWNOACTIVATE } else { SW_HIDE };
+        // SAFETY: `hwnd` belongs to this thread's window.
+        let _ = unsafe { ShowWindow(hwnd, command) };
+    }
+
+    /// No taskbar button and no activation on later shows. False when the
+    /// native window does not exist yet.
+    pub fn keep_out_of_the_way(window: &ToastWindow) -> bool {
+        let Some(hwnd) = hwnd_of(window) else {
+            return false;
         };
         // SAFETY: `hwnd` belongs to this thread's window; the style bits are
         // read, extended and written back.
@@ -131,6 +168,7 @@ mod platform {
             let style = style | (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
         }
+        true
     }
 
     pub fn work_area_bottom_right(focused: Option<HWND>) -> (i32, i32) {
@@ -187,7 +225,20 @@ mod platform {
 
     pub fn restore_foreground(_previous: Option<()>) {}
 
-    pub fn keep_out_of_the_way(_window: &ToastWindow) {}
+    pub fn keep_out_of_the_way(_window: &ToastWindow) -> bool {
+        true
+    }
+
+    pub fn set_visible(window: &ToastWindow, visible: bool) {
+        let result = if visible {
+            window.show()
+        } else {
+            window.hide()
+        };
+        if let Err(err) = result {
+            tracing::warn!("could not change the clip notice visibility: {err}");
+        }
+    }
 
     pub fn work_area_bottom_right(_focused: Option<()>) -> (i32, i32) {
         (1920, 1080)
