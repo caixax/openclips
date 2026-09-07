@@ -49,10 +49,12 @@ todo = "warn"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true
-panic = "unwind"
+# Nothing catches panics; a panic in a callback aborts either way, and the
+# unwinding tables are a third of the binary.
+panic = "abort"
 
 [profile.dev.package."*"]
 opt-level = 2
