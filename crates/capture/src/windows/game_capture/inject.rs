@@ -6,10 +6,12 @@
 //! so injection must always go through these binaries: we never build or
 //! re-sign our own hook.
 
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tracing::{info, warn};
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::protocol::{GraphicsOffsets, parse_offsets};
 use crate::error::CaptureError;
@@ -75,9 +77,14 @@ impl Hooks {
     /// d3d/dxgi DLL versions, so they are read once per capture.
     pub fn graphics_offsets(&self, target_64bit: bool) -> Result<GraphicsOffsets, CaptureError> {
         let exe = self.offsets_helper(target_64bit);
-        let output = Command::new(&exe).output().map_err(|e| {
-            CaptureError::GameCapture(format!("could not run {}: {e}", exe.display()))
-        })?;
+        // The helpers are console programs; without this flag a GUI process
+        // spawning them gets a console window that flashes over the game.
+        let output = Command::new(&exe)
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .output()
+            .map_err(|e| {
+                CaptureError::GameCapture(format!("could not run {}: {e}", exe.display()))
+            })?;
         if !output.status.success() {
             return Err(CaptureError::GameCapture(format!(
                 "{} exited with {}",
@@ -102,6 +109,7 @@ impl Hooks {
             .arg(&dll)
             .arg("1")
             .arg(thread_id.to_string())
+            .creation_flags(CREATE_NO_WINDOW.0)
             .status()
             .map_err(|e| {
                 CaptureError::GameCapture(format!("could not run {}: {e}", helper.display()))
