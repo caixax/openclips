@@ -34,5 +34,8 @@ windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[build-dependencies]
+pkg-config = "0.3"
+
 [lints]
 workspace = true

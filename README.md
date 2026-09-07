@@ -86,7 +86,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 
   At run time no `PATH` changes are needed: the GStreamer imports are delay loaded and the app looks for the runtime in a `gstreamer` folder next to the executable, then in `GSTREAMER_1_0_ROOT_MSVC_X86_64`, then in the default install locations, and shows a clear message if none exists.
 
-  Plugins used: `d3d11` (screen capture), `nvcodec`, `qsv`, `amfcodec` and `mediafoundation` (hardware encoders), `x264` (software fallback), `videoparsersbad` (`h264parse`), `isomp4` (MP4 muxing), `app` (`appsink` and `appsrc`), `wasapi2` (audio). All of them ship with the official installer.
+  Plugins used: `d3d11` (screen capture), `nvcodec`, `qsv`, `amfcodec` and `mediafoundation` (hardware encoders), `x264` (software fallback), `videoparsersbad` (`h264parse`), `isomp4` (MP4 muxing), `app` (`appsink` and `appsrc`), `wasapi2` (audio). Game capture also links the `gstreamer-d3d11-1.0` library (found through pkg-config like the rest). All of them ship with the official installer.
 
 - For the installer: NSIS 3.
 
@@ -255,7 +255,7 @@ exe = "momentum.exe"
 capture_method = "game"       # this game uses game capture; omit to follow the default
 ```
 
-The game must be running and in the foreground for the hook to attach. Everything downstream (the replay buffer, hotkeys, recordings, editor and per application audio) works exactly the same as with display capture. The hook's frames currently travel through system memory (a GPU to CPU copy per frame, read on a fixed 60 Hz grid from a pair of staging textures, into recycled buffers), which costs about half a core at 1080p60 and, on the machine this was measured on, still repeats more frames than display capture with MMCSS does; keeping the frames on the GPU is the planned next step, so treat game capture as the option for games where display capture visibly stutters.
+The game must be running and in the foreground for the hook to attach. Everything downstream (the replay buffer, hotkeys, recordings, editor and per application audio) works exactly the same as with display capture. The hook's frames stay on the GPU: the capture device is adopted by GStreamer's D3D11 library and every frame is a texture the pipeline reads directly, so a 1080p60 game costs under a tenth of a core (the earlier path through system memory cost a third or more, and remains available with `OPENCLIPS_GAME_CPU=1`). Repeated frames still happen when the reader's 60 Hz grid and the game's presents drift apart, in our measurements about as often as with display capture, so treat game capture as the option for games where display capture visibly stutters rather than a better default.
 
 ## Updates
 

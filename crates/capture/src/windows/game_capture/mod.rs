@@ -11,8 +11,12 @@
 //!
 //! Frames enter the existing pipeline through an `appsrc` and `d3d11upload`
 //! (see `pipeline.rs`), so encoding, muxing and the replay ring are shared
-//! with display capture unchanged.
+//! with display capture unchanged. They stay on the GPU: the capture device
+//! is adopted by GStreamer (see `gpu.rs`) and each frame is a texture the
+//! upload element passes through. `OPENCLIPS_GAME_CPU=1` forces the older
+//! path through system memory for comparison.
 
+mod gpu;
 mod inject;
 mod protocol;
 mod session;
@@ -53,13 +57,15 @@ impl GameCaptureSource {
     /// `Err` lets it fall back to display capture before anything else is set
     /// up. After a successful start the producer thread keeps pumping frames;
     /// if the hook later dies it calls `on_fatal` so the backend falls back.
+    /// The context, when present, must be set on the pipeline so its D3D11
+    /// elements share the device the frames live on.
     pub fn start(
         hooks: &Hooks,
         pid: u32,
         fps: i32,
         on_fatal: Arc<dyn Fn(CaptureError) + Send + Sync>,
         cancel: &AtomicBool,
-    ) -> Result<(gst::Element, Self), CaptureError> {
+    ) -> Result<(gst::Element, Self, Option<gst::Context>), CaptureError> {
         let hooks = hooks.clone();
         let appsrc = gst_app::AppSrc::builder()
             .name("openclips-gamesrc")
@@ -79,7 +85,7 @@ impl GameCaptureSource {
         // The handshake result comes back on this channel so start() is
         // synchronous while the session itself stays on the producer thread
         // (its D3D and COM objects never cross threads).
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), CaptureError>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<Option<gst::Context>, CaptureError>>();
         let thread = std::thread::Builder::new()
             .name("game-capture".to_owned())
             .spawn(move || run(hooks, pid, fps, worker_src, worker_stop, on_fatal, ready_tx))
@@ -96,7 +102,7 @@ impl GameCaptureSource {
         let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
         loop {
             match ready_rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(Ok(())) => return Ok((element, source)),
+                Ok(Ok(context)) => return Ok((element, source, context)),
                 Ok(Err(err)) => return Err(err),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(CaptureError::GameCapture(
@@ -134,7 +140,7 @@ fn run(
     appsrc: gst_app::AppSrc,
     stop: Arc<AtomicBool>,
     on_fatal: Arc<dyn Fn(CaptureError) + Send + Sync>,
-    ready: mpsc::Sender<Result<(), CaptureError>>,
+    ready: mpsc::Sender<Result<Option<gst::Context>, CaptureError>>,
 ) {
     let fps = fps.max(1);
     let frame_interval_ns = 1_000_000_000u64 / fps as u64;
@@ -145,9 +151,11 @@ fn run(
         let offsets = hooks.graphics_offsets(target.is_64bit)?;
         HookSession::start(&hooks, &target, &offsets, frame_interval_ns)
     });
+    let use_cpu = std::env::var("OPENCLIPS_GAME_CPU").as_deref() == Ok("1");
     let mut sink = match session {
         Ok(session) => {
-            let _ = ready.send(Ok(()));
+            let gpu = !use_cpu && session.has_gpu_path();
+            let _ = ready.send(Ok(if gpu { session.gpu_context() } else { None }));
             session
         }
         Err(err) => {
@@ -159,24 +167,37 @@ fn run(
     drop(ready);
 
     // Set the caps from the negotiated stream before the first buffer.
-    let caps = gst::Caps::builder("video/x-raw")
+    let gpu = !use_cpu && sink.has_gpu_path();
+    let fields = gst::Caps::builder("video/x-raw")
         .field("format", sink.format())
         .field("width", sink.width() as i32)
         .field("height", sink.height() as i32)
-        .field("framerate", gst::Fraction::new(fps, 1))
-        .build();
+        .field("framerate", gst::Fraction::new(fps, 1));
+    let caps = if gpu {
+        fields.features(["memory:D3D11Memory"]).build()
+    } else {
+        fields.build()
+    };
     appsrc.set_caps(Some(&caps));
+    info!(
+        "game capture frames stay on the {}",
+        if gpu { "GPU" } else { "CPU (system memory)" }
+    );
 
-    // Frames are eight megabytes and more; a pool hands the same few
-    // buffers round instead of allocating one per frame. The upload
-    // element returns them as soon as the copy to the GPU is done.
-    let pool = match frame_pool(&caps, sink.frame_bytes()) {
-        Ok(pool) => pool,
-        Err(err) => {
-            error!("{err}");
-            let _ = appsrc.end_of_stream();
-            on_fatal(err);
-            return;
+    // System memory path: frames are eight megabytes and more, so a pool
+    // hands the same few buffers round instead of allocating one per frame.
+    // The upload element returns them as soon as the copy to the GPU is done.
+    let pool = if gpu {
+        None
+    } else {
+        match frame_pool(&caps, sink.frame_bytes()) {
+            Ok(pool) => Some(pool),
+            Err(err) => {
+                error!("{err}");
+                let _ = appsrc.end_of_stream();
+                on_fatal(err);
+                return;
+            }
         }
     };
 
@@ -186,6 +207,7 @@ fn run(
 
     let period = Duration::from_nanos(frame_interval_ns);
     let mut frames: u64 = 0;
+    let mut skipped: u64 = 0;
     // Reads are due on an absolute grid. Sleeping for "period minus the
     // work" drifts by the sleep overshoot (a millisecond or two on Windows)
     // every frame, which starves videorate and makes it repeat frames.
@@ -200,34 +222,45 @@ fn run(
             ));
             return;
         }
-        let Ok(mut buffer) = pool.acquire_buffer(None) else {
-            // The pool is inactive: the pipeline is shutting down.
-            return;
-        };
-        let filled = match buffer.get_mut() {
-            Some(buffer) => {
-                buffer.set_pts(None);
-                buffer.set_dts(None);
-                match buffer.map_writable() {
-                    Ok(mut map) => sink.read_frame_into(map.as_mut_slice()),
-                    Err(_) => Err(CaptureError::GameCapture(
-                        "could not map a frame buffer".to_owned(),
+        let buffer = match &pool {
+            None => sink.read_frame_gpu(),
+            Some(pool) => {
+                let Ok(mut buffer) = pool.acquire_buffer(None) else {
+                    // The pool is inactive: the pipeline is shutting down.
+                    return;
+                };
+                let filled = match buffer.get_mut() {
+                    Some(buffer) => {
+                        buffer.set_pts(None);
+                        buffer.set_dts(None);
+                        match buffer.map_writable() {
+                            Ok(mut map) => sink.read_frame_into(map.as_mut_slice()),
+                            Err(_) => Err(CaptureError::GameCapture(
+                                "could not map a frame buffer".to_owned(),
+                            )),
+                        }
+                    }
+                    None => Err(CaptureError::GameCapture(
+                        "the frame buffer is shared".to_owned(),
                     )),
+                };
+                filled.map(|()| Some(buffer))
+            }
+        };
+        match buffer {
+            Ok(Some(buffer)) => {
+                if let Err(err) = appsrc.push_buffer(buffer) {
+                    warn!("game capture pipeline stopped accepting frames: {err:?}");
+                    return;
                 }
             }
-            None => Err(CaptureError::GameCapture(
-                "the frame buffer is shared".to_owned(),
-            )),
-        };
-        if let Err(err) = filled {
-            error!("{err}");
-            let _ = appsrc.end_of_stream();
-            on_fatal(err);
-            return;
-        }
-        if let Err(err) = appsrc.push_buffer(buffer) {
-            warn!("game capture pipeline stopped accepting frames: {err:?}");
-            return;
+            Ok(None) => skipped += 1,
+            Err(err) => {
+                error!("{err}");
+                let _ = appsrc.end_of_stream();
+                on_fatal(err);
+                return;
+            }
         }
         frames += 1;
         due += period;
@@ -239,7 +272,12 @@ fn run(
         }
     }
     let _ = appsrc.end_of_stream();
-    let _ = pool.set_active(false);
+    if let Some(pool) = pool {
+        let _ = pool.set_active(false);
+    }
+    if skipped > 0 {
+        warn!("game capture skipped {skipped} of {frames} frames waiting for a free texture");
+    }
 }
 
 /// Sleeps until `due`, spinning through the last millisecond because the

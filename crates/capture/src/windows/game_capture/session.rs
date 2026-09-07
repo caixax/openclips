@@ -11,15 +11,21 @@
 //! for the copy the GPU is still making, at the cost of one frame of delay.
 
 use std::ffi::c_void;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tracing::info;
+use gstreamer as gst;
+use tracing::{info, warn};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
 };
 use windows::Win32::System::Memory::{
     FILE_MAP_ALL_ACCESS, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
@@ -31,6 +37,7 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor};
 use windows::core::PCWSTR;
 
+use super::gpu;
 use super::inject::Hooks;
 use super::protocol::{self, GraphicsOffsets, HookInfo, ShtexData};
 use super::window::TargetWindow;
@@ -40,6 +47,22 @@ use crate::error::CaptureError;
 const HOOK_LOAD_TIMEOUT: Duration = Duration::from_secs(8);
 /// How long to wait for the game to present a frame after `hook_init`.
 const HOOK_READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// Textures the GPU path can have out with the pipeline at once. The appsrc
+/// queue holds up to four, videorate keeps the previous frame, the converter
+/// one, and the hardware encoder several while it works asynchronously; a
+/// frame is skipped when none is free, so this errs on the generous side
+/// (about a hundred megabytes at 1080p).
+const GPU_FRAMES: usize = 16;
+
+/// The frames that stay on the GPU: textures of the game's format that the
+/// shared texture is copied into and that the pipeline reads directly.
+struct GpuFrames {
+    device: gpu::Device,
+    textures: Vec<ID3D11Texture2D>,
+    /// Indices of textures the pipeline has given back.
+    free: Arc<Mutex<Vec<usize>>>,
+    starved_warned: bool,
+}
 
 /// Owns every kernel and D3D object for one hooked game.
 pub struct HookSession {
@@ -57,6 +80,9 @@ pub struct HookSession {
     /// The staging texture holding the copy made on the last call.
     newest: usize,
     primed: bool,
+    /// `None` when the GStreamer D3D11 library could not adopt the device;
+    /// frames then go through system memory.
+    gpu: Option<GpuFrames>,
     width: u32,
     height: u32,
     gst_format: &'static str,
@@ -134,7 +160,7 @@ impl HookSession {
                     .to_owned(),
             ));
         }
-        let gst_format = gst_format_for(info.format)?;
+        let (gst_format, typed_format) = gst_format_for(info.format)?;
 
         let data_map = open_texture_data_map(&info, target.hwnd)?;
         // SAFETY: the data view is mapped and sized for one ShtexData.
@@ -146,6 +172,13 @@ impl HookSession {
             create_staging(&device, &shared)?,
             create_staging(&device, &shared)?,
         ];
+        let gpu = match gpu_frames(&device, &shared, typed_format) {
+            Ok(frames) => Some(frames),
+            Err(err) => {
+                warn!("game capture frames go through system memory: {err}");
+                None
+            }
+        };
 
         info!(
             "game capture ready: {}x{} {} (pid {pid})",
@@ -163,6 +196,7 @@ impl HookSession {
             staging,
             newest: 0,
             primed: false,
+            gpu,
             width: info.cx,
             height: info.cy,
             gst_format,
@@ -179,6 +213,82 @@ impl HookSession {
 
     pub fn format(&self) -> &'static str {
         self.gst_format
+    }
+
+    /// The pipeline context for the device the frames live on, when the
+    /// GPU path is available.
+    pub fn gpu_context(&self) -> Option<gst::Context> {
+        self.gpu.as_ref().and_then(|g| g.device.context().ok())
+    }
+
+    pub fn has_gpu_path(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    /// Whether the size announced by the hook still matches this session.
+    /// A resize republishes the control block with new dimensions, which
+    /// the textures cannot hold.
+    fn size_unchanged(&self) -> Result<(), CaptureError> {
+        // SAFETY: the info view stays mapped for the session's lifetime.
+        let info = unsafe { *self.info_map.ptr };
+        if info.cx != self.width || info.cy != self.height {
+            return Err(CaptureError::GameCapture(
+                "the capture size changed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The latest presented frame as a buffer whose memory is a texture on
+    /// the capture device: one GPU side copy from the shared texture, no
+    /// trip through system memory. `None` when every texture is still with
+    /// the pipeline, in which case the frame is skipped.
+    pub fn read_frame_gpu(&mut self) -> Result<Option<gst::Buffer>, CaptureError> {
+        self.size_unchanged()?;
+        let bytes = self.frame_bytes();
+        let Some(frames) = self.gpu.as_mut() else {
+            return Err(CaptureError::GameCapture(
+                "the GPU frame path is not available".to_owned(),
+            ));
+        };
+        let index = frames.free.lock().unwrap_or_else(|p| p.into_inner()).pop();
+        let Some(index) = index else {
+            if !frames.starved_warned {
+                warn!("the pipeline is holding every capture texture; frames are skipped");
+                frames.starved_warned = true;
+            }
+            return Ok(None);
+        };
+        let texture = &frames.textures[index];
+        {
+            // The pipeline's elements use this device's immediate context
+            // from their own threads under the same lock.
+            let _held = frames.device.lock();
+            // SAFETY: both textures live on `context`'s device and have
+            // matching descriptions.
+            unsafe {
+                self.context.CopyResource(texture, &self.shared);
+                // Submit now. Left in the command buffer, several copies
+                // would run together later and all read the same, newest
+                // presented frame; reading back through a map used to
+                // force this.
+                self.context.Flush();
+            }
+        }
+        let free = frames.free.clone();
+        let memory = frames.device.wrap_texture(
+            texture,
+            bytes,
+            Box::new(move || {
+                free.lock().unwrap_or_else(|p| p.into_inner()).push(index);
+            }),
+        )?;
+        let mut buffer = gst::Buffer::new();
+        buffer
+            .get_mut()
+            .ok_or_else(|| CaptureError::GameCapture("the frame buffer is shared".to_owned()))?
+            .append_memory(memory);
+        Ok(Some(buffer))
     }
 
     /// True while the hook is still delivering frames.
@@ -200,15 +310,7 @@ impl HookSession {
     /// the other, so the map does not wait on the GPU. An error is fatal
     /// (the texture was lost, usually because the game resized or closed).
     pub fn read_frame_into(&mut self, dst: &mut [u8]) -> Result<(), CaptureError> {
-        // A resize republishes the control block with new dimensions, which
-        // our fixed staging textures can no longer hold.
-        // SAFETY: the info view stays mapped for the session's lifetime.
-        let info = unsafe { *self.info_map.ptr };
-        if info.cx != self.width || info.cy != self.height {
-            return Err(CaptureError::GameCapture(
-                "the capture size changed".to_owned(),
-            ));
-        }
+        self.size_unchanged()?;
         if dst.len() < self.frame_bytes() {
             return Err(CaptureError::GameCapture(
                 "the frame buffer is too small".to_owned(),
@@ -436,6 +538,46 @@ fn open_shared_texture(
     texture.ok_or_else(|| CaptureError::GameCapture("the shared texture was not opened".to_owned()))
 }
 
+/// Adopts the capture device into GStreamer and creates the textures the
+/// pipeline will read. Fails when the D3D11 library is not usable, in which
+/// case the caller keeps the system memory path.
+fn gpu_frames(
+    device: &ID3D11Device,
+    shared: &ID3D11Texture2D,
+    format: DXGI_FORMAT,
+) -> Result<GpuFrames, CaptureError> {
+    let gst_device = gpu::Device::wrap(device)?;
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: valid texture; GetDesc only writes the out param.
+    unsafe { shared.GetDesc(&mut desc) };
+    // The hook's texture is typeless; the converter needs a typed one to
+    // create its shader view, and CopyResource accepts the typed twin.
+    desc.Format = format;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE.0 as u32;
+    desc.CPUAccessFlags = 0;
+    desc.MiscFlags = 0;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    let mut textures = Vec::with_capacity(GPU_FRAMES);
+    for _ in 0..GPU_FRAMES {
+        let mut texture = None;
+        // SAFETY: a valid description; the texture is returned in the out param.
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)) }.map_err(|e| {
+            CaptureError::GameCapture(format!("could not create a frame texture: {e}"))
+        })?;
+        textures.push(texture.ok_or_else(|| {
+            CaptureError::GameCapture("a frame texture was not created".to_owned())
+        })?);
+    }
+    Ok(GpuFrames {
+        device: gst_device,
+        free: Arc::new(Mutex::new((0..textures.len()).collect())),
+        textures,
+        starved_warned: false,
+    })
+}
+
 fn create_staging(
     device: &ID3D11Device,
     shared: &ID3D11Texture2D,
@@ -458,15 +600,15 @@ fn create_staging(
         .ok_or_else(|| CaptureError::GameCapture("the staging texture was not created".to_owned()))
 }
 
-/// Maps the game's backbuffer format to a GStreamer raw format. The hook
-/// keeps the byte layout of typeless and sRGB aliases identical, so only the
-/// channel order matters here.
-fn gst_format_for(dxgi_format: u32) -> Result<&'static str, CaptureError> {
+/// Maps the game's backbuffer format to a GStreamer raw format and the
+/// typed DXGI format of the same layout. The hook keeps the byte layout of
+/// typeless and sRGB aliases identical, so only the channel order matters.
+fn gst_format_for(dxgi_format: u32) -> Result<(&'static str, DXGI_FORMAT), CaptureError> {
     match dxgi_format {
         // B8G8R8A8: TYPELESS (90), UNORM (87), UNORM_SRGB (91).
-        87 | 90 | 91 => Ok("BGRA"),
+        87 | 90 | 91 => Ok(("BGRA", DXGI_FORMAT_B8G8R8A8_UNORM)),
         // R8G8B8A8: TYPELESS (27), UNORM (28), UNORM_SRGB (29).
-        27..=29 => Ok("RGBA"),
+        27..=29 => Ok(("RGBA", DXGI_FORMAT_R8G8B8A8_UNORM)),
         other => Err(CaptureError::GameCapture(format!(
             "the game uses an unsupported backbuffer format ({other})"
         ))),

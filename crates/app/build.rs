@@ -6,6 +6,7 @@ const DELAY_LOADED: &[&str] = &[
     "gstbase-1.0-0.dll",
     "gstapp-1.0-0.dll",
     "gstpbutils-1.0-0.dll",
+    "gstd3d11-1.0-0.dll",
     "gobject-2.0-0.dll",
     "glib-2.0-0.dll",
     "gio-2.0-0.dll",

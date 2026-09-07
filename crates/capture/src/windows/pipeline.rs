@@ -287,6 +287,15 @@ pub(super) fn raise_streaming_thread() {
     };
     use windows::core::w;
 
+    thread_local! {
+        static REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    // Streaming threads come from a pool and serve one pipeline after
+    // another; a second registration of the same thread fails, so it is
+    // done once per thread.
+    if REGISTERED.with(|r| r.replace(true)) {
+        return;
+    }
     // SAFETY: plain Win32 calls on the current thread.
     unsafe {
         let mut index = 0u32;
@@ -338,16 +347,15 @@ fn build(
     let fps = settings.fps.max(1) as i32;
     // The head of the chain differs by source; both feed NV12 D3D11 frames
     // into the shared convert and encode tail below.
-    let (head, game_source): (Vec<gst::Element>, Option<GameCaptureSource>) =
-        match settings.game_capture_pid {
-            Some(pid) => {
-                let hooks = hooks.ok_or_else(|| {
-                    CaptureError::GameCapture("the capture hook binaries are missing".to_owned())
-                })?;
-                build_game_head(hooks, pid, fps, sink.clone(), cancel)?
-            }
-            None => (build_display_head(settings, fps)?, None),
-        };
+    let (head, game_source, context) = match settings.game_capture_pid {
+        Some(pid) => {
+            let hooks = hooks.ok_or_else(|| {
+                CaptureError::GameCapture("the capture hook binaries are missing".to_owned())
+            })?;
+            build_game_head(hooks, pid, fps, sink.clone(), cancel)?
+        }
+        None => (build_display_head(settings, fps)?, None, None),
+    };
 
     let convert = make("d3d11convert")?;
     let mut nv12_caps = gst::Caps::builder("video/x-raw")
@@ -430,6 +438,12 @@ fn build(
         .add_many(&refs)
         .map_err(|e| CaptureError::PipelineBuild(e.to_string()))?;
     gst::Element::link_many(&refs).map_err(|e| CaptureError::PipelineBuild(e.to_string()))?;
+    // Game capture frames are textures on the capture device; every D3D11
+    // element in the pipeline picks that device up from this context, so no
+    // element copies them to another one.
+    if let Some(context) = &context {
+        pipeline.set_context(context);
+    }
 
     let mut volumes = HashMap::new();
     let mut source_names = HashMap::new();
@@ -521,18 +535,30 @@ fn build_display_head(
 /// The game capture head: the injected hook feeds an `appsrc` with the game's
 /// backbuffer, re-gridded to the output frame rate, then uploaded to D3D11
 /// for the shared convert and encode tail.
+type GameHead = (
+    Vec<gst::Element>,
+    Option<GameCaptureSource>,
+    Option<gst::Context>,
+);
+
 fn build_game_head(
     hooks: &Hooks,
     pid: u32,
     fps: i32,
     sink: Arc<dyn FrameSink>,
     cancel: &AtomicBool,
-) -> Result<(Vec<gst::Element>, Option<GameCaptureSource>), CaptureError> {
+) -> Result<GameHead, CaptureError> {
     let on_fatal: Arc<dyn Fn(CaptureError) + Send + Sync> = Arc::new(move |err| sink.on_error(err));
-    let (appsrc, source) = GameCaptureSource::start(hooks, pid, fps, on_fatal, cancel)?;
-    let (rate, grid_filter) = grid(fps, false)?;
+    let (appsrc, source, context) = GameCaptureSource::start(hooks, pid, fps, on_fatal, cancel)?;
+    // With frames on the GPU the grid caps carry the D3D11 feature, or the
+    // filter would refuse them.
+    let (rate, grid_filter) = grid(fps, context.is_some())?;
     let upload = make("d3d11upload")?;
-    Ok((vec![appsrc, rate, grid_filter, upload], Some(source)))
+    Ok((
+        vec![appsrc, rate, grid_filter, upload],
+        Some(source),
+        context,
+    ))
 }
 
 /// A `videorate` plus a caps filter that pins the output frame rate. The

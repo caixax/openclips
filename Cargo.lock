@@ -3888,6 +3888,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-pbutils",
  "openclips-core",
+ "pkg-config",
  "png",
  "thiserror 2.0.20",
  "tracing",
