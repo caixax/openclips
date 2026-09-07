@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,8 @@ use crate::error::AppError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BufferState {
     Stopped,
+    /// Capture is being brought up on a worker thread.
+    Starting,
     Running,
     Failed(String),
 }
@@ -64,6 +67,8 @@ pub type SaveCallback = Box<dyn FnOnce(Result<ClipFile, String>) + Send + 'stati
 /// Told about every recording file closed on its own (see
 /// [`CaptureSink::rotate_recording`]), from a worker thread.
 pub type RecordingListener = Arc<dyn Fn(Result<ClipFile, String>) + Send + Sync>;
+/// Outcome of one background start attempt, tagged with its generation.
+type StartResult = (u64, Result<(), CaptureError>);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -211,6 +216,26 @@ impl FrameSink for CaptureSink {
     }
 }
 
+/// One capture start in progress: the encoders still to try, in order, and
+/// what failed so far. Each attempt runs on the backend's worker thread and
+/// reports back through `start_results`; the engine picks the next step from
+/// the UI thread (see [`Engine::poll_start`]).
+struct StartPlan {
+    candidates: Vec<EncoderInfo>,
+    index: usize,
+    display: DisplaySelection,
+    failures: Vec<String>,
+    /// Tells a stale result (from an attempt that was cancelled and
+    /// replaced) from the one this plan is waiting for.
+    generation: u64,
+}
+
+impl StartPlan {
+    fn candidate(&self) -> Option<&EncoderInfo> {
+        self.candidates.get(self.index)
+    }
+}
+
 pub struct Engine {
     backend: Box<dyn CaptureBackend>,
     writer: Arc<dyn ClipWriter>,
@@ -218,6 +243,9 @@ pub struct Engine {
     sink: Arc<CaptureSink>,
     config: Config,
     paths: AppPaths,
+    starting: Option<StartPlan>,
+    start_results: (Sender<StartResult>, Receiver<StartResult>),
+    start_generation: u64,
     /// The encoder the user asked for (or the best registered one).
     preferred: EncoderInfo,
     /// The encoder actually driving the running or last capture.
@@ -280,6 +308,9 @@ impl Engine {
             sink,
             config,
             paths,
+            starting: None,
+            start_results: channel(),
+            start_generation: 0,
             active: encoder.clone(),
             preferred: encoder,
             buffer_wanted: false,
@@ -435,7 +466,7 @@ impl Engine {
             // different game capture target (which display comparison misses).
             let source_changed = self.effective_display() != previous_display
                 || self.game_capture_pid() != previous_pid;
-            if source_changed && self.backend.is_running() && !self.recording_wanted {
+            if source_changed && self.is_engaged() && !self.recording_wanted {
                 self.restart_capture()?;
             }
         }
@@ -480,7 +511,9 @@ impl Engine {
     }
 
     pub fn toggle_buffer(&mut self) -> Result<(), AppError> {
-        if self.is_buffering() {
+        let starting_for_buffer =
+            self.starting.is_some() && (self.buffer_wanted || self.auto_buffer);
+        if self.is_buffering() || starting_for_buffer {
             self.stop_buffer();
             Ok(())
         } else {
@@ -490,6 +523,12 @@ impl Engine {
 
     pub fn is_capturing(&self) -> bool {
         self.backend.is_running() && lock(&self.sink.failure).is_none()
+    }
+
+    /// Capture is running or on its way up: a change of source or settings
+    /// needs a restart either way.
+    fn is_engaged(&self) -> bool {
+        self.backend.is_running() || self.starting.is_some()
     }
 
     pub fn is_buffering(&self) -> bool {
@@ -559,21 +598,29 @@ impl Engine {
     }
 
     fn ensure_capture(&mut self) -> Result<(), AppError> {
-        if self.is_capturing() {
+        if self.is_capturing() || self.starting.is_some() {
             return Ok(());
         }
-        self.backend.stop();
+        self.stop_backend();
         self.start_capture()
+    }
+
+    /// Stops the capture, or cancels the start in flight, and forgets the
+    /// plan behind it. A cancelled attempt still reports back; its
+    /// generation no longer matches and the result is dropped.
+    fn stop_backend(&mut self) {
+        self.backend.stop();
+        self.starting = None;
     }
 
     fn release_capture_if_unused(&mut self) {
         if !self.buffer_wanted && !self.auto_buffer && !self.recording_wanted {
-            self.backend.stop();
+            self.stop_backend();
         }
     }
 
     fn restart_capture(&mut self) -> Result<(), AppError> {
-        self.backend.stop();
+        self.stop_backend();
         lock(&self.buffer).clear();
         if !self.buffer_wanted && !self.auto_buffer && !self.recording_wanted {
             return Ok(());
@@ -668,7 +715,7 @@ impl Engine {
             return Ok(());
         }
         let now = self.app_pids();
-        if now != self.app_audio && self.backend.is_running() && !self.recording_wanted {
+        if now != self.app_audio && self.is_engaged() && !self.recording_wanted {
             info!("application audio changed, restarting capture");
             self.restart_capture()?;
         }
@@ -678,7 +725,9 @@ impl Engine {
     /// Starts capture with the preferred encoder and falls back through the
     /// remaining registered encoders when one refuses to start. An audio
     /// source that fails is dropped and the start is retried without it.
-    /// Both cases are reported through the status notice.
+    /// Both cases are reported through the status notice. The work happens
+    /// on the backend's thread; this only sets the plan in motion, and a
+    /// failure surfaces through [`Engine::status`] once every step is done.
     fn start_capture(&mut self) -> Result<(), AppError> {
         *lock(&self.sink.failure) = None;
         self.last_failure = None;
@@ -707,52 +756,112 @@ impl Engine {
                 .filter(|e| **e != self.preferred)
                 .cloned(),
         );
+        self.starting = Some(StartPlan {
+            candidates,
+            index: 0,
+            display,
+            failures: Vec::new(),
+            generation: 0,
+        });
+        self.launch_attempt();
+        Ok(())
+    }
 
-        let mut failures = Vec::new();
-        let mut index = 0;
-        while index < candidates.len() {
-            let candidate = candidates[index].clone();
-            let settings = self.capture_settings(candidate.clone(), display.clone());
-            let sink: Arc<dyn FrameSink> = self.sink.clone();
-            match self.backend.start(&settings, sink) {
-                Ok(()) => {
-                    self.app_audio = self.app_pids();
-                    if candidate != self.preferred {
-                        self.add_notice(format!(
-                            "{} could not start, using {} instead.",
-                            self.preferred.kind.label(),
-                            candidate.kind.label()
-                        ));
-                    }
-                    self.active = candidate;
-                    return Ok(());
-                }
-                Err(CaptureError::AudioSource { key, message }) => {
-                    warn!("audio source {key} failed to start: {message}");
-                    self.unavailable_audio.insert(key.clone());
+    /// Hands the current candidate of the plan to the backend.
+    fn launch_attempt(&mut self) {
+        self.start_generation += 1;
+        let generation = self.start_generation;
+        let Some(plan) = self.starting.as_mut() else {
+            return;
+        };
+        plan.generation = generation;
+        let Some(candidate) = plan.candidate().cloned() else {
+            let failures = plan.failures.join("; ");
+            self.starting = None;
+            self.last_failure = Some(CaptureError::AllEncodersFailed(failures).to_string());
+            return;
+        };
+        let display = plan.display.clone();
+        let settings = self.capture_settings(candidate, display);
+        let sink: Arc<dyn FrameSink> = self.sink.clone();
+        let results = self.start_results.0.clone();
+        self.backend.start_in_background(
+            &settings,
+            sink,
+            Box::new(move |result| {
+                let _ = results.send((generation, result));
+            }),
+        );
+    }
+
+    /// Applies the outcome of the attempts that finished since the last
+    /// call and launches the next step of the plan when there is one.
+    /// Called from [`Engine::status`], which the UI polls.
+    pub fn poll_start(&mut self) {
+        while let Ok((generation, result)) = self.start_results.1.try_recv() {
+            let current = self.starting.as_ref().map(|p| p.generation);
+            if current != Some(generation) {
+                continue;
+            }
+            self.attempt_finished(result);
+        }
+    }
+
+    fn attempt_finished(&mut self, result: Result<(), CaptureError>) {
+        let Some(plan) = self.starting.as_mut() else {
+            return;
+        };
+        let Some(candidate) = plan.candidate().cloned() else {
+            self.starting = None;
+            return;
+        };
+        match result {
+            Ok(()) => {
+                self.starting = None;
+                self.app_audio = self.app_pids();
+                if candidate != self.preferred {
                     self.add_notice(format!(
-                        "Audio device {} is unavailable, capturing without it.",
-                        self.audio_source_name(&key)
+                        "{} could not start, using {} instead.",
+                        self.preferred.kind.label(),
+                        candidate.kind.label()
                     ));
                 }
-                Err(CaptureError::EncoderStart { encoder, reason }) => {
-                    warn!("encoder {encoder} failed to start: {reason}");
-                    failures.push(format!("{} ({reason})", candidate.kind.label()));
-                    index += 1;
-                }
-                // Game capture could not attach: fall back to display capture
-                // for this session and retry the same encoder without the hook.
-                Err(CaptureError::GameCapture(message)) if !self.game_capture_unavailable => {
-                    warn!("game capture failed to start: {message}");
-                    self.game_capture_unavailable = true;
-                    self.add_notice(format!(
-                        "Game capture failed ({message}), using display capture."
-                    ));
-                }
-                Err(other) => return Err(other.into()),
+                self.active = candidate;
+            }
+            Err(CaptureError::AudioSource { key, message }) => {
+                warn!("audio source {key} failed to start: {message}");
+                self.unavailable_audio.insert(key.clone());
+                self.add_notice(format!(
+                    "Audio device {} is unavailable, capturing without it.",
+                    self.audio_source_name(&key)
+                ));
+                self.launch_attempt();
+            }
+            Err(CaptureError::EncoderStart { encoder, reason }) => {
+                warn!("encoder {encoder} failed to start: {reason}");
+                plan.failures
+                    .push(format!("{} ({reason})", candidate.kind.label()));
+                plan.index += 1;
+                self.launch_attempt();
+            }
+            // Game capture could not attach: fall back to display capture
+            // for this session and retry the same encoder without the hook.
+            Err(CaptureError::GameCapture(message)) if !self.game_capture_unavailable => {
+                warn!("game capture failed to start: {message}");
+                self.game_capture_unavailable = true;
+                self.add_notice(format!(
+                    "Game capture failed ({message}), using display capture."
+                ));
+                self.launch_attempt();
+            }
+            Err(CaptureError::Cancelled) => {
+                self.starting = None;
+            }
+            Err(other) => {
+                self.starting = None;
+                self.last_failure = Some(other.to_string());
             }
         }
-        Err(CaptureError::AllEncodersFailed(failures.join("; ")).into())
     }
 
     fn add_notice(&mut self, text: String) {
@@ -797,7 +906,7 @@ impl Engine {
             self.unavailable_audio.clear();
             // Changed capture settings get a fresh attempt at game capture.
             self.game_capture_unavailable = false;
-            if self.backend.is_running() {
+            if self.is_engaged() {
                 if self.recording_wanted {
                     self.restart_pending = true;
                     self.notice =
@@ -832,7 +941,7 @@ impl Engine {
         info!("display set changed: {} display(s)", current.len());
         self.monitors = current;
         if let DisplaySelection::Monitor(id) = &self.config.capture.display
-            && self.backend.is_running()
+            && self.is_engaged()
             && !self.monitors.iter().any(|m| &m.id == id)
             && !self.recording_wanted
             && let Err(err) = self.restart_capture()
@@ -846,10 +955,11 @@ impl Engine {
     /// show the failure and the user can retry. A failed audio device is
     /// dropped and capture restarts without it.
     pub fn status(&mut self) -> EngineStatus {
+        self.poll_start();
         let failure = lock(&self.sink.failure).take();
         if let Some(failure) = failure {
             warn!("capture failed: {failure}");
-            self.backend.stop();
+            self.stop_backend();
             match failure {
                 // While recording, the restart rotates the file (see
                 // `CaptureSink::rotate_recording`), so the recording goes on
@@ -887,9 +997,12 @@ impl Engine {
                 other => self.last_failure = Some(other.to_string()),
             }
         }
+        let starting_for_buffer =
+            self.starting.is_some() && (self.buffer_wanted || self.auto_buffer);
         let buffer_state = match (&self.last_failure, self.is_buffering()) {
             (Some(failure), _) => BufferState::Failed(failure.clone()),
             (None, true) => BufferState::Running,
+            (None, false) if starting_for_buffer => BufferState::Starting,
             (None, false) => BufferState::Stopped,
         };
         let recording = if self.finishing {
