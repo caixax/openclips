@@ -31,6 +31,13 @@ use tracing::{error, info, warn};
 use crate::engine::Engine;
 use crate::error::AppError;
 
+/// Every encoded frame and audio packet is its own allocation that lives
+/// for the length of the buffer (up to twenty minutes) among short lived
+/// ones. The system heap fragments under that pattern and the process
+/// grows past the buffer's cap; mimalloc keeps the size classes apart.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,

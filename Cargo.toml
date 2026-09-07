@@ -37,6 +37,7 @@ gstreamer-pbutils = "0.25"
 png = "0.18"
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+mimalloc = "0.1"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
