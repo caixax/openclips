@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use openclips_capture::{Player, PlayerSink, VideoFrame};
+use openclips_capture::{Player, PlayerSink};
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Weak};
 use tracing::error;
 
@@ -25,17 +25,15 @@ struct UiSink {
 }
 
 impl PlayerSink for UiSink {
-    fn on_frame(&self, frame: VideoFrame) {
+    fn on_frame(&self, width: u32, height: u32, rgba: &[u8]) {
         if self.shared.frame_pending.swap(true, Ordering::AcqRel) {
             return;
         }
+        // The one copy of the frame, made here on the player thread; the UI
+        // thread only wraps the finished buffer.
+        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(rgba, width, height);
         let shared = self.shared.clone();
         let queued = self.window.upgrade_in_event_loop(move |window| {
-            let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                &frame.rgba,
-                frame.width,
-                frame.height,
-            );
             window
                 .global::<PlayerState>()
                 .set_frame(Image::from_rgba8(buffer));
@@ -153,6 +151,17 @@ impl PlayerController {
             self.stop_at = None;
             self.shared.finished.store(false, Ordering::SeqCst);
             self.player.seek(Duration::from_secs_f32(seconds.max(0.0)));
+        }
+    }
+
+    /// Follows a drag on the timeline: keyframe seeks are cheap enough to
+    /// run on every mouse move, the exact one comes when the drag ends.
+    pub fn scrub(&mut self, seconds: f32) {
+        if self.current.is_some() {
+            self.stop_at = None;
+            self.shared.finished.store(false, Ordering::SeqCst);
+            self.player
+                .seek_fast(Duration::from_secs_f32(seconds.max(0.0)));
         }
     }
 

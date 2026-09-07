@@ -1784,6 +1784,12 @@ fn wire_player(window: &MainWindow, shared: &SharedRef) {
             player.seek(seconds);
         }
     });
+    let s = shared.clone();
+    state.on_scrub(move |seconds| {
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            player.scrub(seconds);
+        }
+    });
     let (s, w) = (shared.clone(), window.as_weak());
     state.on_volume_changed(move |percent| {
         if let Some(window) = w.upgrade() {

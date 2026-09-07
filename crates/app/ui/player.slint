@@ -40,7 +40,10 @@ export global PlayerState {
     in-out property <int> compress-index: 0;
 
     callback toggle-play();
+    /// Exact seek, used when a drag ends or the timeline is clicked.
     callback seek(float);
+    /// Keyframe seek while dragging; cheap, lands on the nearest keyframe.
+    callback scrub(float);
     callback skip(float);
     callback volume-changed(float);
     callback toggle-mute();
@@ -108,9 +111,13 @@ component Timeline inherits Rectangle {
         y: 4px;
         width: root.width;
         height: 28px;
-        clicked => { PlayerState.seek(root.fraction-at(self.mouse-x) * root.span); }
         moved => {
             if (self.pressed) {
+                PlayerState.scrub(root.fraction-at(self.mouse-x) * root.span);
+            }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
                 PlayerState.seek(root.fraction-at(self.mouse-x) * root.span);
             }
         }
