@@ -46,6 +46,9 @@ mod imp {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
 
     pub fn install(dir: PathBuf) {
+        // Created now so the filter never has to; it may run on a heap that
+        // is already broken, so it does as little as possible there.
+        let _ = std::fs::create_dir_all(&dir);
         let _ = DIR.set(dir);
         // SAFETY: the filter is a plain function that stays valid for the
         // life of the process.
@@ -58,37 +61,14 @@ mod imp {
         let Some(dir) = DIR.get() else {
             return EXCEPTION_EXECUTE_HANDLER;
         };
-        if std::fs::create_dir_all(dir).is_err() {
-            return EXCEPTION_EXECUTE_HANDLER;
-        }
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let base = dir.join(format!("openclips-{stamp}"));
 
-        // SAFETY: `info` is the pointer Windows hands to the filter.
-        let record = unsafe { info.as_ref() }.and_then(|p| unsafe { p.ExceptionRecord.as_ref() });
-        if let Ok(mut note) = File::create(base.with_extension("txt")) {
-            let _ = writeln!(note, "OpenClips {}", openclips_core::APP_VERSION);
-            if let Some(record) = record {
-                let address = record.ExceptionAddress as usize;
-                let kind = if record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION {
-                    "access violation"
-                } else {
-                    "exception"
-                };
-                let _ = writeln!(
-                    note,
-                    "{kind} code 0x{:08x} at 0x{address:x}",
-                    record.ExceptionCode.0 as u32
-                );
-                if let Some((module, offset)) = module_of(address) {
-                    let _ = writeln!(note, "in {module} + 0x{offset:x}");
-                }
-            }
-        }
-
+        // The dump first: it is the useful part and needs the fewest
+        // allocations; the note is formatted afterwards.
         if let Ok(file) = File::create(base.with_extension("dmp")) {
             let exception = MINIDUMP_EXCEPTION_INFORMATION {
                 // SAFETY: plain queries about the current thread.
@@ -115,6 +95,28 @@ mod imp {
                 );
             }
         }
+        // SAFETY: `info` is the pointer Windows hands to the filter.
+        let record = unsafe { info.as_ref() }.and_then(|p| unsafe { p.ExceptionRecord.as_ref() });
+        if let Ok(mut note) = File::create(base.with_extension("txt")) {
+            let _ = writeln!(note, "OpenClips {}", openclips_core::APP_VERSION);
+            if let Some(record) = record {
+                let address = record.ExceptionAddress as usize;
+                let kind = if record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION {
+                    "access violation"
+                } else {
+                    "exception"
+                };
+                let _ = writeln!(
+                    note,
+                    "{kind} code 0x{:08x} at 0x{address:x}",
+                    record.ExceptionCode.0 as u32
+                );
+                if let Some((module, offset)) = module_of(address) {
+                    let _ = writeln!(note, "in {module} + 0x{offset:x}");
+                }
+            }
+        }
+
         EXCEPTION_EXECUTE_HANDLER
     }
 
