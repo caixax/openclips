@@ -27,7 +27,7 @@ use tracing::{error, info, warn};
 
 use super::audio;
 use super::encoders::{self, EncoderTuning};
-use super::game_capture::GameCaptureSource;
+use super::game_capture::{GameCaptureSource, Hooks};
 use super::monitors;
 use crate::backend::FrameSink;
 use crate::error::CaptureError;
@@ -52,12 +52,17 @@ pub struct CapturePipeline {
 }
 
 impl CapturePipeline {
+    /// Builds and starts the pipeline, returning once the first frame is
+    /// out. `hooks` is needed for game capture only. `cancel` is polled
+    /// while waiting so a stop from another thread ends the start early.
     pub fn start(
         settings: &CaptureSettings,
         sink: Arc<dyn FrameSink>,
+        hooks: Option<&Hooks>,
+        cancel: &AtomicBool,
     ) -> Result<Self, CaptureError> {
         let first_frame = Arc::new(AtomicBool::new(false));
-        let built = build(settings, sink.clone(), first_frame.clone())?;
+        let built = build(settings, sink.clone(), first_frame.clone(), hooks, cancel)?;
         let pipeline = built.pipeline;
         let bus = pipeline
             .bus()
@@ -85,9 +90,13 @@ impl CapturePipeline {
         } else {
             FIRST_FRAME_TIMEOUT
         };
-        if let Err(err) =
-            wait_for_first_frame(&bus, &first_frame, &built.source_names, first_frame_timeout)
-        {
+        if let Err(err) = wait_for_first_frame(
+            &bus,
+            &first_frame,
+            &built.source_names,
+            first_frame_timeout,
+            cancel,
+        ) {
             let _ = pipeline.set_state(gst::State::Null);
             return Err(match err {
                 CaptureError::Pipeline { message, .. } => CaptureError::EncoderStart {
@@ -178,10 +187,14 @@ fn wait_for_first_frame(
     first_frame: &AtomicBool,
     names: &HashMap<String, String>,
     timeout: Duration,
+    cancel: &AtomicBool,
 ) -> Result<(), CaptureError> {
     let deadline = Instant::now() + timeout;
     let poll = gst::ClockTime::from_mseconds(50);
     while !first_frame.load(Ordering::SeqCst) {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(CaptureError::Cancelled);
+        }
         if let Some(msg) =
             bus.timed_pop_filtered(poll, &[gst::MessageType::Error, gst::MessageType::Eos])
         {
@@ -302,6 +315,8 @@ fn build(
     settings: &CaptureSettings,
     sink: Arc<dyn FrameSink>,
     first_frame: Arc<AtomicBool>,
+    hooks: Option<&Hooks>,
+    cancel: &AtomicBool,
 ) -> Result<Built, CaptureError> {
     let spec = encoders::spec_for(&settings.encoder.element)
         .ok_or_else(|| CaptureError::MissingElement(settings.encoder.element.clone()))?;
@@ -311,7 +326,12 @@ fn build(
     // into the shared convert and encode tail below.
     let (head, game_source): (Vec<gst::Element>, Option<GameCaptureSource>) =
         match settings.game_capture_pid {
-            Some(pid) => build_game_head(pid, fps, sink.clone())?,
+            Some(pid) => {
+                let hooks = hooks.ok_or_else(|| {
+                    CaptureError::GameCapture("the capture hook binaries are missing".to_owned())
+                })?;
+                build_game_head(hooks, pid, fps, sink.clone(), cancel)?
+            }
             None => (build_display_head(settings, fps)?, None),
         };
 
@@ -486,12 +506,14 @@ fn build_display_head(
 /// backbuffer, re-gridded to the output frame rate, then uploaded to D3D11
 /// for the shared convert and encode tail.
 fn build_game_head(
+    hooks: &Hooks,
     pid: u32,
     fps: i32,
     sink: Arc<dyn FrameSink>,
+    cancel: &AtomicBool,
 ) -> Result<(Vec<gst::Element>, Option<GameCaptureSource>), CaptureError> {
     let on_fatal: Arc<dyn Fn(CaptureError) + Send + Sync> = Arc::new(move |err| sink.on_error(err));
-    let (appsrc, source) = GameCaptureSource::start(pid, fps, on_fatal)?;
+    let (appsrc, source) = GameCaptureSource::start(hooks, pid, fps, on_fatal, cancel)?;
     let (rate, grid_filter) = grid(fps, false)?;
     let upload = make("d3d11upload")?;
     Ok((vec![appsrc, rate, grid_filter, upload], Some(source)))

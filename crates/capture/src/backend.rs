@@ -150,15 +150,38 @@ pub trait CaptureBackend: Send {
 
     fn list_audio_devices(&self) -> Result<Vec<AudioDeviceInfo>, CaptureError>;
 
+    /// Starts capture and blocks until the first frame is out or the start
+    /// failed. Diagnostics and tests use this; the app starts through
+    /// [`CaptureBackend::start_in_background`].
     fn start(
         &mut self,
         settings: &CaptureSettings,
         sink: Arc<dyn FrameSink>,
     ) -> Result<(), CaptureError>;
 
+    /// Starts capture on a worker thread and reports the outcome to `done`
+    /// from that thread. Starting can take seconds (encoder sessions, the
+    /// game capture handshake), which must not block the UI. `stop` while a
+    /// start is in flight cancels it, and `done` then receives
+    /// [`CaptureError::Cancelled`].
+    fn start_in_background(
+        &mut self,
+        settings: &CaptureSettings,
+        sink: Arc<dyn FrameSink>,
+        done: Box<dyn FnOnce(Result<(), CaptureError>) + Send + 'static>,
+    ) {
+        done(self.start(settings, sink));
+    }
+
+    /// Stops a running capture, or cancels one that is starting.
     fn stop(&mut self);
 
     fn is_running(&self) -> bool;
+
+    /// A background start is still in flight.
+    fn is_starting(&self) -> bool {
+        false
+    }
 
     /// Whether game capture (the injected hook) can be used on this system.
     /// False when the signed hook binaries are missing or the platform has no

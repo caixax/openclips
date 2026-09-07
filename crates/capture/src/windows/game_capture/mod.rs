@@ -31,7 +31,7 @@ use tracing::{error, info, warn};
 
 use crate::error::CaptureError;
 
-use inject::Hooks;
+pub use inject::Hooks;
 use session::HookSession;
 
 /// How long to wait for the hook handshake before giving up and letting the
@@ -47,12 +47,6 @@ pub struct GameCaptureSource {
 }
 
 impl GameCaptureSource {
-    /// Confirms the signed hooks are present without starting a capture, so
-    /// the backend can tell whether game capture is available at all.
-    pub fn available() -> bool {
-        Hooks::locate().is_ok()
-    }
-
     /// Builds the `appsrc`, injects the hook and blocks until the first frame
     /// is ready or the handshake fails. Returning `Ok` means frames are about
     /// to flow, so the caller can build the rest of the pipeline; returning
@@ -60,11 +54,13 @@ impl GameCaptureSource {
     /// up. After a successful start the producer thread keeps pumping frames;
     /// if the hook later dies it calls `on_fatal` so the backend falls back.
     pub fn start(
+        hooks: &Hooks,
         pid: u32,
         fps: i32,
         on_fatal: Arc<dyn Fn(CaptureError) + Send + Sync>,
+        cancel: &AtomicBool,
     ) -> Result<(gst::Element, Self), CaptureError> {
-        let hooks = Hooks::locate()?;
+        let hooks = hooks.clone();
         let appsrc = gst_app::AppSrc::builder()
             .name("openclips-gamesrc")
             .format(gst::Format::Time)
@@ -95,13 +91,28 @@ impl GameCaptureSource {
             stop,
             thread: Some(thread),
         };
-        match ready_rx.recv_timeout(HANDSHAKE_TIMEOUT) {
-            Ok(Ok(())) => Ok((element, source)),
-            Ok(Err(err)) => Err(err),
-            // Dropping `source` here stops and joins the producer thread.
-            Err(_) => Err(CaptureError::GameCapture(
-                "the capture hook did not respond in time".to_owned(),
-            )),
+        // Short waits so a stop during the handshake is honoured promptly;
+        // dropping `source` on any error path stops and joins the thread.
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        loop {
+            match ready_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(())) => return Ok((element, source)),
+                Ok(Err(err)) => return Err(err),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(CaptureError::GameCapture(
+                        "the capture thread ended before the handshake".to_owned(),
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return Err(CaptureError::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                return Err(CaptureError::GameCapture(
+                    "the capture hook did not respond in time".to_owned(),
+                ));
+            }
         }
     }
 }

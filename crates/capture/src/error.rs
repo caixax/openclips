@@ -42,6 +42,11 @@ pub enum CaptureError {
     #[error("capture is already running")]
     AlreadyRunning,
 
+    /// A start in progress was stopped by the caller. Not a failure of
+    /// anything, so callers move on without blaming the encoder or source.
+    #[error("the capture start was cancelled")]
+    Cancelled,
+
     #[error("failed to write clip {path}: {reason}")]
     ClipWrite { path: PathBuf, reason: String },
 
