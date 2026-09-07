@@ -62,7 +62,14 @@ impl GamesDatabase {
     }
 
     pub fn lookup(&self, exe: &str) -> Option<&str> {
-        self.by_exe.get(&exe.to_lowercase()).map(String::as_str)
+        // Callers mostly pass names that are lower case already; only
+        // allocate when one is not.
+        let found = if exe.bytes().any(|b| b.is_ascii_uppercase()) {
+            self.by_exe.get(&exe.to_lowercase())
+        } else {
+            self.by_exe.get(exe)
+        };
+        found.map(String::as_str)
     }
 }
 
@@ -103,32 +110,34 @@ pub fn detect(
     db: &GamesDatabase,
     config: &GamesConfig,
 ) -> Vec<DetectedGame> {
-    let mut seen = HashSet::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut found = Vec::new();
     for process in processes {
-        let exe = process.exe.to_lowercase();
-        if seen.contains(&exe) {
+        // Watchers report lower case names (see `RunningProcess`), so no
+        // copy is made for the hundreds of processes that are not games.
+        let exe = process.exe.as_str();
+        if seen.contains(exe) {
             continue;
         }
         let profile = config
             .profiles
             .iter()
-            .find(|p| p.exe.eq_ignore_ascii_case(&exe));
+            .find(|p| p.exe.eq_ignore_ascii_case(exe));
         let name = match profile {
             Some(profile) if !profile.name.trim().is_empty() => profile.name.trim().to_owned(),
             Some(_) => db
-                .lookup(&exe)
+                .lookup(exe)
                 .map(str::to_owned)
-                .unwrap_or_else(|| display_name_from_exe(&exe)),
-            None => match db.lookup(&exe) {
+                .unwrap_or_else(|| display_name_from_exe(exe)),
+            None => match db.lookup(exe) {
                 Some(name) => name.to_owned(),
                 None => continue,
             },
         };
-        seen.insert(exe.clone());
+        seen.insert(exe);
         found.push(DetectedGame {
             pid: process.pid,
-            exe,
+            exe: exe.to_lowercase(),
             name,
             path: process.path.clone(),
             foreground: process.foreground,
