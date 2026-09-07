@@ -9,7 +9,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -28,12 +28,55 @@ use crate::backend::{RecordingSession, TrimJob};
 use crate::error::CaptureError;
 
 const PREROLL_TIMEOUT_SECONDS: u64 = 60;
+/// A source that delivers nothing for this long, with no error on the bus,
+/// is treated as failed instead of being waited on forever.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn media_error(path: &Path, reason: impl ToString) -> CaptureError {
     CaptureError::Media {
         path: path.to_path_buf(),
         reason: reason.to_string(),
     }
+}
+
+/// Pulls the next sample from `sink`. A pipeline error only reaches the bus,
+/// never the appsink, so a plain `pull_sample` would block forever once the
+/// pipeline has failed; this polls both. `None` means end of stream.
+fn next_sample(
+    sink: &gst_app::AppSink,
+    bus: &gst::Bus,
+    input: &Path,
+) -> Result<Option<gst::Sample>, CaptureError> {
+    let poll = gst::ClockTime::from_mseconds(200);
+    let deadline = Instant::now() + STALL_TIMEOUT;
+    loop {
+        if let Some(sample) = sink.try_pull_sample(poll) {
+            return Ok(Some(sample));
+        }
+        if let Some(msg) = bus.pop_filtered(&[gst::MessageType::Error])
+            && let gst::MessageView::Error(err) = msg.view()
+        {
+            return Err(media_error(input, encoders::describe_error(err)));
+        }
+        if sink.is_eos() {
+            return Ok(None);
+        }
+        if Instant::now() >= deadline {
+            return Err(media_error(
+                input,
+                format!(
+                    "no data was produced for {} seconds",
+                    STALL_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+    }
+}
+
+fn bus_of(pipeline: &gst::Pipeline, input: &Path) -> Result<gst::Bus, CaptureError> {
+    pipeline
+        .bus()
+        .ok_or_else(|| media_error(input, "pipeline has no bus"))
 }
 
 fn make(name: &str) -> Result<gst::Element, CaptureError> {
@@ -103,19 +146,27 @@ pub fn keyframes(path: &Path) -> Result<Vec<Duration>, CaptureError> {
         }
     });
 
+    let bus = bus_of(&pipeline, path)?;
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|_| media_error(path, "could not open the file"))?;
     let mut found = Vec::new();
-    while let Ok(sample) = appsink.pull_sample() {
-        if let Some(buffer) = sample.buffer()
-            && !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT)
-            && let Some(pts) = buffer.pts()
-        {
-            found.push(Duration::from_nanos(pts.nseconds()));
+    let outcome = loop {
+        match next_sample(&appsink, &bus, path) {
+            Ok(Some(sample)) => {
+                if let Some(buffer) = sample.buffer()
+                    && !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT)
+                    && let Some(pts) = buffer.pts()
+                {
+                    found.push(Duration::from_nanos(pts.nseconds()));
+                }
+            }
+            Ok(None) => break Ok(()),
+            Err(err) => break Err(err),
         }
-    }
+    };
     let _ = pipeline.set_state(gst::State::Null);
+    outcome?;
     found.sort();
     found.dedup();
     Ok(found)
@@ -434,14 +485,13 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
             gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
         ),
     };
+    let bus = bus_of(&source.pipeline, input)?;
     preroll_and_seek(&source, input, job.range, flags)?;
 
     // Caps are only final once the first sample is out, so peek at the video
     // before building the muxer.
-    let first = source
-        .video
-        .pull_sample()
-        .map_err(|_| media_error(input, "the selection produced no video"))?;
+    let first = next_sample(&source.video, &bus, input)?
+        .ok_or_else(|| media_error(input, "the selection produced no video"))?;
     let stream = stream_info(&source.video, &source.encoder)
         .ok_or_else(|| media_error(input, "could not read the video format"))?;
 
@@ -475,9 +525,9 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
     loop {
         let sample = match pending.take() {
             Some(sample) => sample,
-            None => match source.video.pull_sample() {
-                Ok(sample) => sample,
-                Err(_) => break,
+            None => match next_sample(&source.video, &bus, input)? {
+                Some(sample) => sample,
+                None => break,
             },
         };
         let Some(buffer) = sample.buffer() else {
@@ -504,7 +554,7 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
     }
 
     for (sink, output) in sinks.iter().zip(&outputs) {
-        while let Ok(sample) = sink.pull_sample() {
+        while let Some(sample) = next_sample(sink, &bus, input)? {
             let Some(info) = output else {
                 continue;
             };

@@ -13,7 +13,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use openclips_core::clip::ClipFile;
 use openclips_core::media::{EncodedFrame, StreamInfo};
-use openclips_core::replay::ReplaySnapshot;
+use openclips_core::replay::{AudioSnapshot, ReplaySnapshot};
 use tracing::info;
 
 use super::audio;
@@ -82,9 +82,8 @@ fn make(element: &str) -> Result<gst::Element, String> {
 }
 
 fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
-    let stream = &snapshot.stream;
     let video_src = gst_app::AppSrc::builder()
-        .caps(&h264_caps(stream))
+        .caps(&h264_caps(&snapshot.stream))
         .format(gst::Format::Time)
         .is_live(false)
         .max_bytes(0)
@@ -103,7 +102,7 @@ fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     gst::Element::link_many([&src, &parse, &mux, &filesink]).map_err(|e| e.to_string())?;
 
-    let mut audio_srcs = Vec::new();
+    let mut audio_srcs: Vec<(gst_app::AppSrc, &AudioSnapshot)> = Vec::new();
     for track in &snapshot.audio {
         if track.packets.is_empty() {
             continue;
@@ -124,8 +123,22 @@ fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
         .set_state(gst::State::Playing)
         .map_err(|_| "could not start the muxer".to_owned())?;
 
+    // Whatever happens while feeding, the pipeline must reach NULL before
+    // returning: a live filesink keeps the partial file locked and the
+    // streaming threads alive.
+    let outcome = feed(&video_src, &audio_srcs, snapshot)
+        .and_then(|()| wait_until_done(&pipeline, mux_timeout(snapshot)));
+    let _ = pipeline.set_state(gst::State::Null);
+    outcome
+}
+
+fn feed(
+    video_src: &gst_app::AppSrc,
+    audio_srcs: &[(gst_app::AppSrc, &AudioSnapshot)],
+    snapshot: &ReplaySnapshot,
+) -> Result<(), String> {
     let origin = snapshot.origin().nanos();
-    let frame_duration = stream.frame_duration().as_nanos() as u64;
+    let frame_duration = snapshot.stream.frame_duration().as_nanos() as u64;
     for frame in &snapshot.frames {
         let buffer = to_buffer(frame, origin, frame_duration);
         video_src
@@ -136,7 +149,7 @@ fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
         .end_of_stream()
         .map_err(|e| format!("could not finish the video stream: {e:?}"))?;
 
-    for (appsrc, track) in &audio_srcs {
+    for (appsrc, track) in audio_srcs {
         let duration = audio::packet_duration_ns(&track.info);
         for packet in &track.packets {
             appsrc
@@ -147,10 +160,21 @@ fn write(snapshot: &ReplaySnapshot, path: &Path) -> Result<(), String> {
             .end_of_stream()
             .map_err(|e| format!("could not finish an audio stream: {e:?}"))?;
     }
+    Ok(())
+}
 
-    let outcome = wait_until_done(&pipeline, gst::ClockTime::from_seconds(60));
-    let _ = pipeline.set_state(gst::State::Null);
-    outcome
+/// Writing is disk bound: a twenty minute clip at a high bitrate is a few
+/// gigabytes, which a slow drive does not take in a fixed minute. The wait
+/// grows with the size, assuming a modest 10 MB/s.
+fn mux_timeout(snapshot: &ReplaySnapshot) -> gst::ClockTime {
+    let bytes: u64 = snapshot.frames.iter().map(|f| f.size() as u64).sum::<u64>()
+        + snapshot
+            .audio
+            .iter()
+            .flat_map(|t| t.packets.iter())
+            .map(|p| p.size() as u64)
+            .sum::<u64>();
+    gst::ClockTime::from_seconds(60 + bytes / 10_000_000)
 }
 
 pub(super) fn h264_caps(stream: &StreamInfo) -> gst::Caps {
