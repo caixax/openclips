@@ -68,7 +68,11 @@ impl CapturePipeline {
             .bus()
             .ok_or_else(|| CaptureError::PipelineBuild("pipeline has no bus".to_owned()))?;
 
-        if std::env::var("OPENCLIPS_MMCSS").as_deref() == Ok("1") {
+        // Measured with a game in front: registering the streaming threads
+        // with the multimedia scheduler cut repeated frames from about ten
+        // percent to none for a percent of a core. OPENCLIPS_MMCSS=0 turns it
+        // off for comparison.
+        if env_flag("OPENCLIPS_MMCSS", true) {
             bus.set_sync_handler(|_, msg| {
                 if let gst::MessageView::StreamStatus(status) = msg.view()
                     && status.type_() == gst::StreamStatusType::Enter
@@ -277,7 +281,7 @@ fn log_negotiated_caps(pipeline: &gst::Pipeline) {
 /// with the multimedia class scheduler and raises its priority so capture
 /// and encode are not starved while a game keeps the machine busy.
 #[cfg(windows)]
-fn raise_streaming_thread() {
+pub(super) fn raise_streaming_thread() {
     use windows::Win32::System::Threading::{
         AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
     };
@@ -296,12 +300,22 @@ fn raise_streaming_thread() {
 }
 
 #[cfg(not(windows))]
-fn raise_streaming_thread() {}
+pub(super) fn raise_streaming_thread() {}
 
 fn make(element: &str) -> Result<gst::Element, CaptureError> {
     gst::ElementFactory::make(element)
         .build()
         .map_err(|_| CaptureError::MissingElement(element.to_owned()))
+}
+
+/// A diagnostic switch: `1` turns it on, `0` off, anything else keeps the
+/// default.
+fn env_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name).as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => default,
+    }
 }
 
 struct Built {
@@ -395,9 +409,11 @@ fn build(
     if !spec.d3d11_input {
         chain.push(make("d3d11download")?);
     }
-    // OPENCLIPS_QUEUE=1 decouples capture from encode with a few frames of
-    // slack; the oldest frame goes when the encoder stalls longer than that.
-    if std::env::var("OPENCLIPS_QUEUE").as_deref() == Ok("1") {
+    // A few frames of slack between capture and encode: the oldest frame
+    // goes when the encoder stalls longer than that instead of the source
+    // waiting on it. Measured alongside MMCSS above. OPENCLIPS_QUEUE=0
+    // removes it for comparison.
+    if env_flag("OPENCLIPS_QUEUE", true) {
         let queue = make("queue")?;
         queue.set_property("max-size-buffers", 4u32);
         queue.set_property("max-size-bytes", 0u32);
