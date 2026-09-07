@@ -1,7 +1,7 @@
 //! In app playback: `playbin3` with an `appsink` video sink that hands RGBA
 //! frames to the UI. Audio goes to the default output. Frames are scaled to
-//! at most [`MAX_FRAME_WIDTH`] on the way out so the UI never copies more
-//! than a preview needs.
+//! at most [`MAX_FRAME_WIDTH`] and converted to RGBA on the GPU, then read
+//! back once, so the processor never touches a full size picture.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use tracing::{info, warn};
 
 use super::encoders;
 use super::media::file_uri;
-use crate::backend::{Player, PlayerSink, VideoFrame};
+use crate::backend::{Player, PlayerSink};
 use crate::error::CaptureError;
 
 const MAX_FRAME_WIDTH: i32 = 1280;
@@ -93,20 +93,28 @@ impl GstPlayer {
     }
 }
 
+/// `d3d11upload -> d3d11convert -> capsfilter -> d3d11download -> appsink`.
+/// The decoder in `playbin3` is the D3D11 one when the hardware has it, so
+/// the picture stays on the GPU for the scale and the colour conversion and
+/// only the small RGBA result comes back; a software decoder's frames are
+/// uploaded first and take the same path.
 fn build_video_sink(sink: Arc<dyn PlayerSink>) -> Result<gst::Element, CaptureError> {
     let make = |name: &str| {
         gst::ElementFactory::make(name)
             .build()
             .map_err(|_| CaptureError::MissingElement(name.to_owned()))
     };
-    let scale = make("videoscale")?;
+    let upload = make("d3d11upload")?;
+    let convert = make("d3d11convert")?;
     let caps = gst::Caps::builder("video/x-raw")
+        .features(["memory:D3D11Memory"])
         .field("format", "RGBA")
         .field("width", gst::IntRange::new(16, MAX_FRAME_WIDTH))
         .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
         .build();
     let filter = make("capsfilter")?;
     filter.set_property("caps", &caps);
+    let download = make("d3d11download")?;
     let appsink = gst_app::AppSink::builder()
         .sync(true)
         .max_buffers(2)
@@ -127,11 +135,7 @@ fn build_video_sink(sink: Arc<dyn PlayerSink>) -> Result<gst::Element, CaptureEr
                 if map.len() < expected {
                     return Ok(gst::FlowSuccess::Ok);
                 }
-                sink.on_frame(VideoFrame {
-                    width,
-                    height,
-                    rgba: map.as_slice()[..expected].to_vec(),
-                });
+                sink.on_frame(width, height, &map.as_slice()[..expected]);
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
@@ -139,13 +143,13 @@ fn build_video_sink(sink: Arc<dyn PlayerSink>) -> Result<gst::Element, CaptureEr
 
     let bin = gst::Bin::with_name("openclips-video-sink");
     let appsink_element: gst::Element = appsink.upcast();
-    bin.add_many([&scale, &filter, &appsink_element])
+    bin.add_many([&upload, &convert, &filter, &download, &appsink_element])
         .map_err(|e| CaptureError::Playback(e.to_string()))?;
-    gst::Element::link_many([&scale, &filter, &appsink_element])
+    gst::Element::link_many([&upload, &convert, &filter, &download, &appsink_element])
         .map_err(|e| CaptureError::Playback(e.to_string()))?;
-    let target = scale
+    let target = upload
         .static_pad("sink")
-        .ok_or_else(|| CaptureError::Playback("videoscale has no sink pad".to_owned()))?;
+        .ok_or_else(|| CaptureError::Playback("d3d11upload has no sink pad".to_owned()))?;
     let ghost =
         gst::GhostPad::with_target(&target).map_err(|e| CaptureError::Playback(e.to_string()))?;
     bin.add_pad(&ghost)
@@ -188,6 +192,13 @@ impl Player for GstPlayer {
     fn seek(&mut self, position: Duration) {
         let _ = self.playbin.seek_simple(
             gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+            gst::ClockTime::from_nseconds(position.as_nanos() as u64),
+        );
+    }
+
+    fn seek_fast(&mut self, position: Duration) {
+        let _ = self.playbin.seek_simple(
+            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT | gst::SeekFlags::SNAP_NEAREST,
             gst::ClockTime::from_nseconds(position.as_nanos() as u64),
         );
     }

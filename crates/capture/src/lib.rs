@@ -18,7 +18,7 @@ mod windows;
 
 pub use backend::{
     CaptureBackend, ClipWriter, FrameSink, IconExtractor, MediaInfo, MediaTools, Player,
-    PlayerSink, ProcessWatcher, Recorder, RecordingSession, TrimJob, VideoFrame,
+    PlayerSink, ProcessWatcher, Recorder, RecordingSession, TrimJob,
 };
 pub use error::CaptureError;
 

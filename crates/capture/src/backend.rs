@@ -57,17 +57,11 @@ pub trait MediaTools: Send + Sync {
     fn trim(&self, job: &TrimJob) -> Result<ClipFile, CaptureError>;
 }
 
-/// A decoded video frame ready for display, tightly packed RGBA.
-#[derive(Debug, Clone)]
-pub struct VideoFrame {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
-
 /// Receives playback output. Called from player threads.
 pub trait PlayerSink: Send + Sync + 'static {
-    fn on_frame(&self, frame: VideoFrame);
+    /// A decoded frame, tightly packed RGBA rows, valid for the call only:
+    /// the sink copies what it keeps, so a frame costs one copy in total.
+    fn on_frame(&self, width: u32, height: u32, rgba: &[u8]);
     fn on_finished(&self);
     fn on_error(&self, message: String);
 }
@@ -77,7 +71,10 @@ pub trait Player: Send {
     fn load(&mut self, path: &Path) -> Result<(), CaptureError>;
     fn play(&mut self);
     fn pause(&mut self);
+    /// Frame accurate seek: decodes from the previous keyframe.
     fn seek(&mut self, position: Duration);
+    /// Seek to the nearest keyframe, cheap enough to follow a drag.
+    fn seek_fast(&mut self, position: Duration);
     fn set_volume(&mut self, volume: f64);
     fn stop(&mut self);
     fn position(&self) -> Option<Duration>;
