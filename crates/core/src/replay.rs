@@ -113,6 +113,10 @@ impl ReplayBuffer {
         self.audio.iter().map(|t| t.info.clone()).collect()
     }
 
+    pub fn audio_track_count(&self) -> usize {
+        self.audio.len()
+    }
+
     /// Registers or replaces a track. Replacing drops its packets.
     pub fn set_audio_track(&mut self, info: AudioTrackInfo) {
         if let Some(track) = self.audio.iter_mut().find(|t| t.info.index == info.index) {

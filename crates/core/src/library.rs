@@ -2,6 +2,7 @@
 //! shows, persisted as JSON next to the other application data. The files
 //! themselves stay ordinary MP4s; the index can always be rebuilt from them.
 
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -77,6 +78,19 @@ impl ClipRecord {
             .hash(&mut hasher);
         format!("{:016x}.png", hasher.finish())
     }
+}
+
+/// What the application knows about a file it just wrote, enough for a
+/// record ahead of the probe (see [`Library::add_written`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrittenFile {
+    pub path: PathBuf,
+    pub kind: ClipKind,
+    pub bytes: u64,
+    pub created: SystemTime,
+    pub duration: Duration,
+    pub game: Option<String>,
+    pub audio_tracks: Vec<String>,
 }
 
 /// A clip file found on disk.
@@ -188,34 +202,86 @@ impl Library {
     /// library (titles, games) survive. Returns the ids that still need a
     /// probe or a thumbnail.
     pub fn reconcile(&mut self, files: &[ScannedFile]) -> Vec<String> {
+        self.reconcile_changed(files).1
+    }
+
+    /// [`Library::reconcile`] that also says whether anything changed, so
+    /// callers can skip a save when the folders match the index.
+    pub fn reconcile_changed(&mut self, files: &[ScannedFile]) -> (bool, Vec<String>) {
+        let on_disk: HashMap<&Path, &ScannedFile> =
+            files.iter().map(|f| (f.path.as_path(), f)).collect();
+        let before = self.clips.len();
         self.clips
-            .retain(|c| files.iter().any(|f| f.path == c.path));
+            .retain(|c| on_disk.contains_key(c.path.as_path()));
+        let mut changed = self.clips.len() != before;
+        let mut known: HashMap<PathBuf, usize> = self
+            .clips
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.path.clone(), i))
+            .collect();
         for file in files {
-            match self.clips.iter_mut().find(|c| c.path == file.path) {
-                Some(record) => {
+            match known.get(&file.path) {
+                Some(&index) => {
+                    let record = &mut self.clips[index];
                     if record.bytes != file.bytes {
+                        // The content changed under the same name (an edit
+                        // that replaced the original): both the metadata
+                        // and the picture must be read again.
                         record.bytes = file.bytes;
                         record.probed = false;
+                        record.thumbnail = None;
+                        changed = true;
                     }
                 }
-                None => self.clips.push(ClipRecord {
-                    id: make_id(&file.path, file.modified),
-                    path: file.path.clone(),
-                    title: title_from_path(&file.path),
-                    game: None,
-                    kind: file.kind,
-                    created: file.modified,
-                    duration_ms: 0,
-                    bytes: file.bytes,
-                    width: 0,
-                    height: 0,
-                    thumbnail: None,
-                    probed: false,
-                    audio_tracks: Vec::new(),
-                }),
+                None => {
+                    self.clips.push(ClipRecord {
+                        id: make_id(&file.path, file.modified),
+                        path: file.path.clone(),
+                        title: title_from_path(&file.path),
+                        game: None,
+                        kind: file.kind,
+                        created: file.modified,
+                        duration_ms: 0,
+                        bytes: file.bytes,
+                        width: 0,
+                        height: 0,
+                        thumbnail: None,
+                        probed: false,
+                        audio_tracks: Vec::new(),
+                    });
+                    known.insert(file.path.clone(), self.clips.len() - 1);
+                    changed = true;
+                }
             }
         }
-        self.pending()
+        (changed, self.pending())
+    }
+
+    /// Adds a record for a file the application just wrote, with what is
+    /// already known about it, so the gallery shows it without a rescan.
+    /// Returns the id when the record is new.
+    pub fn add_written(&mut self, file: WrittenFile) -> Option<String> {
+        if self.clips.iter().any(|c| c.path == file.path) {
+            return None;
+        }
+        let id = make_id(&file.path, file.created);
+        self.clips.push(ClipRecord {
+            id: id.clone(),
+            title: title_from_path(&file.path),
+            path: file.path,
+            game: file.game,
+            kind: file.kind,
+            created: file.created,
+            duration_ms: file.duration.as_millis() as u64,
+            bytes: file.bytes,
+            width: 0,
+            height: 0,
+            thumbnail: None,
+            probed: false,
+            audio_tracks: file.audio_tracks,
+        });
+        Some(id)
     }
 
     /// Ids of records that still need a probe or a thumbnail.
@@ -305,22 +371,48 @@ impl Library {
 /// Lists the `.mp4` files directly inside `dir`. Partial files being
 /// written are skipped.
 pub fn scan_dir(dir: &Path, kind: ClipKind) -> Vec<ScannedFile> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
     let mut files = Vec::new();
+    scan_into(dir, kind, &[], 0, &mut files);
+    files
+}
+
+/// How deep [`scan_tree`] follows subfolders below the folder it is given.
+pub const SCAN_DEPTH: usize = 3;
+
+/// Lists the `.mp4` files inside `dir` and its subfolders (per game
+/// subfolders put clips one level down), leaving out the folders in `skip`,
+/// which are scanned on their own with another kind.
+pub fn scan_tree(dir: &Path, kind: ClipKind, skip: &[PathBuf]) -> Vec<ScannedFile> {
+    let mut files = Vec::new();
+    scan_into(dir, kind, skip, SCAN_DEPTH, &mut files);
+    files
+}
+
+fn scan_into(
+    dir: &Path,
+    kind: ClipKind,
+    skip: &[PathBuf],
+    depth: usize,
+    files: &mut Vec<ScannedFile>,
+) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_mp4 = path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
-        if !is_mp4 {
-            continue;
-        }
         let Ok(meta) = entry.metadata() else {
             continue;
         };
-        if !meta.is_file() {
+        if meta.is_dir() {
+            if depth > 0 && !skip.iter().any(|s| s == &path) {
+                scan_into(&path, kind, skip, depth - 1, files);
+            }
+            continue;
+        }
+        let is_mp4 = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+        if !is_mp4 || !meta.is_file() {
             continue;
         }
         files.push(ScannedFile {
@@ -330,7 +422,6 @@ pub fn scan_dir(dir: &Path, kind: ClipKind) -> Vec<ScannedFile> {
             kind,
         });
     }
-    files
 }
 
 #[cfg(test)]
@@ -382,7 +473,47 @@ mod tests {
         assert!(library.pending().is_empty());
         let mut bigger = file(dir, "a.mp4", 10);
         bigger.bytes = 200;
-        let pending = library.reconcile(&[bigger]);
+        let (changed, pending) = library.reconcile_changed(&[bigger.clone()]);
+        assert!(changed);
+        assert_eq!(pending, vec![id.clone()]);
+        assert!(
+            library.get(&id).is_some_and(|c| c.thumbnail.is_none()),
+            "a changed file gets a new thumbnail"
+        );
+        library.set_probe(&id, Duration::from_secs(5), 1280, 720);
+        library.set_thumbnail(&id, Some(PathBuf::from("/cache/a.png")));
+        let (changed, pending) = library.reconcile_changed(&[bigger]);
+        assert!(!changed, "an unchanged folder is not a change");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn written_files_are_added_once_with_what_is_known() {
+        let dir = Path::new("/clips");
+        let mut library = Library::default();
+        let when = SystemTime::UNIX_EPOCH + Duration::from_secs(50);
+        let written = WrittenFile {
+            path: dir.join("new.mp4"),
+            kind: ClipKind::Recording,
+            bytes: 1234,
+            created: when,
+            duration: Duration::from_secs(9),
+            game: Some("Game".to_owned()),
+            audio_tracks: vec!["Audio".to_owned()],
+        };
+        let id = library.add_written(written.clone()).expect("added");
+        let record = library.get(&id).expect("record");
+        assert_eq!(record.kind, ClipKind::Recording);
+        assert_eq!(record.duration_ms, 9000);
+        assert_eq!(record.game.as_deref(), Some("Game"));
+        assert!(!record.probed, "dimensions still need a probe");
+        assert_eq!(library.pending(), vec![id.clone()]);
+        assert!(
+            library.add_written(written).is_none(),
+            "the same path is not added twice"
+        );
+        let pending = library.reconcile(&[file(dir, "new.mp4", 50)]);
+        assert_eq!(library.clips.len(), 1);
         assert_eq!(pending, vec![id]);
     }
 
@@ -446,5 +577,36 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["a.mp4".to_owned(), "b.MP4".to_owned()]);
         assert!(scan_dir(&dir.path().join("missing"), ClipKind::Replay).is_empty());
+    }
+
+    #[test]
+    fn scan_tree_follows_subfolders_but_not_the_skipped_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let game = dir.path().join("Half-Life");
+        let recordings = dir.path().join("Recordings");
+        fs::create_dir_all(game.join("deeper")).expect("mkdir");
+        fs::create_dir(&recordings).expect("mkdir");
+        fs::write(dir.path().join("root.mp4"), b"x").expect("write");
+        fs::write(game.join("clip.mp4"), b"x").expect("write");
+        fs::write(game.join("deeper").join("nested.mp4"), b"x").expect("write");
+        fs::write(recordings.join("rec.mp4"), b"x").expect("write");
+        let mut names: Vec<String> = scan_tree(dir.path(), ClipKind::Replay, &[recordings])
+            .into_iter()
+            .map(|f| {
+                f.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "clip.mp4".to_owned(),
+                "nested.mp4".to_owned(),
+                "root.mp4".to_owned()
+            ]
+        );
     }
 }
