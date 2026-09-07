@@ -255,7 +255,7 @@ exe = "momentum.exe"
 capture_method = "game"       # this game uses game capture; omit to follow the default
 ```
 
-The game must be running and in the foreground for the hook to attach. Everything downstream (the replay buffer, hotkeys, recordings, editor and per application audio) works exactly the same as with display capture.
+The game must be running and in the foreground for the hook to attach. Everything downstream (the replay buffer, hotkeys, recordings, editor and per application audio) works exactly the same as with display capture. The hook's frames currently travel through system memory (a GPU to CPU copy per frame, read on a fixed 60 Hz grid from a pair of staging textures, into recycled buffers), which costs about half a core at 1080p60 and, on the machine this was measured on, still repeats more frames than display capture with MMCSS does; keeping the frames on the GPU is the planned next step, so treat game capture as the option for games where display capture visibly stutters.
 
 ## Updates
 
@@ -328,7 +328,7 @@ Both capture methods see everything the display shows, including borderless and 
 
 ### Why Windows Graphics Capture is the default
 
-Measured on a 240 Hz display with a test pattern moving at 240 fps, captured at 60 fps: the Desktop Duplication path of GStreamer's `d3d11screencapturesrc` repeated 14 percent of the frames (one in seven, evenly spread), independent of the rate the source was asked for, while Windows Graphics Capture repeated none. A real game clip showed the same 12 percent against 4 percent. Repeated frames read as micro stutter even though the file is a clean 60 fps, so Graphics Capture is the default and Desktop Duplication stays as a fallback. Frames still get repeated when the game itself does not present a new one within 16.7 ms, and when the game keeps the GPU near 100 percent: the capture copy and the encoder then wait behind the game's work. Leave headroom (cap the game's frame rate below what the GPU can do) or run OpenClips as administrator, which lets it ask Windows for a higher GPU scheduling class (the app tries on every start and logs the outcome).
+Measured on a 240 Hz display with a test pattern moving at 240 fps, captured at 60 fps: the Desktop Duplication path of GStreamer's `d3d11screencapturesrc` repeated 14 percent of the frames (one in seven, evenly spread), independent of the rate the source was asked for, while Windows Graphics Capture repeated none. A real game clip showed the same 12 percent against 4 percent. Repeated frames read as micro stutter even though the file is a clean 60 fps, so Graphics Capture is the default and Desktop Duplication stays as a fallback. Frames still get repeated when the game itself does not present a new one within 16.7 ms, and when the game keeps the GPU near 100 percent: the capture copy and the encoder then wait behind the game's work. Leave headroom (cap the game's frame rate below what the GPU can do) or run OpenClips as administrator, which lets it ask Windows for a higher GPU scheduling class (the app tries on every start and logs the outcome). The capture and encode threads run in the multimedia scheduling class (MMCSS) with a few frames of slack between capture and encoder; measured with a game in front that took repeated frames from about ten percent to none. `OPENCLIPS_MMCSS=0` and `OPENCLIPS_QUEUE=0` switch either off for comparison.
 
 ### Game detection
 

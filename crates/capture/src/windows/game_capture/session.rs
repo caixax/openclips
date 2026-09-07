@@ -7,7 +7,8 @@
 //! same route OBS uses in shared memory (compatibility) mode. This costs one
 //! GPU to CPU copy per output frame but captures the game's real backbuffer,
 //! so it does not drop frames when the GPU is saturated the way desktop
-//! capture does.
+//! capture does. Two staging textures alternate so the read back never waits
+//! for the copy the GPU is still making, at the cost of one frame of delay.
 
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
@@ -50,7 +51,12 @@ pub struct HookSession {
     _device: ID3D11Device,
     context: ID3D11DeviceContext,
     shared: ID3D11Texture2D,
-    staging: ID3D11Texture2D,
+    /// Copies of the shared texture; the frame read this call was copied on
+    /// the previous one, so `Map` finds it finished.
+    staging: [ID3D11Texture2D; 2],
+    /// The staging texture holding the copy made on the last call.
+    newest: usize,
+    primed: bool,
     width: u32,
     height: u32,
     gst_format: &'static str,
@@ -88,7 +94,18 @@ impl HookSession {
             info.capture_overlay = 0;
             info.force_shmem = 0;
             info.allow_srgb_alias = 1;
-            info.frame_interval = frame_interval_ns;
+            // The hook copies the backbuffer at most this often. Our reader
+            // samples at the output rate with a clock of its own, and two
+            // equal rates beat against each other: every few frames the
+            // reader finds the same copy twice and later misses one. With
+            // copies on every present the newest frame is always there.
+            // OPENCLIPS_HOOK_INTERVAL=1 restores the throttle for comparison.
+            info.frame_interval = if std::env::var("OPENCLIPS_HOOK_INTERVAL").as_deref() == Ok("1")
+            {
+                frame_interval_ns
+            } else {
+                0
+            };
         }
 
         let hook_init = open_event(&suffixed(protocol::EVENT_HOOK_INIT, pid))?;
@@ -125,7 +142,10 @@ impl HookSession {
 
         let (device, context) = create_device()?;
         let shared = open_shared_texture(&device, tex_handle)?;
-        let staging = create_staging(&device, &shared)?;
+        let staging = [
+            create_staging(&device, &shared)?,
+            create_staging(&device, &shared)?,
+        ];
 
         info!(
             "game capture ready: {}x{} {} (pid {pid})",
@@ -141,6 +161,8 @@ impl HookSession {
             context,
             shared,
             staging,
+            newest: 0,
+            primed: false,
             width: info.cx,
             height: info.cy,
             gst_format,
@@ -167,12 +189,19 @@ impl HookSession {
         !exited && !stopped
     }
 
-    /// Copies the latest presented frame out of the shared texture as tightly
-    /// packed rows (`width * 4` bytes each). An error is fatal (the texture
-    /// was lost, usually because the game resized or closed).
-    pub fn read_frame(&mut self) -> Result<Vec<u8>, CaptureError> {
+    /// Bytes of one frame as tightly packed rows (`width * 4` bytes each).
+    pub fn frame_bytes(&self) -> usize {
+        (self.width * 4 * self.height) as usize
+    }
+
+    /// Writes the latest presented frame into `dst` (`frame_bytes` long) as
+    /// tightly packed rows. The copy of the newest present goes to one
+    /// staging texture while the copy made on the previous call is read from
+    /// the other, so the map does not wait on the GPU. An error is fatal
+    /// (the texture was lost, usually because the game resized or closed).
+    pub fn read_frame_into(&mut self, dst: &mut [u8]) -> Result<(), CaptureError> {
         // A resize republishes the control block with new dimensions, which
-        // our fixed staging texture can no longer hold.
+        // our fixed staging textures can no longer hold.
         // SAFETY: the info view stays mapped for the session's lifetime.
         let info = unsafe { *self.info_map.ptr };
         if info.cx != self.width || info.cy != self.height {
@@ -180,28 +209,59 @@ impl HookSession {
                 "the capture size changed".to_owned(),
             ));
         }
+        if dst.len() < self.frame_bytes() {
+            return Err(CaptureError::GameCapture(
+                "the frame buffer is too small".to_owned(),
+            ));
+        }
+        let write = 1 - self.newest;
+        let read = self.newest;
 
-        // SAFETY: both textures live on `context`'s device; CopyResource of
+        // SAFETY: all textures live on `context`'s device; CopyResource of
         // matching descriptions is valid, and the map is released before the
-        // borrowed `mapped` pointer is used.
+        // borrowed `mapped` pointer goes out of scope.
         unsafe {
-            self.context.CopyResource(&self.staging, &self.shared);
+            self.context
+                .CopyResource(&self.staging[write], &self.shared);
+            if !self.primed {
+                // Nothing was copied before the first call: take the one
+                // stall so the first frame is a real picture.
+                self.context.CopyResource(&self.staging[read], &self.shared);
+                self.primed = true;
+            }
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.context
-                .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .Map(&self.staging[read], 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                 .map_err(|e| CaptureError::GameCapture(format!("could not map the frame: {e}")))?;
 
             let row_bytes = (self.width * 4) as usize;
             let src_pitch = mapped.RowPitch as usize;
-            let mut data = vec![0u8; row_bytes * self.height as usize];
-            for row in 0..self.height as usize {
-                let src = (mapped.pData as *const u8).add(row * src_pitch);
-                let dst = data.as_mut_ptr().add(row * row_bytes);
-                std::ptr::copy_nonoverlapping(src, dst, row_bytes);
+            let source = mapped.pData as *const u8;
+            if src_pitch == row_bytes {
+                std::ptr::copy_nonoverlapping(source, dst.as_mut_ptr(), self.frame_bytes());
+            } else {
+                for row in 0..self.height as usize {
+                    let src = source.add(row * src_pitch);
+                    let out = dst.as_mut_ptr().add(row * row_bytes);
+                    std::ptr::copy_nonoverlapping(src, out, row_bytes);
+                }
             }
-            self.context.Unmap(&self.staging, 0);
-            Ok(data)
+            self.context.Unmap(&self.staging[read], 0);
         }
+        self.newest = write;
+        Ok(())
+    }
+}
+
+impl Drop for HookSession {
+    fn drop(&mut self) {
+        // Tell the hook to stop capturing now, the way OBS does. Without it
+        // the hook only notices the keepalive mutex is gone on a later
+        // present, and a restart requested meanwhile lands in the middle
+        // of its teardown and is lost: the next session then waits for a
+        // frame that never comes.
+        // SAFETY: a valid owned event handle.
+        let _ = unsafe { SetEvent(self.hook_stop.0) };
     }
 }
 

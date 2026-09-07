@@ -80,6 +80,32 @@ impl FrameSink for Sink {
     }
 }
 
+/// User plus kernel time of this process, in milliseconds.
+fn cpu_time_ms() -> u64 {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: plain query on the current process with valid out params.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if ok.is_err() {
+        return 0;
+    }
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    (ticks(kernel) + ticks(user)) / 10_000
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(8);
@@ -129,11 +155,14 @@ fn main() {
         .start(&settings, sink.clone())
         .expect("start capture");
     let finish = args.next().is_some_and(|mode| mode == "finish");
+    let cpu_before = cpu_time_ms();
     std::thread::sleep(Duration::from_secs(seconds));
     println!(
-        "frames pushed: {}, audio packets pushed: {}",
+        "frames pushed: {}, audio packets pushed: {}, {} ms of processor time ({:.0}% of one core)",
         sink.frames.lock().expect("lock"),
-        sink.packets.lock().expect("lock")
+        sink.packets.lock().expect("lock"),
+        cpu_time_ms() - cpu_before,
+        (cpu_time_ms() - cpu_before) as f64 / (seconds as f64 * 10.0)
     );
     if finish {
         backend.stop();

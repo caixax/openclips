@@ -167,10 +167,32 @@ fn run(
         .build();
     appsrc.set_caps(Some(&caps));
 
+    // Frames are eight megabytes and more; a pool hands the same few
+    // buffers round instead of allocating one per frame. The upload
+    // element returns them as soon as the copy to the GPU is done.
+    let pool = match frame_pool(&caps, sink.frame_bytes()) {
+        Ok(pool) => pool,
+        Err(err) => {
+            error!("{err}");
+            let _ = appsrc.end_of_stream();
+            on_fatal(err);
+            return;
+        }
+    };
+
+    // The producer competes with the game for the processor; the same
+    // scheduling class as the streaming threads keeps its pace.
+    super::pipeline::raise_streaming_thread();
+
     let period = Duration::from_nanos(frame_interval_ns);
+    let mut frames: u64 = 0;
+    // Reads are due on an absolute grid. Sleeping for "period minus the
+    // work" drifts by the sleep overshoot (a millisecond or two on Windows)
+    // every frame, which starves videorate and makes it repeat frames.
+    let mut due = Instant::now();
     while !stop.load(Ordering::SeqCst) {
-        let tick = Instant::now();
-        if !sink.alive() {
+        // Two kernel waits per check; every half second is plenty.
+        if frames.is_multiple_of(30) && !sink.alive() {
             info!("game capture hook stopped for pid {pid}");
             let _ = appsrc.end_of_stream();
             on_fatal(CaptureError::GameCapture(
@@ -178,24 +200,75 @@ fn run(
             ));
             return;
         }
-        match sink.read_frame() {
-            Ok(data) => {
-                let buffer = gst::Buffer::from_mut_slice(data);
-                if let Err(err) = appsrc.push_buffer(buffer) {
-                    warn!("game capture pipeline stopped accepting frames: {err:?}");
-                    return;
+        let Ok(mut buffer) = pool.acquire_buffer(None) else {
+            // The pool is inactive: the pipeline is shutting down.
+            return;
+        };
+        let filled = match buffer.get_mut() {
+            Some(buffer) => {
+                buffer.set_pts(None);
+                buffer.set_dts(None);
+                match buffer.map_writable() {
+                    Ok(mut map) => sink.read_frame_into(map.as_mut_slice()),
+                    Err(_) => Err(CaptureError::GameCapture(
+                        "could not map a frame buffer".to_owned(),
+                    )),
                 }
             }
-            Err(err) => {
-                error!("{err}");
-                let _ = appsrc.end_of_stream();
-                on_fatal(err);
-                return;
-            }
+            None => Err(CaptureError::GameCapture(
+                "the frame buffer is shared".to_owned(),
+            )),
+        };
+        if let Err(err) = filled {
+            error!("{err}");
+            let _ = appsrc.end_of_stream();
+            on_fatal(err);
+            return;
         }
-        if let Some(rest) = period.checked_sub(tick.elapsed()) {
-            std::thread::sleep(rest);
+        if let Err(err) = appsrc.push_buffer(buffer) {
+            warn!("game capture pipeline stopped accepting frames: {err:?}");
+            return;
+        }
+        frames += 1;
+        due += period;
+        wait_until(due);
+        // Far behind (the game froze): start the grid over instead of
+        // bursting to catch up.
+        if Instant::now() > due + period * 2 {
+            due = Instant::now();
         }
     }
     let _ = appsrc.end_of_stream();
+    let _ = pool.set_active(false);
+}
+
+/// Sleeps until `due`, spinning through the last millisecond because the
+/// scheduler wakes late by about that much.
+fn wait_until(due: Instant) {
+    let spin = Duration::from_micros(700);
+    loop {
+        let now = Instant::now();
+        if now >= due {
+            return;
+        }
+        let left = due - now;
+        if left > spin {
+            std::thread::sleep(left - spin);
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+}
+
+/// A pool of a few frame sized buffers for the capture thread.
+fn frame_pool(caps: &gst::Caps, size: usize) -> Result<gst::BufferPool, CaptureError> {
+    let pool = gst::BufferPool::new();
+    let mut config = pool.config();
+    config.set_params(Some(caps), size as u32, 2, 8);
+    pool.set_config(config).map_err(|e| {
+        CaptureError::GameCapture(format!("could not configure the frame pool: {e}"))
+    })?;
+    pool.set_active(true)
+        .map_err(|e| CaptureError::GameCapture(format!("could not start the frame pool: {e}")))?;
+    Ok(pool)
 }
