@@ -61,6 +61,9 @@ pub struct EngineStatus {
 }
 
 pub type SaveCallback = Box<dyn FnOnce(Result<ClipFile, String>) + Send + 'static>;
+/// Told about every recording file closed on its own (see
+/// [`CaptureSink::rotate_recording`]), from a worker thread.
+pub type RecordingListener = Arc<dyn Fn(Result<ClipFile, String>) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -71,7 +74,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 enum SinkRecording {
     Idle,
     Pending(PathBuf),
-    Active(Box<dyn RecordingSession>, Timestamp, Timestamp),
+    Active {
+        session: Box<dyn RecordingSession>,
+        first: Timestamp,
+        last: Timestamp,
+    },
     Failed(String),
 }
 
@@ -83,9 +90,45 @@ struct CaptureSink {
     recording: Mutex<SinkRecording>,
     recorder: Arc<dyn Recorder>,
     failure: Mutex<Option<CaptureError>>,
+    listener: Mutex<Option<RecordingListener>>,
 }
 
 impl CaptureSink {
+    /// A new stream cannot continue in the open file: after a capture
+    /// restart the timestamps start over, and after a mode change the muxer
+    /// cannot switch caps. The file is closed as it is and the next keyframe
+    /// opens a numbered sibling, so a display change mid recording costs a
+    /// cut, not the recording.
+    fn rotate_recording(&self) {
+        let mut slot = lock(&self.recording);
+        if !matches!(&*slot, SinkRecording::Active { .. }) {
+            return;
+        }
+        let state = std::mem::replace(&mut *slot, SinkRecording::Idle);
+        let SinkRecording::Active { session, .. } = state else {
+            return;
+        };
+        let next = next_part_path(session.path());
+        info!(
+            "stream changed while recording, closing {} and continuing in {}",
+            session.path().display(),
+            next.display()
+        );
+        *slot = SinkRecording::Pending(next);
+        let listener = lock(&self.listener).clone();
+        spawn_named("recording-rotate", move || {
+            let result = session.finish().map_err(|e| e.to_string());
+            match listener {
+                Some(listener) => listener(result),
+                None => {
+                    if let Err(err) = result {
+                        error!("could not close the rotated recording: {err}");
+                    }
+                }
+            }
+        });
+    }
+
     fn feed_recording(&self, frame: &EncodedFrame) {
         let mut slot = lock(&self.recording);
         match &mut *slot {
@@ -107,12 +150,16 @@ impl CaptureSink {
                             *slot = SinkRecording::Failed(err.to_string());
                             return;
                         }
-                        *slot = SinkRecording::Active(session, frame.pts, frame.pts);
+                        *slot = SinkRecording::Active {
+                            session,
+                            first: frame.pts,
+                            last: frame.pts,
+                        };
                     }
                     Err(err) => *slot = SinkRecording::Failed(err.to_string()),
                 }
             }
-            SinkRecording::Active(session, _, last) => {
+            SinkRecording::Active { session, last, .. } => {
                 if let Err(err) = session.push(frame) {
                     error!("{err}");
                     *slot = SinkRecording::Failed(err.to_string());
@@ -126,7 +173,7 @@ impl CaptureSink {
 
     fn feed_recording_audio(&self, packet: &AudioPacket) {
         let mut slot = lock(&self.recording);
-        if let SinkRecording::Active(session, _, _) = &mut *slot
+        if let SinkRecording::Active { session, .. } = &mut *slot
             && let Err(err) = session.push_audio(packet)
         {
             error!("{err}");
@@ -138,6 +185,7 @@ impl CaptureSink {
 impl FrameSink for CaptureSink {
     fn on_stream(&self, info: StreamInfo) {
         lock(&self.buffer).set_stream(info);
+        self.rotate_recording();
     }
 
     fn on_frame(&self, frame: EncodedFrame) {
@@ -221,6 +269,7 @@ impl Engine {
             recording: Mutex::new(SinkRecording::Idle),
             recorder: backend.recorder(),
             failure: Mutex::new(None),
+            listener: Mutex::new(None),
         });
         let writer = backend.clip_writer();
         let monitors = backend.list_monitors().unwrap_or_default();
@@ -260,6 +309,16 @@ impl Engine {
 
     pub fn monitors(&self) -> &[MonitorInfo] {
         &self.monitors
+    }
+
+    /// Receives every recording file that is closed without the user asking
+    /// (a display change or a capture restart mid recording). Called from a
+    /// worker thread; it must not touch the engine directly.
+    pub fn set_recording_listener(
+        &self,
+        listener: impl Fn(Result<ClipFile, String>) + Send + Sync + 'static,
+    ) {
+        *lock(&self.sink.listener) = Some(Arc::new(listener));
     }
 
     pub fn list_audio_devices(&self) -> Vec<AudioDeviceInfo> {
@@ -466,7 +525,7 @@ impl Engine {
         self.auto_recording = false;
         let state = std::mem::replace(&mut *lock(&self.sink.recording), SinkRecording::Idle);
         match state {
-            SinkRecording::Active(session, _, _) => {
+            SinkRecording::Active { session, .. } => {
                 self.finishing = true;
                 spawn_named("recording-finish", move || {
                     done(session.finish().map_err(|e| e.to_string()));
@@ -792,7 +851,10 @@ impl Engine {
             warn!("capture failed: {failure}");
             self.backend.stop();
             match failure {
-                CaptureError::AudioSource { key, .. } if !self.recording_wanted => {
+                // While recording, the restart rotates the file (see
+                // `CaptureSink::rotate_recording`), so the recording goes on
+                // in a new one instead of stalling.
+                CaptureError::AudioSource { key, .. } => {
                     self.unavailable_audio.insert(key.clone());
                     let name = self.audio_source_name(&key);
                     match self.restart_capture() {
@@ -836,7 +898,11 @@ impl Engine {
             match &*lock(&self.sink.recording) {
                 SinkRecording::Idle => RecordingState::Idle,
                 SinkRecording::Pending(_) => RecordingState::Starting,
-                SinkRecording::Active(session, first, last) => RecordingState::Active {
+                SinkRecording::Active {
+                    session,
+                    first,
+                    last,
+                } => RecordingState::Active {
                     path: session.path().to_path_buf(),
                     duration: last.saturating_sub(*first),
                 },
@@ -946,6 +1012,29 @@ pub fn file_name_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// The next `<name> (n).mp4` next to `path` whose final and partial files
+/// are both free. A previous ` (n)` on the name is replaced, not stacked.
+fn next_part_path(path: &Path) -> PathBuf {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Recording");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+    let base = stem
+        .rsplit_once(" (")
+        .filter(|(_, n)| {
+            n.strip_suffix(')')
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(|(base, _)| base)
+        .unwrap_or(stem);
+    (2..)
+        .map(|n| dir.join(format!("{base} ({n}).{ext}")))
+        .find(|p| !p.exists() && !p.with_extension(format!("{ext}.part")).exists())
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
 fn now_local() -> LocalDateTime {
     use chrono::{Datelike, Timelike};
     let now = chrono::Local::now();
@@ -956,5 +1045,39 @@ fn now_local() -> LocalDateTime {
         hour: now.hour(),
         minute: now.minute(),
         second: now.second(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_part_path_skips_taken_names_and_replaces_the_counter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("Game 2026-09-07 21-05-09.mp4");
+        assert_eq!(
+            next_part_path(&first),
+            dir.path().join("Game 2026-09-07 21-05-09 (2).mp4")
+        );
+        std::fs::write(
+            dir.path().join("Game 2026-09-07 21-05-09 (2).mp4.part"),
+            b"x",
+        )
+        .expect("write");
+        assert_eq!(
+            next_part_path(&first),
+            dir.path().join("Game 2026-09-07 21-05-09 (3).mp4")
+        );
+        let second = dir.path().join("Game 2026-09-07 21-05-09 (2).mp4");
+        assert_eq!(
+            next_part_path(&second),
+            dir.path().join("Game 2026-09-07 21-05-09 (3).mp4")
+        );
+        let odd = dir.path().join("Clip (final).mp4");
+        assert_eq!(
+            next_part_path(&odd),
+            dir.path().join("Clip (final) (2).mp4")
+        );
     }
 }

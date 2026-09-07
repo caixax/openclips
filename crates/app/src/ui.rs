@@ -211,6 +211,11 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         game: RefCell::new(("No game detected".to_owned(), None)),
     });
     SHARED.with(|slot| *slot.borrow_mut() = Some(shared.clone()));
+    // Files closed on their own mid recording (a display change, a capture
+    // restart) are reported like a stopped recording: indexed and announced.
+    if let Some(engine) = shared.engine.borrow().as_ref() {
+        engine.set_recording_listener(|result| post(UiEvent::RecordingDone(result)));
+    }
     init_library(&shared);
     init_games(&shared);
     wire_tray(&shared);
