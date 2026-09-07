@@ -11,7 +11,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use openclips_core::clip::ClipFile;
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo, Timestamp};
-use tracing::info;
+use tracing::{info, warn};
 
 use super::audio;
 use super::encoders::wait_until_done;
@@ -48,6 +48,7 @@ pub struct Mp4Session {
     labels: Vec<String>,
     path: PathBuf,
     partial: PathBuf,
+    fragmented: bool,
     frame_duration_ns: u64,
     origin: Option<Timestamp>,
     last: Option<Timestamp>,
@@ -136,6 +137,7 @@ impl Mp4Session {
             labels: tracks.iter().map(|t| t.label.clone()).collect(),
             path: path.to_path_buf(),
             partial,
+            fragmented,
             frame_duration_ns: stream.frame_duration().as_nanos() as u64,
             origin: None,
             last: None,
@@ -213,7 +215,19 @@ impl RecordingSession for Mp4Session {
             result.and_then(|()| wait_until_done(&self.pipeline, gst::ClockTime::from_seconds(60)));
         let _ = self.pipeline.set_state(gst::State::Null);
         if let Err(reason) = result {
-            let _ = std::fs::remove_file(&self.partial);
+            // A fragmented file is playable as it stands and is the only
+            // copy of the recording: it stays as a .part and the library
+            // recovers it on the next start. Plain output without its
+            // trailer is worthless and goes.
+            if self.fragmented && self.frames > 0 {
+                warn!(
+                    "could not finalize {}; keeping {} for recovery",
+                    self.path.display(),
+                    self.partial.display()
+                );
+            } else {
+                let _ = std::fs::remove_file(&self.partial);
+            }
             return Err(fail(reason));
         }
         std::fs::rename(&self.partial, &self.path)
@@ -246,5 +260,10 @@ impl RecordingSession for Mp4Session {
 impl Drop for Mp4Session {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
+        // Dropped without `finish`: a fragmented recording stays on disk for
+        // recovery, an unfinished plain file (a failed cut) is unplayable.
+        if !self.fragmented {
+            let _ = std::fs::remove_file(&self.partial);
+        }
     }
 }
