@@ -48,9 +48,33 @@ pub fn quality_label(fps: u32, bitrate_kbps: u32) -> String {
         .iter()
         .find(|(_, f, b)| *f == fps && *b == bitrate_kbps)
     {
-        Some((name, _, _)) => format!("{name} quality, {fps} fps"),
-        None => format!("{fps} fps, {mbps:.0} Mbps"),
+        Some((name, _, _)) => crate::i18n::tr("{name} quality, {fps} fps")
+            .replace("{name}", &preset_name(name))
+            .replace("{fps}", &fps.to_string()),
+        None => crate::i18n::tr("{fps} fps, {mbps} Mbps")
+            .replace("{fps}", &fps.to_string())
+            .replace("{mbps}", &format!("{mbps:.0}")),
     }
+}
+
+fn preset_name(name: &str) -> String {
+    match name {
+        "Low" => crate::i18n::tr("Low"),
+        "High" => crate::i18n::tr("High"),
+        _ => crate::i18n::tr("Standard"),
+    }
+}
+
+/// "Display 2 (primary)" in the interface language. The backend names
+/// displays in English from their device name (`\\.\DISPLAY2`).
+fn monitor_name(monitor: &MonitorInfo) -> String {
+    let number = monitor.id.trim_start_matches("\\\\.\\DISPLAY");
+    let text = if monitor.primary {
+        crate::i18n::tr("Display {n} (primary)")
+    } else {
+        crate::i18n::tr("Display {n}")
+    };
+    text.replace("{n}", number)
 }
 
 /// Keycap texts for a binding, for example ["ALT", "F7"].
@@ -266,11 +290,14 @@ pub fn set_monitors(
     monitors: &[MonitorInfo],
     selected: &DisplaySelection,
 ) {
-    let mut names: Vec<SharedString> = vec!["Primary display".into()];
+    let mut names: Vec<SharedString> = vec![crate::i18n::tr("Primary display").into()];
     names.extend(monitors.iter().map(|m| {
         format!(
             "{} ({}x{} at {} Hz)",
-            m.name, m.width, m.height, m.refresh_hz
+            monitor_name(m),
+            m.width,
+            m.height,
+            m.refresh_hz
         )
         .into()
     }));
@@ -491,9 +518,11 @@ const ACTIONS: [GameAction; 3] = [
 ];
 
 fn set_profile_display_names(state: &SettingsState<'_>, monitors: &[MonitorInfo]) {
-    let mut names: Vec<SharedString> =
-        vec!["Use the global display".into(), "Primary display".into()];
-    names.extend(monitors.iter().map(|m| SharedString::from(m.name.as_str())));
+    let mut names: Vec<SharedString> = vec![
+        crate::i18n::tr("Use the global display").into(),
+        crate::i18n::tr("Primary display").into(),
+    ];
+    names.extend(monitors.iter().map(|m| SharedString::from(monitor_name(m))));
     state.set_profile_display_names(ModelRc::new(VecModel::from(names)));
 }
 

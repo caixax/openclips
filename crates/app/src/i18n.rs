@@ -103,4 +103,87 @@ mod tests {
             "\u{1}not a real key\u{1}"
         );
     }
+
+    /// Every catalog holds exactly the strings the sources hand to `tr`:
+    /// a string missing from a catalog would show in English, a key nobody
+    /// uses is dead weight. Strings must be literals right inside the call
+    /// for this to see them.
+    #[test]
+    fn every_source_string_is_in_every_catalog() {
+        let used = source_strings();
+        assert!(used.len() > 200, "found only {} strings", used.len());
+        for (lang, _) in CATALOGS {
+            let map = catalogs().get(lang).expect("catalog");
+            let missing: Vec<&String> = used.iter().filter(|s| !map.contains_key(*s)).collect();
+            assert!(missing.is_empty(), "{} lacks {missing:#?}", lang.code());
+            let unused: Vec<&String> = map.keys().filter(|k| !used.contains(k)).collect();
+            assert!(
+                unused.is_empty(),
+                "{} has unused keys {unused:#?}",
+                lang.code()
+            );
+        }
+    }
+
+    fn source_strings() -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_files(&root.join("ui"), "slint", &mut files);
+        collect_files(&root.join("src"), "rs", &mut files);
+        let mut found = Vec::new();
+        for file in files {
+            // This file names the prefixes it looks for; skip it.
+            if file.ends_with("i18n.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).expect("read a source file");
+            for prefix in ["I18n.tr(", "i18n::tr("] {
+                let mut rest = text.as_str();
+                while let Some(at) = rest.find(prefix) {
+                    rest = &rest[at + prefix.len()..];
+                    if let Some(literal) = string_literal(rest.trim_start()) {
+                        found.push(literal);
+                    }
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    fn collect_files(dir: &std::path::Path, extension: &str, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files(&path, extension, out);
+            } else if path.extension().is_some_and(|e| e == extension) {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The text of a `"..."` literal at the start of `text`, with the
+    /// escapes both Rust and Slint use resolved.
+    fn string_literal(text: &str) -> Option<String> {
+        let mut chars = text.strip_prefix('"')?.chars();
+        let mut out = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    let escaped = chars.next()?;
+                    out.push(match escaped {
+                        'n' => '\n',
+                        other => other,
+                    });
+                }
+                '"' => return Some(out),
+                other => out.push(other),
+            }
+        }
+        None
+    }
 }

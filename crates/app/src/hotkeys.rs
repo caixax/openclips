@@ -23,9 +23,11 @@ pub enum HotkeyAction {
 impl HotkeyAction {
     pub fn label(self) -> String {
         match self {
-            HotkeyAction::SaveReplay { index } => format!("Hotkey {}", index + 1),
-            HotkeyAction::ToggleReplayBuffer => "Start or stop buffer".to_owned(),
-            HotkeyAction::ToggleRecording => "Start or stop recording".to_owned(),
+            HotkeyAction::SaveReplay { index } => {
+                crate::i18n::tr("Hotkey {n}").replace("{n}", &(index + 1).to_string())
+            }
+            HotkeyAction::ToggleReplayBuffer => crate::i18n::tr("Start or stop the buffer"),
+            HotkeyAction::ToggleRecording => crate::i18n::tr("Start or stop recording"),
         }
     }
 }
@@ -130,7 +132,8 @@ pub fn register(config: &HotkeyConfig) -> Result<Hotkeys, AppError> {
                     warn!("could not register {binding} for {action:?}: {err}");
                     hotkeys.rejected.push((
                         action,
-                        format!("{binding} is already in use by another application"),
+                        crate::i18n::tr("{binding} is already in use by another application")
+                            .replace("{binding}", &binding.to_string()),
                     ));
                 }
             }
@@ -183,7 +186,11 @@ fn to_code(key: Key) -> Result<Code, AppError> {
         Key::ScrollLock => "ScrollLock".to_owned(),
         Key::Pause => "Pause".to_owned(),
     };
-    Code::from_str(&name).map_err(|_| AppError::Hotkey(format!("unsupported key {key}")))
+    Code::from_str(&name).map_err(|_| {
+        AppError::Hotkey(
+            crate::i18n::tr("Unsupported key {key}").replace("{key}", &key.to_string()),
+        )
+    })
 }
 
 /// Modifier state of a key press as reported by the UI toolkit.

@@ -26,11 +26,12 @@ const SAVE_DELAY: Duration = Duration::from_secs(2);
 pub struct CardData {
     pub id: String,
     pub title: String,
-    pub game: String,
+    /// `None` when the record has no game; the gallery shows the kind then.
+    pub game: Option<String>,
     pub date: String,
     pub duration: String,
     pub size: String,
-    pub kind: String,
+    pub kind: ClipKind,
     pub thumbnail: Option<PathBuf>,
 }
 
@@ -408,11 +409,11 @@ impl LibraryService {
             .map(|c| CardData {
                 id: c.id.clone(),
                 title: c.title.clone(),
-                game: c.game.clone().unwrap_or_else(|| c.kind.label().to_owned()),
+                game: c.game.clone(),
                 date: format_date(c.created),
                 duration: format_duration(c.duration()),
                 size: format_size(c.bytes),
-                kind: c.kind.label().to_owned(),
+                kind: c.kind,
                 thumbnail: c.thumbnail.clone(),
             })
             .collect()

@@ -241,7 +241,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         update_status: RefCell::new(String::new()),
         last_update_check: Cell::new(None),
         texts: RefCell::new(StatusTexts::default()),
-        game: RefCell::new(("No game detected".to_owned(), None)),
+        game: RefCell::new((String::new(), None)),
         images: RefCell::new(HashMap::new()),
         library_stale: Cell::new(false),
     });
@@ -406,12 +406,12 @@ fn apply_texts(window: &MainWindow, shared: &SharedRef) {
 
 fn apply_game(window: &MainWindow, shared: &SharedRef) {
     let (name, icon) = shared.game.borrow().clone();
-    let icon = icon.and_then(|p| Image::load_from_path(&p).ok());
+    let icon = icon.and_then(|p| shared.image(&p));
     window.set_has_game_icon(icon.is_some());
     window.set_game_icon(icon.unwrap_or_default());
-    // Only the "no game" placeholder is translated; real game names are not.
-    let name = if name == "No game detected" {
-        crate::i18n::tr(&name)
+    // An empty name means no game; real game names are never translated.
+    let name = if name.is_empty() {
+        crate::i18n::tr("No game detected")
     } else {
         name
     };
@@ -568,11 +568,11 @@ fn update_hotkey_labels(window: &MainWindow, config: &Config) {
     match hotkeys.primary_save() {
         Some(primary) => {
             window.set_save_keys(settings::key_parts(primary.binding));
-            window.set_save_label(primary.describe().into());
+            window.set_save_label(describe_binding(primary).into());
         }
         None => {
             window.set_save_keys(keys_of(None));
-            window.set_save_label("no save hotkey set".into());
+            window.set_save_label(crate::i18n::tr("no save hotkey set").into());
         }
     }
     window.set_buffer_keys(keys_of(
@@ -587,7 +587,36 @@ fn update_hotkey_labels(window: &MainWindow, config: &Config) {
 fn keys_of(binding: Option<&HotkeyBinding>) -> ModelRc<SharedString> {
     match binding {
         Some(b) => settings::key_parts(b.binding),
-        None => ModelRc::new(VecModel::from(vec![SharedString::from("none")])),
+        None => ModelRc::new(VecModel::from(vec![SharedString::from(crate::i18n::tr(
+            "none",
+        ))])),
+    }
+}
+
+/// What a binding does, for the hint next to its keys.
+fn describe_binding(binding: &HotkeyBinding) -> String {
+    match binding.action {
+        HotkeyActionKind::SaveReplay if binding.seconds == 0 => {
+            crate::i18n::tr("saves the whole buffer")
+        }
+        HotkeyActionKind::SaveReplay if binding.seconds.is_multiple_of(60) => {
+            crate::i18n::tr("saves the last {n} min")
+                .replace("{n}", &(binding.seconds / 60).to_string())
+        }
+        HotkeyActionKind::SaveReplay => {
+            crate::i18n::tr("saves the last {n} s").replace("{n}", &binding.seconds.to_string())
+        }
+        HotkeyActionKind::ToggleReplayBuffer => crate::i18n::tr("starts or stops the buffer"),
+        HotkeyActionKind::ToggleRecording => crate::i18n::tr("starts or stops recording"),
+    }
+}
+
+/// The kind of a clip, for the gallery.
+fn kind_label(kind: ClipKind) -> String {
+    match kind {
+        ClipKind::Replay => crate::i18n::tr("Clip"),
+        ClipKind::Recording => crate::i18n::tr("Recording"),
+        ClipKind::Edited => crate::i18n::tr("Edited"),
     }
 }
 
@@ -602,6 +631,14 @@ fn wire_updates(window: &MainWindow, shared: &SharedRef) {
         let Some(pending) = pending else {
             return;
         };
+        // The installer kills the process; a recording in progress would
+        // be cut short and left for the recovery on the next start.
+        if s.engine.borrow().as_ref().is_some_and(|e| e.is_recording()) {
+            window.set_update_message(
+                crate::i18n::tr("Stop the recording before installing the update.").into(),
+            );
+            return;
+        }
         match updater::install_now(&s.paths, &pending) {
             Ok(()) => {
                 info!("installing update {} now", pending.version);
@@ -820,7 +857,10 @@ fn register_hotkeys(shared: &SharedRef) -> Option<String> {
             *shared.hotkeys.borrow_mut() = Some(hotkeys);
             problem
         }
-        Err(err) => Some(format!("Global hotkeys are unavailable: {err}")),
+        Err(err) => Some(
+            crate::i18n::tr("Global hotkeys are unavailable: {error}")
+                .replace("{error}", &err.to_string()),
+        ),
     }
 }
 
@@ -1042,7 +1082,11 @@ fn apply_settings(shared: &SharedRef, window: &MainWindow, next: Config) {
     let monitors = current_monitors(shared);
     if let Err(err) = next.save(&shared.paths.config_file()) {
         state.set_message_is_error(true);
-        state.set_message(format!("Could not save settings: {err}").into());
+        state.set_message(
+            crate::i18n::tr("Could not save settings: {error}")
+                .replace("{error}", &err.to_string())
+                .into(),
+        );
         return;
     }
     let mut problems = Vec::new();
@@ -1313,7 +1357,7 @@ fn refresh_status(shared: &SharedRef) {
     let game = shared.game.borrow().0.clone();
     shared.discord.update(PresenceState {
         config: shared.config.borrow().discord.clone(),
-        game: (game != "No game detected" && !game.is_empty()).then_some(game),
+        game: (!game.is_empty()).then_some(game),
         buffering,
         recording,
     });
@@ -1325,7 +1369,12 @@ fn refresh_status(shared: &SharedRef) {
     shared.with_window(|window| {
         window.set_buffer_active(buffering);
         window.set_buffer_label(
-            crate::i18n::tr(if buffering { "Buffer on" } else { "Buffer off" }).into(),
+            if buffering {
+                crate::i18n::tr("Buffer on")
+            } else {
+                crate::i18n::tr("Buffer off")
+            }
+            .into(),
         );
         window.set_buffer_status(describe_buffer_state(&status).into());
         window.set_buffer_detail(describe_buffer(&status).into());
@@ -1364,6 +1413,14 @@ fn describe_buffer_state(status: &EngineStatus) -> String {
 
 fn describe_buffer(status: &EngineStatus) -> String {
     let stats = status.stats;
+    // Once the memory cap bites, the footage the ring really holds is the
+    // honest total, not the configured length it cannot reach.
+    let capped = stats.bytes + 8 * 1024 * 1024 >= status.memory_cap;
+    let total = if capped {
+        stats.duration.as_secs()
+    } else {
+        status.replay_length.as_secs()
+    };
     let available = stats
         .duration
         .as_secs_f64()
@@ -1387,7 +1444,7 @@ fn describe_buffer(status: &EngineStatus) -> String {
     };
     crate::i18n::tr("{available} of {total} s buffered, {mb} MB in memory{resolution}{audio}")
         .replace("{available}", &format!("{available:.0}"))
-        .replace("{total}", &status.replay_length.as_secs().to_string())
+        .replace("{total}", &total.to_string())
         .replace(
             "{mb}",
             &format!("{:.0}", stats.bytes as f64 / (1024.0 * 1024.0)),
@@ -1425,20 +1482,23 @@ fn create_player(window: &MainWindow, shared: &SharedRef) {
     let engine = shared.engine.borrow();
     let Some(engine) = engine.as_ref() else {
         window.global::<LibraryState>().set_message(
-            "The clip library needs the media framework, which is unavailable.".into(),
+            crate::i18n::tr("The clip library needs the media framework, which is unavailable.")
+                .into(),
         );
         window
             .global::<PlayerState>()
-            .set_message("Playback is unavailable on this system.".into());
+            .set_message(crate::i18n::tr("Playback is unavailable on this system.").into());
         return;
     };
     match PlayerController::new(window, |sink| engine.create_player(sink)) {
         Ok(player) => *shared.player.borrow_mut() = Some(player),
         Err(err) => {
             warn!("player unavailable: {err}");
-            window
-                .global::<PlayerState>()
-                .set_message(format!("Playback is unavailable: {err}").into());
+            window.global::<PlayerState>().set_message(
+                crate::i18n::tr("Playback is unavailable: {error}")
+                    .replace("{error}", &err.to_string())
+                    .into(),
+            );
         }
     }
 }
@@ -1589,20 +1649,23 @@ fn refresh_library_ui(window: &MainWindow, shared: &SharedRef) {
 
 fn to_card(shared: &SharedRef, c: crate::library::CardData) -> ClipCard {
     let thumbnail = c.thumbnail.as_ref().and_then(|p| shared.image(p));
-    let icon = shared
-        .games
-        .borrow()
-        .as_ref()
-        .and_then(|g| g.icon_for_name(&c.game, &shared.config.borrow().games))
-        .and_then(|p| shared.image(&p));
+    // Without a game the card shows the kind in its place, without an icon.
+    let icon = c.game.as_deref().and_then(|game| {
+        shared
+            .games
+            .borrow()
+            .as_ref()
+            .and_then(|g| g.icon_for_name(game, &shared.config.borrow().games))
+            .and_then(|p| shared.image(&p))
+    });
     ClipCard {
         id: c.id.into(),
         title: c.title.into(),
-        game: c.game.into(),
+        game: c.game.unwrap_or_else(|| kind_label(c.kind)).into(),
         date: c.date.into(),
         duration: c.duration.into(),
         size: c.size.into(),
-        kind: c.kind.into(),
+        kind: kind_label(c.kind).into(),
         has_thumbnail: thumbnail.is_some(),
         thumbnail: thumbnail.unwrap_or_default(),
         has_icon: icon.is_some(),
@@ -1615,15 +1678,20 @@ fn update_storage(window: &MainWindow, used: u64, clips_dir: &Path) {
     match shell::disk_space(clips_dir) {
         Some((free, total)) if total > 0 => {
             window.set_storage_line(
-                format!("{} used\n{} free", format_size(used), format_size(free)).into(),
+                format!(
+                    "{}\n{}",
+                    crate::i18n::tr("{size} used").replace("{size}", &format_size(used)),
+                    crate::i18n::tr("{size} free").replace("{size}", &format_size(free))
+                )
+                .into(),
             );
             settings.set_storage_line(
-                format!(
-                    "{} of clips in this folder. {} free of {} on the drive.",
-                    format_size(used),
-                    format_size(free),
-                    format_size(total)
+                crate::i18n::tr(
+                    "{size} of clips in this folder. {free} free of {total} on the drive.",
                 )
+                .replace("{size}", &format_size(used))
+                .replace("{free}", &format_size(free))
+                .replace("{total}", &format_size(total))
                 .into(),
             );
             settings.set_storage_fraction(((total - free) as f64 / total as f64) as f32);
@@ -1694,7 +1762,7 @@ fn open_clip(window: &MainWindow, shared: &SharedRef, id: &str) {
     if let Some(player) = shared.player.borrow_mut().as_mut() {
         player.open(id, &record.path, &state);
     } else {
-        state.set_message("Playback is unavailable on this system.".into());
+        state.set_message(crate::i18n::tr("Playback is unavailable on this system.").into());
     }
 }
 
@@ -1763,13 +1831,12 @@ fn wire_player(window: &MainWindow, shared: &SharedRef) {
             refresh_library_if_stale(&window, &s);
         }
     });
-    let (s, w) = (shared.clone(), window.as_weak());
+    let w = window.as_weak();
     state.on_reveal(move || {
         if let Some(window) = w.upgrade() {
             let path = PathBuf::from(window.global::<PlayerState>().get_path().as_str());
             shell::reveal_file(&path);
         }
-        let _ = &s;
     });
     let (s, w) = (shared.clone(), window.as_weak());
     state.on_rename(move || {
@@ -1861,7 +1928,11 @@ fn update_trim_texts(state: &PlayerState<'_>) {
     state.set_trim_in_text(format_precise(start).into());
     state.set_trim_out_text(format_precise(end).into());
     let length = (end - start).max(0.0);
-    state.set_trim_summary(format!("Selection: {}", format_precise(length)).into());
+    state.set_trim_summary(
+        crate::i18n::tr("Selection: {length}")
+            .replace("{length}", &format_precise(length))
+            .into(),
+    );
 }
 
 fn current_clip_id(shared: &SharedRef) -> Option<String> {
@@ -1977,7 +2048,7 @@ fn kept_tracks(state: &PlayerState<'_>) -> Vec<bool> {
 fn compress_clip(window: &MainWindow, shared: &SharedRef) {
     let state = window.global::<PlayerState>();
     let Some(record) = current_record(shared) else {
-        state.set_trim_message("Open a clip first.".into());
+        state.set_trim_message(crate::i18n::tr("Open a clip first.").into());
         return;
     };
     let preset = COMPRESS_PRESETS
@@ -2034,7 +2105,7 @@ fn run_edit_job(
     let state = window.global::<PlayerState>();
     let tools = shared.engine.borrow().as_ref().map(|e| e.media_tools());
     let Some(tools) = tools else {
-        state.set_trim_message("Editing is unavailable on this system.".into());
+        state.set_trim_message(crate::i18n::tr("Editing is unavailable on this system.").into());
         return;
     };
     if overwrite && let Some(player) = shared.player.borrow_mut().as_mut() {
@@ -2064,14 +2135,18 @@ fn run_edit_job(
         });
     if let Err(err) = spawned {
         state.set_trim_busy(false);
-        state.set_trim_message(format!("Could not start the edit: {err}").into());
+        state.set_trim_message(
+            crate::i18n::tr("Could not start the edit: {error}")
+                .replace("{error}", &err.to_string())
+                .into(),
+        );
     }
 }
 
 fn save_trim(window: &MainWindow, shared: &SharedRef, overwrite: bool) {
     let state = window.global::<PlayerState>();
     let Some(record) = current_record(shared) else {
-        state.set_trim_message("Open a clip first.".into());
+        state.set_trim_message(crate::i18n::tr("Open a clip first.").into());
         return;
     };
     let duration = if record.duration().is_zero() {
@@ -2156,16 +2231,13 @@ fn poll_games(shared: &SharedRef) {
         let auto = auto_capture(config.games.scope, active.as_ref());
         let names: Vec<String> = games.detected().iter().map(|g| g.name.clone()).collect();
         let text = if names.is_empty() {
-            "Running now: no known game".to_owned()
+            crate::i18n::tr("Running now: no known game")
         } else {
-            format!("Running now: {}", names.join(", "))
+            crate::i18n::tr("Running now: {names}").replace("{names}", &names.join(", "))
         };
         (active, auto, text)
     };
-    let name = active
-        .as_ref()
-        .map(|g| g.name.clone())
-        .unwrap_or_else(|| "No game detected".to_owned());
+    let name = active.as_ref().map(|g| g.name.clone()).unwrap_or_default();
     if shared.game.borrow().0 != name {
         let icon = shared
             .games
@@ -2263,7 +2335,11 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
             ..GameProfile::default()
         });
         set_game_rows(&window, &s, &profiles);
-        state.set_games_message(format!("Added {}.", game.name).into());
+        state.set_games_message(
+            crate::i18n::tr("Added {name}.")
+                .replace("{name}", &game.name)
+                .into(),
+        );
         schedule_autosave(&s);
     });
 
@@ -2275,7 +2351,9 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         let state = window.global::<SettingsState>();
         let exe = state.get_new_game_exe().trim().to_lowercase();
         if exe.is_empty() {
-            state.set_games_message("Enter the executable name, for example game.exe.".into());
+            state.set_games_message(
+                crate::i18n::tr("Enter the executable name, for example game.exe.").into(),
+            );
             return;
         }
         let exe = if exe.ends_with(".exe") {
@@ -2286,7 +2364,11 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         let monitors = current_monitors(&s);
         let mut profiles = settings::collect_game_profiles(&state, &monitors, &[]);
         if profiles.iter().any(|p| p.exe == exe) {
-            state.set_games_message(format!("{exe} is already in the list.").into());
+            state.set_games_message(
+                crate::i18n::tr("{exe} is already in the list.")
+                    .replace("{exe}", &exe)
+                    .into(),
+            );
             return;
         }
         let name = state.get_new_game_name().trim().to_owned();
@@ -2307,7 +2389,11 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         set_game_rows(&window, &s, &profiles);
         state.set_new_game_exe("".into());
         state.set_new_game_name("".into());
-        state.set_games_message(format!("Added {exe}.").into());
+        state.set_games_message(
+            crate::i18n::tr("Added {name}.")
+                .replace("{name}", &exe)
+                .into(),
+        );
         schedule_autosave(&s);
     });
 
@@ -2321,7 +2407,7 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
         let mut profiles = settings::collect_game_profiles(&state, &monitors, &[]);
         profiles.retain(|p| p.exe != exe.as_str());
         set_game_rows(&window, &s, &profiles);
-        state.set_games_message("Removed.".into());
+        state.set_games_message(crate::i18n::tr("Removed.").into());
         schedule_autosave(&s);
     });
 
@@ -2339,11 +2425,13 @@ fn wire_games(window: &MainWindow, shared: &SharedRef) {
             .map(|p| p.exe.clone())
             .collect();
         if missing.is_empty() {
-            state.set_games_message("Every game in the list already has a name.".into());
+            state.set_games_message(
+                crate::i18n::tr("Every game in the list already has a name.").into(),
+            );
             return;
         }
         state.set_steam_busy(true);
-        state.set_games_message("Contacting Steam...".into());
+        state.set_games_message(crate::i18n::tr("Contacting Steam...").into());
         let cache = s.paths.cache_dir.join("steam_apps.json");
         std::thread::spawn(move || {
             let result = crate::steam::app_names(&cache).map(|names| {
@@ -2365,7 +2453,7 @@ fn apply_steam_result(window: &MainWindow, result: Result<Vec<(String, String)>,
     state.set_steam_busy(false);
     match result {
         Ok(found) if found.is_empty() => {
-            state.set_games_message("Steam had no matching names.".into());
+            state.set_games_message(crate::i18n::tr("Steam had no matching names.").into());
         }
         Ok(found) => {
             let rows = state.get_game_profiles();
@@ -2378,7 +2466,11 @@ fn apply_steam_result(window: &MainWindow, result: Result<Vec<(String, String)>,
                     rows.set_row_data(i, row);
                 }
             }
-            state.set_games_message(format!("Filled {} name(s) from Steam.", found.len()).into());
+            state.set_games_message(
+                crate::i18n::tr("Filled {n} name(s) from Steam.")
+                    .replace("{n}", &found.len().to_string())
+                    .into(),
+            );
         }
         Err(err) => state.set_games_message(err.into()),
     }

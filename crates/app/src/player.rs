@@ -123,7 +123,11 @@ impl PlayerController {
             Err(err) => {
                 error!("{err}");
                 self.current = None;
-                state.set_message(format!("Could not play this clip: {err}").into());
+                state.set_message(
+                    crate::i18n::tr("Could not play this clip: {error}")
+                        .replace("{error}", &err.to_string())
+                        .into(),
+                );
             }
         }
     }
@@ -196,7 +200,11 @@ impl PlayerController {
             .unwrap_or_else(|p| p.into_inner())
             .take()
         {
-            state.set_message(format!("Playback error: {message}").into());
+            state.set_message(
+                crate::i18n::tr("Playback error: {error}")
+                    .replace("{error}", &message)
+                    .into(),
+            );
             state.set_playing(false);
         }
     }

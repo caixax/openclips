@@ -115,9 +115,18 @@ fn run() -> Result<(), AppError> {
         Ok(engine) => (Some(engine), None),
         Err(err) => {
             error!("capture is unavailable: {err}");
-            (None, Some(format!("Capture is unavailable: {err}")))
+            (
+                None,
+                Some(
+                    i18n::tr("Capture is unavailable: {error}")
+                        .replace("{error}", &err.to_string()),
+                ),
+            )
         }
     };
+    // Translated here, after the language is known.
+    let startup_warning = startup_warning
+        .map(|err| i18n::tr("Settings were not applied: {error}").replace("{error}", &err));
     let startup_warning = [startup_warning, engine_warning]
         .into_iter()
         .flatten()
@@ -145,17 +154,15 @@ fn run() -> Result<(), AppError> {
 }
 
 /// A broken config file must not stop the app from starting, but the user
-/// has to be told that their edits were ignored.
+/// has to be told that their edits were ignored. Returns the error text,
+/// translated by the caller once the language is known.
 fn load_config(paths: &AppPaths) -> (Config, Option<String>) {
     let path = paths.config_file();
     match Config::load_or_create(&path) {
         Ok(config) => (config, None),
         Err(err) => {
             warn!("{err}; falling back to default settings");
-            (
-                Config::default(),
-                Some(format!("Settings were not applied: {err}")),
-            )
+            (Config::default(), Some(err.to_string()))
         }
     }
 }
