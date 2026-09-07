@@ -216,6 +216,9 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
     if let Some(engine) = shared.engine.borrow().as_ref() {
         engine.set_recording_listener(|result| post(UiEvent::RecordingDone(result)));
     }
+    if let Err(err) = shared.toast.prepare() {
+        warn!("could not prepare the clip notice: {err}");
+    }
     init_library(&shared);
     init_games(&shared);
     wire_tray(&shared);
@@ -1292,6 +1295,7 @@ fn refresh_status(shared: &SharedRef) {
 fn describe_buffer_state(status: &EngineStatus) -> String {
     match &status.buffer {
         BufferState::Stopped => crate::i18n::tr("Stopped"),
+        BufferState::Starting => crate::i18n::tr("Starting..."),
         BufferState::Running => crate::i18n::tr("Recording into memory"),
         BufferState::Failed(_) => crate::i18n::tr("Failed"),
     }

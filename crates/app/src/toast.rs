@@ -1,6 +1,6 @@
 //! The on-screen notice shown when a clip is saved. One small frameless
-//! window is created on first use, parked hidden between clips and placed at
-//! the bottom right of the primary screen each time, without taking the
+//! window is created at startup, parked hidden between clips and placed at
+//! the bottom right of the game's screen each time, without taking the
 //! focus away from the game.
 
 use std::cell::RefCell;
@@ -22,13 +22,30 @@ pub struct Toast {
 }
 
 impl Toast {
+    /// Creates the window ahead of time, off screen and hidden, so its
+    /// extended styles are in place before a clip needs it. A window shown
+    /// for the first time with the default styles is activated by Windows,
+    /// which takes the focus from the game and drops an exclusive fullscreen
+    /// game to the desktop. Done at startup, while nothing is in front.
+    pub fn prepare(&self) -> Result<(), AppError> {
+        if self.window.borrow().is_some() {
+            return Ok(());
+        }
+        let window = ToastWindow::new()?;
+        window
+            .window()
+            .set_position(slint::PhysicalPosition::new(-10_000, -10_000));
+        window.show()?;
+        platform::keep_out_of_the_way(&window);
+        window.hide()?;
+        *self.window.borrow_mut() = Some(window);
+        Ok(())
+    }
+
     /// Shows `message` under `heading` for a few seconds. Showing again
     /// while visible replaces the text and restarts the timer.
     pub fn show(&self, heading: &str, message: &str) -> Result<(), AppError> {
-        let created = self.window.borrow().is_none();
-        if created {
-            *self.window.borrow_mut() = Some(ToastWindow::new()?);
-        }
+        self.prepare()?;
         let window = self.window.borrow();
         let Some(window) = window.as_ref() else {
             return Ok(());
@@ -37,10 +54,7 @@ impl Toast {
         window.set_message(message.into());
         let previous = platform::foreground_window();
         window.show()?;
-        if created {
-            platform::keep_out_of_the_way(window);
-        }
-        place(window);
+        place(window, previous);
         platform::restore_foreground(previous);
 
         let weak = window.as_weak();
@@ -57,13 +71,14 @@ impl Toast {
     }
 }
 
-/// Bottom right corner of the primary work area, above the taskbar.
-fn place(window: &ToastWindow) {
+/// Bottom right corner of the work area of the display showing `focused`
+/// (the game), above the taskbar; the primary display when unknown.
+fn place(window: &ToastWindow, focused: Option<platform::Handle>) {
     let scale = window.window().scale_factor();
     let size = window.window().size();
     let (width, height) = (size.width as i32, size.height as i32);
     let margin = (MARGIN as f32 * scale) as i32;
-    let (right, bottom) = platform::work_area_bottom_right();
+    let (right, bottom) = platform::work_area_bottom_right(focused);
     let x = right - width - margin;
     let y = bottom - height - margin;
     window
@@ -73,15 +88,22 @@ fn place(window: &ToastWindow) {
 
 #[cfg(windows)]
 mod platform {
+    use std::mem::size_of;
+
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use slint::ComponentHandle;
     use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, SPI_GETWORKAREA, SetForegroundWindow,
         SetWindowLongPtrW, SystemParametersInfoW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
     use super::ToastWindow;
+
+    pub type Handle = HWND;
 
     pub fn foreground_window() -> Option<HWND> {
         // SAFETY: plain query with no arguments.
@@ -111,7 +133,22 @@ mod platform {
         }
     }
 
-    pub fn work_area_bottom_right() -> (i32, i32) {
+    pub fn work_area_bottom_right(focused: Option<HWND>) -> (i32, i32) {
+        if let Some(hwnd) = focused {
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            // SAFETY: a stale handle only yields the nearest monitor; `info`
+            // is sized for the call.
+            let found = unsafe {
+                let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                GetMonitorInfoW(monitor, &mut info).as_bool()
+            };
+            if found {
+                return (info.rcWork.right, info.rcWork.bottom);
+            }
+        }
         let mut rect = RECT::default();
         // SAFETY: `rect` is the out buffer SPI_GETWORKAREA expects.
         let ok = unsafe {
@@ -142,6 +179,8 @@ mod platform {
 mod platform {
     use super::ToastWindow;
 
+    pub type Handle = ();
+
     pub fn foreground_window() -> Option<()> {
         None
     }
@@ -150,7 +189,7 @@ mod platform {
 
     pub fn keep_out_of_the_way(_window: &ToastWindow) {}
 
-    pub fn work_area_bottom_right() -> (i32, i32) {
+    pub fn work_area_bottom_right(_focused: Option<()>) -> (i32, i32) {
         (1920, 1080)
     }
 }
