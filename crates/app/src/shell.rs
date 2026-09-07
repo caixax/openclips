@@ -27,15 +27,43 @@ pub fn open_url(url: &str) {
     if !url.starts_with("https://") {
         return;
     }
-    let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(["/C", "start", "", url]).spawn()
-    } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(url).spawn()
-    } else {
-        Command::new("xdg-open").arg(url).spawn()
-    };
-    if let Err(err) = result {
-        warn!("could not open {url}: {err}");
+    #[cfg(windows)]
+    {
+        // Straight to the shell: `cmd /C start` would flash a console window
+        // from this GUI process.
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        use windows::core::{HSTRING, w};
+
+        // SAFETY: plain shell call with owned null terminated strings.
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                &HSTRING::from(url),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            )
+        };
+        // Values up to 32 are error codes by contract.
+        if result.0 as usize <= 32 {
+            warn!(
+                "could not open {url}: ShellExecute returned {}",
+                result.0 as usize
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let result = if cfg!(target_os = "macos") {
+            Command::new("open").arg(url).spawn()
+        } else {
+            Command::new("xdg-open").arg(url).spawn()
+        };
+        if let Err(err) = result {
+            warn!("could not open {url}: {err}");
+        }
     }
 }
 
