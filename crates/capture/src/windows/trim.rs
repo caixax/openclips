@@ -519,6 +519,38 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
     let labels: Vec<String> = tracks.iter().map(|t| t.label.clone()).collect();
     let mut session = Mp4Session::open(&stream, &tracks, &job.output, false)?;
 
+    // Audio already produced is handed over between video frames, so a
+    // long selection does not pile its whole audio up in the sinks while
+    // the video drains.
+    let drain_audio = |session: &mut Mp4Session, wait: bool| -> Result<(), CaptureError> {
+        for (sink, output) in sinks.iter().zip(&outputs) {
+            loop {
+                let sample = if wait {
+                    next_sample(sink, &bus, input)?
+                } else {
+                    sink.try_pull_sample(gst::ClockTime::ZERO)
+                };
+                let Some(sample) = sample else {
+                    break;
+                };
+                let Some(info) = output else {
+                    continue;
+                };
+                let Some(buffer) = sample.buffer() else {
+                    continue;
+                };
+                let map = buffer.map_readable().map_err(|e| media_error(input, e))?;
+                session.push_audio(&AudioPacket {
+                    track: info.index,
+                    pts: running_time(&sample, buffer.pts()),
+                    duration: buffer.duration().map(|d| d.into()),
+                    data: Arc::from(map.as_slice()),
+                })?;
+            }
+        }
+        Ok(())
+    };
+
     let mut frames = 0u64;
     let mut pending = Some(first);
     let mut started = false;
@@ -548,28 +580,12 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
         };
         session.push(&frame)?;
         frames += 1;
+        drain_audio(&mut session, false)?;
     }
     if frames == 0 {
         return Err(media_error(input, "the selection produced no video"));
     }
-
-    for (sink, output) in sinks.iter().zip(&outputs) {
-        while let Some(sample) = next_sample(sink, &bus, input)? {
-            let Some(info) = output else {
-                continue;
-            };
-            let Some(buffer) = sample.buffer() else {
-                continue;
-            };
-            let map = buffer.map_readable().map_err(|e| media_error(input, e))?;
-            session.push_audio(&AudioPacket {
-                track: info.index,
-                pts: running_time(&sample, buffer.pts()),
-                duration: buffer.duration().map(|d| d.into()),
-                data: Arc::from(map.as_slice()),
-            })?;
-        }
-    }
+    drain_audio(&mut session, true)?;
 
     let mut clip = Box::new(session).finish()?;
     clip.audio_tracks = labels;

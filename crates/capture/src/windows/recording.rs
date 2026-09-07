@@ -20,6 +20,11 @@ use crate::backend::{Recorder, RecordingSession};
 use crate::error::CaptureError;
 
 const FRAGMENT_MS: u32 = 1000;
+/// Bytes the muxer may fall behind by before the recording is given up. The
+/// sources never block the capture thread, so a disk that stalls would
+/// otherwise grow the queue without limit; this is well over a minute of
+/// video at a high bitrate, enough for a hiccup and not for a dead drive.
+const QUEUE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 
 pub struct Mp4Recorder;
 
@@ -164,6 +169,12 @@ impl Mp4Session {
 
 impl RecordingSession for Mp4Session {
     fn push(&mut self, frame: &EncodedFrame) -> Result<(), CaptureError> {
+        if self.video.current_level_bytes() > QUEUE_LIMIT_BYTES {
+            return Err(CaptureError::ClipWrite {
+                path: self.path.clone(),
+                reason: "the disk cannot keep up with the recording".to_owned(),
+            });
+        }
         let origin = *self.origin.get_or_insert(frame.pts);
         let buffer = to_buffer(frame, origin.nanos(), self.frame_duration_ns);
         self.video
