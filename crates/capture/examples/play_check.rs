@@ -70,8 +70,27 @@ fn main() {
     player.load(&path).expect("load");
     player.play();
     let cpu_before = cpu_time_ms();
-    std::thread::sleep(Duration::from_secs(seconds));
+    // OPENCLIPS_MUTE_TRACK=<n> silences that audio track halfway through,
+    // the way the editor's track toggles do, then restores it at the end.
+    let muted: Option<usize> = std::env::var("OPENCLIPS_MUTE_TRACK")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    std::thread::sleep(Duration::from_secs(seconds / 2));
+    if let Some(track) = muted {
+        player.set_track_enabled(track, false);
+        println!("track {track} muted at {:?}", player.position());
+    }
+    std::thread::sleep(Duration::from_secs(seconds - seconds / 2));
+    if let Some(track) = muted {
+        player.set_track_enabled(track, true);
+    }
     let cpu = cpu_time_ms() - cpu_before;
+    println!(
+        "position {:?} of {:?}, playing {}",
+        player.position(),
+        player.duration(),
+        player.is_playing()
+    );
     let frames = sink.frames.load(Ordering::Relaxed);
     println!(
         "{seconds} s of playback: {frames} frames, {:.1} MB delivered, {cpu} ms of processor time ({:.0}% of one core)",

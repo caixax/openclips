@@ -76,6 +76,9 @@ pub trait Player: Send {
     /// Seek to the nearest keyframe, cheap enough to follow a drag.
     fn seek_fast(&mut self, position: Duration);
     fn set_volume(&mut self, volume: f64);
+    /// Silences or restores one audio track of the open file, by its index
+    /// in the file (the order the editor lists them in).
+    fn set_track_enabled(&mut self, index: usize, enabled: bool);
     fn stop(&mut self);
     fn position(&self) -> Option<Duration>;
     fn duration(&self) -> Option<Duration>;
