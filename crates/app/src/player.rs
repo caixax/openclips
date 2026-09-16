@@ -169,6 +169,14 @@ impl PlayerController {
         self.player.set_volume(f64::from(percent) / 100.0);
     }
 
+    /// Hears or silences one audio track of the open clip, following the
+    /// track toggles of the editor.
+    pub fn set_track_enabled(&mut self, index: usize, enabled: bool) {
+        if self.current.is_some() {
+            self.player.set_track_enabled(index, enabled);
+        }
+    }
+
     pub fn stop(&mut self, state: &PlayerState<'_>) {
         self.player.stop();
         self.current = None;

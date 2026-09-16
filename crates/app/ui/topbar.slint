@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { I18n } from "i18n.slint";
 import { Icon, Icons } from "icons.slint";
 import { IconButton, KeyPill, Badge } from "widgets.slint";
 
@@ -112,12 +113,14 @@ export component TopBar inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 icon: root.buffer-active ? Icons.stop : Icons.play;
                 icon-color: root.buffer-active ? Theme.text : Theme.accent;
+                tooltip: root.buffer-active ? I18n.tr("Stop the replay buffer") : I18n.tr("Start the replay buffer");
                 clicked => { root.toggle-buffer(); }
             }
             IconButton {
                 y: (parent.height - self.height) / 2;
                 icon: Icons.scissors;
                 enabled: root.buffer-active;
+                tooltip: I18n.tr("Save a clip now");
                 clicked => { root.save-clip(); }
             }
             IconButton {
@@ -125,6 +128,7 @@ export component TopBar inherits Rectangle {
                 icon: root.recording-active ? Icons.stop : Icons.circle-dot;
                 icon-color: Theme.record;
                 active: root.recording-active;
+                tooltip: root.recording-active ? I18n.tr("Stop recording") : I18n.tr("Start a full recording");
                 clicked => { root.toggle-recording(); }
             }
         }

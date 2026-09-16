@@ -2,7 +2,36 @@ import { Theme } from "theme.slint";
 import { I18n } from "i18n.slint";
 import { Icon, IconData, Icons } from "icons.slint";
 
-/// A square button showing only an icon.
+/// The hover tooltip of the moment. There is one per window: the control
+/// under the pointer fills it in after a short delay and the window draws
+/// it above everything else, so it is never clipped by a scroll view.
+export global Tooltip {
+    in-out property <string> text;
+    /// Window position and size of the control the tooltip belongs to.
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+
+    public function show(text: string, x: length, y: length, width: length, height: length) {
+        self.text = text;
+        self.x = x;
+        self.y = y;
+        self.anchor-width = width;
+        self.anchor-height = height;
+    }
+
+    /// Clears the tooltip if it belongs to the control at `x`, `y`; a
+    /// control leaving hover must not clear the one that replaced it.
+    public function hide(x: length, y: length) {
+        if (self.x == x && self.y == y) {
+            self.text = "";
+        }
+    }
+}
+
+/// A square button showing only an icon. `tooltip` says what it does
+/// while the pointer rests on it.
 export component IconButton inherits Rectangle {
     in property <IconData> icon;
     in property <length> size: 36px;
@@ -11,6 +40,7 @@ export component IconButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> active: false;
     in property <bool> filled: false;
+    in property <string> tooltip;
     callback clicked();
 
     width: root.size;
@@ -22,7 +52,27 @@ export component IconButton inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { root.clicked(); }
+        clicked => {
+            hover-delay.running = false;
+            Tooltip.hide(root.absolute-position.x, root.absolute-position.y);
+            root.clicked();
+        }
+        changed has-hover => {
+            if (self.has-hover) {
+                hover-delay.running = root.tooltip != "";
+            } else {
+                hover-delay.running = false;
+                Tooltip.hide(root.absolute-position.x, root.absolute-position.y);
+            }
+        }
+    }
+    hover-delay := Timer {
+        interval: 450ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            Tooltip.show(root.tooltip, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+        }
     }
     Icon {
         x: (parent.width - self.width) / 2;
@@ -272,10 +322,13 @@ export component Badge inherits Rectangle {
     }
 }
 
-/// Notice banner. kind: 0 info, 1 warning, 2 error, 3 success.
+/// Notice banner. kind: 0 info, 1 warning, 2 error, 3 success. With
+/// `can-dismiss` a close button at the end fires `dismissed`.
 export component Notice inherits Rectangle {
     in property <string> message;
     in property <int> kind: 1;
+    in property <bool> can-dismiss: false;
+    callback dismissed();
     property <color> tint: root.kind == 2 ? Theme.danger : root.kind == 3 ? Theme.success : root.kind == 0 ? #4f8cff : Theme.warning;
     background: root.tint.with-alpha(0.12);
     border-color: root.tint.with-alpha(0.6);
@@ -296,6 +349,131 @@ export component Notice inherits Rectangle {
             font-size: 13px;
             color: Theme.text;
             horizontal-stretch: 1;
+        }
+        if root.can-dismiss: IconButton {
+            y: -4px;
+            size: 24px;
+            icon-size: 11px;
+            icon: Icons.xmark;
+            tooltip: I18n.tr("Dismiss");
+            clicked => { root.dismissed(); }
+        }
+    }
+}
+
+/// A number field with presets behind a chevron: type any value in the
+/// range or pick one from the list. `edited` fires on either.
+export component PresetEdit inherits Rectangle {
+    in-out property <int> value;
+    in property <[int]> presets;
+    in property <int> minimum: 0;
+    in property <int> maximum: 1000000;
+    /// Unit shown after the number, in the field and in the list.
+    in property <string> suffix;
+    in property <bool> enabled: true;
+    callback edited();
+
+    property <float> typed: input.text.is-float() ? input.text.to-float() : -1;
+
+    width: 130px;
+    height: 32px;
+    border-radius: Theme.radius-small;
+    background: Theme.surface-raised;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.text-muted : Theme.border;
+    opacity: root.enabled ? 1 : 0.45;
+
+    changed value => {
+        if (!input.has-focus) {
+            input.text = "\{root.value}";
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 2px;
+        spacing: 4px;
+        input := TextInput {
+            horizontal-stretch: 1;
+            text: "\{root.value}";
+            input-type: InputType.number;
+            single-line: true;
+            font-size: 13px;
+            color: Theme.text;
+            vertical-alignment: center;
+            enabled: root.enabled;
+            edited => {
+                if (root.typed >= root.minimum && root.typed <= root.maximum && round(root.typed) != root.value) {
+                    root.value = round(root.typed);
+                    root.edited();
+                }
+            }
+            accepted => {
+                self.text = "\{root.value}";
+                self.clear-focus();
+            }
+            changed has-focus => {
+                if (!self.has-focus) {
+                    self.text = "\{root.value}";
+                }
+            }
+        }
+        if root.suffix != "": Text {
+            text: root.suffix;
+            font-size: 12px;
+            color: Theme.text-faint;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 26px;
+            border-radius: Theme.radius-small;
+            background: chevron.has-hover ? Theme.surface-hover : transparent;
+            chevron := TouchArea {
+                enabled: root.enabled;
+                clicked => { popup.show(); }
+            }
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                size: 10px;
+                data: Icons.chevron-down;
+                color: Theme.text-muted;
+            }
+        }
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+        height: root.presets.length * 28px + 8px;
+        Rectangle {
+            background: Theme.surface-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.radius-small;
+            VerticalLayout {
+                padding: 4px;
+                for preset in root.presets: Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: item.has-hover ? Theme.surface-hover : transparent;
+                    item := TouchArea {
+                        clicked => {
+                            root.value = preset;
+                            input.text = "\{preset}";
+                            root.edited();
+                        }
+                    }
+                    Text {
+                        x: 8px;
+                        height: parent.height;
+                        text: root.suffix != "" ? "\{preset} " + root.suffix : "\{preset}";
+                        font-size: 13px;
+                        color: preset == root.value ? Theme.accent : Theme.text;
+                        vertical-alignment: center;
+                    }
+                }
+            }
         }
     }
 }

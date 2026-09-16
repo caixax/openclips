@@ -32,7 +32,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 
 - Rolling replay buffer in memory (5 seconds to 20 minutes, with a memory cap) that never touches the disk until you save.
 - Hardware encoding through NVENC, Quick Sync or AMF, with Media Foundation and x264 as fallbacks; 1080p60 at 20 Mbps costs a few percent of a modern GPU with display capture (game capture currently copies every frame through system memory and costs more).
-- Quality presets (Low, Standard, High) or your own frame rate and bitrate.
+- Quality presets (Low, Standard, High) or your own frame rate and bitrate, typed or picked from a list of common values.
 - Full session recordings written as fragmented MP4, so a crash still leaves a playable file. A display mode change or a capture restart while recording closes the file as it is and continues in a numbered one next to it, so the recording is cut, not lost.
 - Windows Graphics Capture (default) or Desktop Duplication, cursor on or off (Graphics Capture only: GStreamer 1.28 crashes drawing the pointer in the Desktop Duplication path when a game changes the display mode, so that path leaves it out), any display; a display that goes away moves capture to the primary one, and a black capture raises a warning with the fix.
 - If the process ever dies in native code, a minidump and a note with the faulting module land in `%LOCALAPPDATA%\OpenClips\data\crashes` (the log names the folder at start).
@@ -43,15 +43,15 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 
 **Audio**
 
-- Any combination of playback devices (WASAPI loopback) and microphones, each with volume and mute, mixed into one track or split into desktop and microphone tracks.
+- Any combination of playback devices (WASAPI loopback) and microphones, added one by one from a list, each with volume and mute, mixed into one track or split into desktop and microphone tracks.
 - Per application tracks: give Discord, a browser or a music player its own track through the Windows process loopback API, then mute it in the editor.
 - A device that fails mid capture is dropped and capture goes on without it.
 
 **Clips and editing**
 
 - Gallery with thumbnails, game icons, size, date and duration; filter by kind (clips, recordings, edits), game or title, sort by date, length or size.
-- Built in player with skip, mute and a scrubbable timeline.
-- Trim with drag handles, fast keyframe cuts or exact re-encoded cuts, and per track muting. Saving asks whether to write a new file into `Edited` or replace the original.
+- Built in player with skip, mute and a scrubbable timeline; every audio track of a clip is heard, not just the first.
+- Trim with drag handles, fast keyframe cuts or exact re-encoded cuts, and per track muting that applies to the preview as well as the saved file. Saving asks whether to write a new file into `Edited` or replace the original.
 - Compress a clip to 1080p or 720p at a lower bitrate in one click.
 - Rename, delete to the Recycle Bin, reveal in Explorer.
 
@@ -67,7 +67,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 - Interface in English, Spanish, French, German, Russian, Portuguese and Italian, picked under Settings, General.
 - A small notice at the bottom right of the screen when a clip is saved, saying how many seconds were clipped, without taking the focus away from the game (on by default), and an optional confirmation sound (off by default). Both under Settings, General.
 - One running copy: starting OpenClips again just brings the window of the running one back. Opening the app yourself always shows the window; only the Windows startup launch can go straight to the tray.
-- Short fades on hover, toggles and page changes, which can be switched off in Settings, General. Settings also shows the live capture status and an About section with the version and the config, clips and log folders.
+- Short fades on hover, toggles and page changes, which can be switched off in Settings, General. Icon buttons explain themselves when the pointer rests on them. Settings also shows the live capture status and an About section with the version and the config, clips and log folders.
 
 ## Roadmap
 
@@ -232,11 +232,11 @@ Hotkeys are written as `Modifier+Key`, for example `Ctrl+Shift+F9`, `Alt+Numpad5
 
 Everything lives under one root folder (Settings, Storage; type a path or browse). Replay clips go to `Clips`, full recordings to `Recordings`, and anything the editor produces to `Edited`; each subfolder name can be changed or emptied to use the root. Files that were already in the root keep showing up in the gallery, which can also be filtered by these three kinds.
 
-Saving from the editor asks whether to write a new file into `Edited` or replace the original. The editor lists the audio tracks of the clip and any track switched off is left out of the saved file. Compress (the bolt button) re-encodes the whole clip at 1080p or 720p with a lower bitrate into `Edited`, leaving the original untouched.
+Saving from the editor asks whether to write a new file into `Edited` or replace the original. The editor lists the audio tracks of the clip; a track switched off goes silent in the preview right away and is left out of the saved file. Compress (the bolt button) re-encodes the whole clip at 1080p or 720p with a lower bitrate into `Edited`, leaving the original untouched.
 
 ### Per application audio
 
-Under Settings, Audio, an application (`discord.exe`, a browser, a music player) can get its own audio track. It is captured with the Windows process loopback API, so the track only contains that program, and the first such application is excluded from the default desktop output so it is not recorded twice. Because the buffer runs continuously the program has to be running when capture starts; the app watches for it and restarts capture on its own when it opens or closes (never while a recording is active). In the editor that track can then be muted, for example to drop a voice chat from a clip. Separate tracks for desktop and microphone work the same way.
+Settings, Audio lists what gets recorded: only the devices and programs added there. The add row picks a kind (output device, microphone, application), then a device not listed yet, or a running program or a typed executable name for an application; every row has its switch, volume, mute and a remove button, and a device that is unplugged keeps its row greyed out so its settings survive. An application (`discord.exe`, a browser, a music player) gets its own audio track. It is captured with the Windows process loopback API, so the track only contains that program, and the first such application is excluded from the default desktop output so it is not recorded twice. Because the buffer runs continuously the program has to be running when capture starts; the app watches for it and restarts capture on its own when it opens or closes (never while a recording is active). In the editor that track can then be muted, for example to drop a voice chat from a clip. Separate tracks for desktop and microphone work the same way.
 
 ## Game capture
 
@@ -316,7 +316,7 @@ Starting the pipeline (opening the encoder session, waiting for the first frame,
 
 ### Library and playback
 
-The library is an index of the files in the clip folders. On start it scans them (per game subfolders included), reads duration, dimensions and the audio track count with the GStreamer discoverer and renders a thumbnail with a short decode pipeline, all on a worker thread. A clip or recording the app just wrote goes into the index directly with what is already known about it, and the index file is written a couple of seconds after the last change rather than on every one; decoded thumbnails are kept in memory while the window is open so a gallery refresh does not read every picture again. Playback uses `playbin3` with an `appsink` video sink: frames are scaled to at most 1280 pixels wide and converted to RGBA on the GPU (`d3d11convert`), read back once and handed to the Slint image element with a single copy; audio plays through the default output. Dragging the timeline seeks to keyframes so it follows the mouse, and the exact frame is sought when the drag ends.
+The library is an index of the files in the clip folders. On start it scans them (per game subfolders included), reads duration, dimensions and the audio track count with the GStreamer discoverer and renders a thumbnail with a short decode pipeline, all on a worker thread. A clip or recording the app just wrote goes into the index directly with what is already known about it, and the index file is written a couple of seconds after the last change rather than on every one; decoded thumbnails are kept in memory while the window is open so a gallery refresh does not read every picture again. Playback is `uridecodebin` into an `appsink` video sink: frames are scaled to at most 1280 pixels wide and converted to RGBA on the GPU (`d3d11convert`), read back once and handed to the Slint image element with a single copy. Every audio track of the file goes through its own conversion into an `audiomixer` and out to the default output, so a clip with desktop, microphone and application tracks is heard whole; the editor's track toggles set the `mute` of the matching mixer pad, so the preview plays exactly what a save would keep. Dragging the timeline seeks to keyframes so it follows the mouse, and the exact frame is sought when the drag ends.
 
 ### Trimming and compression
 

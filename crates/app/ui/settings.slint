@@ -2,7 +2,7 @@ import { ComboBox, SpinBox, LineEdit, ScrollView, Slider } from "std-widgets.sli
 import { Theme } from "theme.slint";
 import { I18n } from "i18n.slint";
 import { Icon, Icons } from "icons.slint";
-import { IconButton, TextButton, Toggle, SectionCard, SettingRow, Divider, KeyPill, Badge, Notice, AddButton, OptionCard, PageHeader } from "widgets.slint";
+import { IconButton, TextButton, Toggle, SectionCard, SettingRow, Divider, KeyPill, Badge, Notice, AddButton, OptionCard, PageHeader, PresetEdit } from "widgets.slint";
 import { AppInfo, AudioSourceRow, GameProfileRow, HotkeyRow } from "types.slint";
 
 export global SettingsState {
@@ -42,8 +42,16 @@ export global SettingsState {
 
     in-out property <bool> audio-enabled: true;
     in-out property <bool> separate-tracks: false;
-    in-out property <int> audio-bitrate-kbps: 160;
+    /// The AAC bitrates offered, as texts, and the chosen one.
+    in-out property <[string]> audio-bitrate-names: [];
+    in-out property <int> audio-bitrate-index: 0;
+    /// The devices and programs that get recorded, in the order added.
     in-out property <[AudioSourceRow]> audio-sources: [];
+    /// The add row: what kind of source to add (0 output, 1 microphone,
+    /// 2 application) and the candidates of that kind not added yet.
+    in-out property <int> add-kind-index: 0;
+    in-out property <[string]> device-candidates: [];
+    in-out property <int> device-candidate-index: 0;
     in-out property <[string]> app-candidates: [];
     in-out property <int> app-candidate-index: 0;
     in-out property <string> new-app-exe;
@@ -96,8 +104,9 @@ export global SettingsState {
     changed edited-subfolder => { root.changed(); }
     changed audio-enabled => { root.changed(); }
     changed separate-tracks => { root.changed(); }
-    changed audio-bitrate-kbps => { root.changed(); }
+    changed audio-bitrate-index => { root.changed(); }
     changed games-scope-index => { root.changed(); }
+    changed add-kind-index => { root.add-kind-changed(); }
     callback browse-clips-dir();
     callback refresh-displays();
     callback refresh-audio-devices();
@@ -109,8 +118,13 @@ export global SettingsState {
     callback suggest-steam-names();
     callback add-hotkey();
     callback remove-hotkey(int);
+    /// Adds the device candidate at the index for the chosen kind.
+    callback add-device(int);
+    /// The kind in the add row changed; the candidates follow.
+    callback add-kind-changed();
     callback add-app-audio(string);
-    callback remove-audio-source(string);
+    /// Removes a source by kind and id.
+    callback remove-audio-source(string, string);
 }
 
 export component HotkeyCapture inherits FocusScope {
@@ -175,7 +189,66 @@ component StorageBar inherits Rectangle {
     }
 }
 
-export component SettingsPage inherits ScrollView {
+/// The add row of the audio section: a kind, a candidate of that kind
+/// (or a typed program name) and the add button.
+component AddAudioSource inherits HorizontalLayout {
+    property <bool> app: SettingsState.add-kind-index == 2;
+    property <string> app-choice: SettingsState.new-app-exe != "" ? SettingsState.new-app-exe : (SettingsState.app-candidates.length > 0 ? SettingsState.app-candidates[SettingsState.app-candidate-index] : "");
+    spacing: 8px;
+    alignment: start;
+    function add() {
+        if (root.app) {
+            SettingsState.add-app-audio(root.app-choice);
+        } else if (SettingsState.device-candidates.length > 0) {
+            SettingsState.add-device(SettingsState.device-candidate-index);
+        }
+    }
+    ComboBox {
+        width: 170px;
+        model: [I18n.tr("Output device"), I18n.tr("Microphone"), I18n.tr("Application")];
+        current-index <=> SettingsState.add-kind-index;
+    }
+    if !root.app: ComboBox {
+        width: 320px;
+        model: SettingsState.device-candidates;
+        current-index <=> SettingsState.device-candidate-index;
+        enabled: SettingsState.device-candidates.length > 0;
+    }
+    if root.app: ComboBox {
+        width: 200px;
+        model: SettingsState.app-candidates;
+        current-index <=> SettingsState.app-candidate-index;
+        enabled: SettingsState.app-candidates.length > 0;
+    }
+    if root.app: LineEdit {
+        width: 140px;
+        placeholder-text: "discord.exe";
+        text <=> SettingsState.new-app-exe;
+        accepted => { root.add(); }
+    }
+    IconButton {
+        icon: Icons.arrows-rotate;
+        filled: true;
+        size: 32px;
+        tooltip: root.app ? I18n.tr("Refresh the list of running programs") : I18n.tr("Refresh the device list");
+        clicked => {
+            if (root.app) {
+                SettingsState.refresh-apps();
+            } else {
+                SettingsState.refresh-audio-devices();
+            }
+        }
+    }
+    TextButton {
+        text: I18n.tr("Add");
+        icon: Icons.plus;
+        has-icon: true;
+        enabled: root.app ? root.app-choice != "" : SettingsState.device-candidates.length > 0;
+        clicked => { root.add(); }
+    }
+}
+
+export component SettingsPage inherits Rectangle {
     in property <AppInfo> info;
     in property <string> update-status;
     in property <bool> buffer-active;
@@ -188,6 +261,7 @@ export component SettingsPage inherits ScrollView {
     callback open-clips-dir();
     callback open-logs-dir();
 
+    ScrollView {
     VerticalLayout {
         padding: Theme.page-padding;
         padding-top: 20px;
@@ -202,8 +276,6 @@ export component SettingsPage inherits ScrollView {
                 description: I18n.tr("Capture, audio, games, storage and hotkeys. Every change is saved and applied right away.");
             }
         }
-
-        if SettingsState.message != "": Notice { message: SettingsState.message; kind: SettingsState.message-is-error ? 2 : 3; }
 
         SectionCard {
             heading: I18n.tr("Hotkeys");
@@ -236,6 +308,7 @@ export component SettingsPage inherits ScrollView {
                     icon: Icons.trash;
                     icon-color: Theme.danger;
                     enabled: SettingsState.hotkeys.length > 1;
+                    tooltip: I18n.tr("Remove this hotkey");
                     clicked => { SettingsState.remove-hotkey(i); }
                 }
             }
@@ -277,9 +350,24 @@ export component SettingsPage inherits ScrollView {
                 spacing: 16px;
                 alignment: start;
                 Label { text: I18n.tr("Frame rate"); }
-                SpinBox { width: 110px; minimum: 15; maximum: 240; value <=> SettingsState.fps; }
-                Label { text: I18n.tr("Bitrate (kbps)"); }
-                SpinBox { width: 130px; minimum: 1000; maximum: 200000; step-size: 1000; value <=> SettingsState.bitrate-kbps; }
+                PresetEdit {
+                    width: 130px;
+                    minimum: 15;
+                    maximum: 240;
+                    suffix: "fps";
+                    presets: [24, 30, 48, 60, 90, 120, 144, 165, 240];
+                    value <=> SettingsState.fps;
+                }
+                Label { text: I18n.tr("Bitrate"); }
+                PresetEdit {
+                    width: 150px;
+                    minimum: 1000;
+                    maximum: 200000;
+                    suffix: "kbps";
+                    presets: [4000, 8000, 12000, 15000, 20000, 30000, 50000, 80000];
+                    value <=> SettingsState.bitrate-kbps;
+                }
+                Hint { text: I18n.tr("Type a value or pick one from the list."); vertical-alignment: center; }
             }
             Divider { }
             SettingRow {
@@ -293,7 +381,7 @@ export component SettingsPage inherits ScrollView {
                 HorizontalLayout {
                     spacing: 6px;
                     ComboBox { width: 240px; model: SettingsState.display-names; current-index <=> SettingsState.display-index; }
-                    IconButton { icon: Icons.arrows-rotate; filled: true; size: 32px; clicked => { SettingsState.refresh-displays(); } }
+                    IconButton { icon: Icons.arrows-rotate; filled: true; size: 32px; tooltip: I18n.tr("Refresh the display list"); clicked => { SettingsState.refresh-displays(); } }
                 }
             }
             SettingRow {
@@ -373,7 +461,7 @@ export component SettingsPage inherits ScrollView {
 
         SectionCard {
             heading: I18n.tr("Audio");
-            subtitle: I18n.tr("Outputs are captured through loopback, inputs are microphones. Volume and mute apply live.");
+            subtitle: I18n.tr("Only what is listed here is recorded: outputs through loopback, microphones, and programs on their own track. Volume and mute apply live.");
             SettingRow {
                 title: I18n.tr("Record audio");
                 description: I18n.tr("Turn off to save video only.");
@@ -387,9 +475,10 @@ export component SettingsPage inherits ScrollView {
             SettingRow {
                 title: I18n.tr("Audio bitrate");
                 description: I18n.tr("AAC kbps per track.");
-                SpinBox { width: 110px; minimum: 64; maximum: 320; step-size: 32; value <=> SettingsState.audio-bitrate-kbps; }
+                ComboBox { width: 130px; model: SettingsState.audio-bitrate-names; current-index <=> SettingsState.audio-bitrate-index; }
             }
             Divider { }
+            if SettingsState.audio-sources.length == 0: Hint { text: I18n.tr("Nothing is recorded yet. Add the output your game plays through, a microphone or a program below."); }
             for row in SettingsState.audio-sources: HorizontalLayout {
                 spacing: 12px;
                 alignment: start;
@@ -399,69 +488,43 @@ export component SettingsPage inherits ScrollView {
                     size: 14px;
                     data: row.kind == "output" ? Icons.headphones : (row.kind == "app" ? Icons.layer-group : Icons.microphone);
                     color: row.connected ? Theme.text : Theme.text-faint;
-                }
-                Text {
-                    text: row.connected ? row.name : row.name + I18n.tr(" (not connected)");
-                    width: 260px;
-                    vertical-alignment: center;
-                    font-size: 13px;
-                    overflow: elide;
-                    color: row.connected ? Theme.text : Theme.text-faint;
-                }
-                Badge { y: (parent.height - self.height) / 2; text: row.kind == "output" ? I18n.tr("Output") : (row.kind == "app" ? I18n.tr("App track") : I18n.tr("Input")); }
-                Slider {
-                    y: (parent.height - self.height) / 2;
-                    width: 150px;
-                    minimum: 0;
-                    maximum: 200;
-                    value <=> row.volume; changed value => { SettingsState.changed(); }
-                    enabled: row.enabled && !row.muted;
-                }
-                Label { text: "\{round(row.volume)}%"; width: 44px; }
-                IconButton {
-                    icon: row.muted ? Icons.volume-xmark : Icons.volume-high;
-                    icon-color: row.muted ? Theme.danger : Theme.text;
-                    size: 32px;
-                    enabled: row.enabled;
-                    clicked => { row.muted = !row.muted; SettingsState.changed(); }
-                }
-                if row.kind == "app": IconButton {
-                    icon: Icons.trash;
-                    icon-color: Theme.danger;
-                    size: 32px;
-                    clicked => { SettingsState.remove-audio-source(row.id); }
-                }
             }
-            HorizontalLayout {
-                spacing: 8px;
-                alignment: start;
-                TextButton { text: I18n.tr("Refresh devices"); icon: Icons.arrows-rotate; has-icon: true; clicked => { SettingsState.refresh-audio-devices(); } }
+            Text {
+                text: row.connected ? row.name : row.name + I18n.tr(" (not connected)");
+                width: 260px;
+                vertical-alignment: center;
+                font-size: 13px;
+                overflow: elide;
+                color: row.connected ? Theme.text : Theme.text-faint;
             }
-            Divider { }
-            SettingRow {
-                title: I18n.tr("Application audio");
-                description: I18n.tr("Give one program (Discord, Spotify, a browser) its own track, so you can mute it in the editor. Pick a running program or type its executable.");
-                HorizontalLayout {
-                    spacing: 6px;
-                    ComboBox {
-                        width: 200px;
-                        model: SettingsState.app-candidates;
-                        current-index <=> SettingsState.app-candidate-index;
-                        enabled: SettingsState.app-candidates.length > 0;
-                    }
-                    IconButton { icon: Icons.arrows-rotate; filled: true; size: 32px; clicked => { SettingsState.refresh-apps(); } }
-                    TextButton {
-                        text: I18n.tr("Add");
-                        icon: Icons.plus;
-                        has-icon: true;
-                        enabled: SettingsState.app-candidates.length > 0;
-                        clicked => { SettingsState.add-app-audio(SettingsState.app-candidates[SettingsState.app-candidate-index]); }
-                    }
-                    LineEdit { width: 140px; placeholder-text: "discord.exe"; text <=> SettingsState.new-app-exe; accepted => { SettingsState.add-app-audio(SettingsState.new-app-exe); } }
-                    TextButton { text: I18n.tr("Add typed"); clicked => { SettingsState.add-app-audio(SettingsState.new-app-exe); } }
-                }
+            Badge { y: (parent.height - self.height) / 2; text: row.kind == "output" ? I18n.tr("Output") : (row.kind == "app" ? I18n.tr("App track") : I18n.tr("Input")); }
+            Slider {
+                y: (parent.height - self.height) / 2;
+                width: 150px;
+                minimum: 0;
+                maximum: 200;
+                value <=> row.volume; changed value => { SettingsState.changed(); }
+                enabled: row.enabled && !row.muted;
             }
-            Hint { text: I18n.tr("The first application track is left out of the default desktop output so it is not recorded twice. The program has to be running when capture starts; capture restarts on its own when it opens or closes."); }
+            Label { text: "\{round(row.volume)}%"; width: 44px; }
+            IconButton {
+                icon: row.muted ? Icons.volume-xmark : Icons.volume-high;
+                icon-color: row.muted ? Theme.danger : Theme.text;
+                size: 32px;
+                enabled: row.enabled;
+                tooltip: row.muted ? I18n.tr("Unmute") : I18n.tr("Mute");
+                clicked => { row.muted = !row.muted; SettingsState.changed(); }
+            }
+            IconButton {
+                icon: Icons.trash;
+                icon-color: Theme.danger;
+                size: 32px;
+                tooltip: I18n.tr("Remove");
+                clicked => { SettingsState.remove-audio-source(row.kind, row.id); }
+            }
+            }
+            AddAudioSource { }
+            Hint { text: I18n.tr("An application track (Discord, Spotify, a browser) holds only that program, so you can mute it in the editor. The first one is left out of the default desktop output so it is not recorded twice. The program has to be running when capture starts; capture restarts on its own when it opens or closes."); }
         }
 
         SectionCard {
@@ -496,7 +559,7 @@ export component SettingsPage inherits ScrollView {
                 SpinBox { width: 90px; minimum: 0; maximum: 3600; value <=> profile.replay-seconds; changed value => { SettingsState.changed(); } }
                 LineEdit { width: 120px; placeholder-text: I18n.tr("Subfolder"); text <=> profile.subfolder; changed text => { SettingsState.changed(); } }
                 ComboBox { width: 160px; model: SettingsState.profile-display-names; current-index <=> profile.display-index; changed current-index => { SettingsState.changed(); } }
-                IconButton { icon: Icons.trash; icon-color: Theme.danger; size: 32px; clicked => { SettingsState.remove-game(profile.exe); } }
+                IconButton { icon: Icons.trash; icon-color: Theme.danger; size: 32px; tooltip: I18n.tr("Remove this game"); clicked => { SettingsState.remove-game(profile.exe); } }
             }
             Hint { text: I18n.tr("Columns: name, action when the game starts, buffer length override in seconds (0 keeps the global one), clip subfolder, display."); }
             Divider { }
@@ -650,6 +713,28 @@ export component SettingsPage inherits ScrollView {
                 description: root.info.log-dir;
                 TextButton { text: I18n.tr("Open folder"); icon: Icons.folder-open; has-icon: true; clicked => { root.open-logs-dir(); } }
             }
+        }
+    }
+    }
+
+    // The save notice floats over the page instead of pushing it down, so a
+    // click aimed at a control still lands on it, and it stays in view
+    // however far the page is scrolled.
+    if SettingsState.message != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 14px;
+        width: min(parent.width - 2 * Theme.page-padding, 640px);
+        height: notice.preferred-height;
+        border-radius: Theme.radius-small;
+        background: Theme.surface;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #000000b0;
+        notice := Notice {
+            width: parent.width;
+            message: SettingsState.message;
+            kind: SettingsState.message-is-error ? 2 : 3;
+            can-dismiss: true;
+            dismissed => { SettingsState.message = ""; }
         }
     }
 }

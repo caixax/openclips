@@ -27,6 +27,7 @@ use crate::settings;
 use crate::shell;
 use crate::updater::{self, UpdateEvent};
 use openclips_capture::TrimJob;
+use openclips_core::capture::AudioDeviceInfo;
 use openclips_core::config::GameProfile;
 use openclips_core::config::{HotkeyActionKind, HotkeyBinding};
 use openclips_core::games::auto_capture;
@@ -130,6 +131,10 @@ struct Shared {
     autosave: RefCell<Option<slint::Timer>>,
     /// Clears the "saved" notice again.
     message_timer: RefCell<Option<slint::Timer>>,
+    /// The audio devices as last enumerated, and the ones the add row of
+    /// the audio section offers right now, in the order it shows them.
+    audio_devices: RefCell<Vec<AudioDeviceInfo>>,
+    audio_candidates: RefCell<Vec<AudioDeviceInfo>>,
     startup_warning: RefCell<String>,
     update_banner: RefCell<Option<UpdateEvent>>,
     /// Text for the About section, kept while the window is unloaded.
@@ -236,6 +241,8 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         timer: RefCell::new(None),
         autosave: RefCell::new(None),
         message_timer: RefCell::new(None),
+        audio_devices: RefCell::new(Vec::new()),
+        audio_candidates: RefCell::new(Vec::new()),
         startup_warning: RefCell::new(ctx.startup_warning),
         update_banner: RefCell::new(None),
         update_status: RefCell::new(String::new()),
@@ -881,6 +888,7 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         &shared.default_clips_dir(),
     );
     refresh_game_rows(window, shared);
+    refresh_device_candidates(window, shared);
 
     let s = shared.clone();
     state.on_changed(move || schedule_autosave(&s));
@@ -921,6 +929,29 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
             let state = window.global::<SettingsState>();
             let devices = current_audio_devices(&s);
             settings::refresh_audio_sources(&state, &s.config.borrow(), &devices);
+            refresh_device_candidates(&window, &s);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_add_kind_changed(move || {
+        if let Some(window) = w.upgrade() {
+            refresh_device_candidates(&window, &s);
+        }
+    });
+    let (s, w) = (shared.clone(), window.as_weak());
+    state.on_add_device(move |index| {
+        let Some(window) = w.upgrade() else {
+            return;
+        };
+        let device = s
+            .audio_candidates
+            .borrow()
+            .get(index.max(0) as usize)
+            .cloned();
+        if let Some(device) = device {
+            settings::add_device_source(&window.global::<SettingsState>(), &device);
+            refresh_device_candidates(&window, &s);
+            schedule_autosave(&s);
         }
     });
 
@@ -981,9 +1012,10 @@ fn wire_settings(window: &MainWindow, shared: &SharedRef) {
         }
     });
     let (s, w) = (shared.clone(), window.as_weak());
-    state.on_remove_audio_source(move |id| {
+    state.on_remove_audio_source(move |kind, id| {
         if let Some(window) = w.upgrade() {
-            settings::remove_audio_source(&window.global::<SettingsState>(), &id);
+            settings::remove_audio_source(&window.global::<SettingsState>(), &kind, &id);
+            refresh_device_candidates(&window, &s);
             schedule_autosave(&s);
         }
     });
@@ -1034,13 +1066,25 @@ fn refresh_app_candidates(window: &MainWindow, shared: &SharedRef) {
     state.set_app_candidate_index(0);
 }
 
-fn current_audio_devices(shared: &SharedRef) -> Vec<openclips_core::capture::AudioDeviceInfo> {
-    shared
+/// Enumerates the audio devices and remembers them for the add row.
+fn current_audio_devices(shared: &SharedRef) -> Vec<AudioDeviceInfo> {
+    let devices = shared
         .engine
         .borrow()
         .as_ref()
         .map(|e| e.list_audio_devices())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    *shared.audio_devices.borrow_mut() = devices.clone();
+    devices
+}
+
+/// Refills the add row of the audio section from the last device list:
+/// the devices of the chosen kind that are not listed yet.
+fn refresh_device_candidates(window: &MainWindow, shared: &SharedRef) {
+    let state = window.global::<SettingsState>();
+    let candidates = settings::device_candidates(&state, &shared.audio_devices.borrow());
+    settings::set_device_candidates(&state, &candidates);
+    *shared.audio_candidates.borrow_mut() = candidates;
 }
 
 fn current_monitors(shared: &SharedRef) -> Vec<openclips_core::capture::MonitorInfo> {
@@ -1136,6 +1180,7 @@ fn apply_settings(shared: &SharedRef, window: &MainWindow, next: Config) {
         &shared.default_clips_dir(),
     );
     refresh_game_rows(window, shared);
+    refresh_device_candidates(window, shared);
 
     if problems.is_empty() {
         state.set_message_is_error(false);
@@ -2015,6 +2060,12 @@ fn wire_editor(window: &MainWindow, shared: &SharedRef) {
                 Duration::from_secs_f32(state.get_trim_out().max(0.0)),
                 &state,
             );
+        }
+    });
+    let s = shared.clone();
+    state.on_track_toggled(move |index, enabled| {
+        if let Some(player) = s.player.borrow_mut().as_mut() {
+            player.set_track_enabled(index.max(0) as usize, enabled);
         }
     });
     let (s, w) = (shared.clone(), window.as_weak());

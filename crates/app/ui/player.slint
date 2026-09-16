@@ -58,6 +58,8 @@ export global PlayerState {
     callback preview-selection();
     callback save-trim-as(bool);
     callback trim-changed();
+    /// A track toggle in the editor: index and whether it is heard now.
+    callback track-toggled(int, bool);
     callback compress();
 }
 
@@ -190,9 +192,13 @@ component TrimPanel inherits Rectangle {
             spacing: 16px;
             alignment: start;
             Text { text: I18n.tr("Audio tracks"); font-size: 12px; color: Theme.text-muted; vertical-alignment: center; }
-            for track in PlayerState.audio-tracks: HorizontalLayout {
+            for track[i] in PlayerState.audio-tracks: HorizontalLayout {
                 spacing: 6px;
-                Toggle { y: (parent.height - self.height) / 2; checked <=> track.enabled; }
+                Toggle {
+                    y: (parent.height - self.height) / 2;
+                    checked <=> track.enabled;
+                    toggled => { PlayerState.track-toggled(i, self.checked); }
+                }
                 Text { text: track.name; font-size: 12px; color: Theme.text; vertical-alignment: center; }
             }
         }
@@ -217,7 +223,7 @@ component TrimPanel inherits Rectangle {
             if PlayerState.trim-message != "": Text { text: PlayerState.trim-message; font-size: 12px; color: Theme.text; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
         }
         Text {
-            text: I18n.tr("Drag the handles on the timeline or use Set in and Set out at the playhead. Muted tracks are left out of the saved file. Saving asks whether to keep the original.");
+            text: I18n.tr("Drag the handles on the timeline or use Set in and Set out at the playhead. A track switched off goes silent in the preview and is left out of the saved file. Saving asks whether to keep the original.");
             font-size: 11px;
             color: Theme.text-faint;
             wrap: word-wrap;
@@ -246,7 +252,7 @@ component Modal inherits Rectangle {
             spacing: 14px;
             HorizontalLayout {
                 Text { text: root.title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
-                IconButton { icon: Icons.xmark; size: 28px; icon-size: 12px; clicked => { root.dismiss(); } }
+                IconButton { icon: Icons.xmark; size: 28px; icon-size: 12px; tooltip: I18n.tr("Close"); clicked => { root.dismiss(); } }
             }
             @children
         }
@@ -305,7 +311,7 @@ export component PlayerPage inherits Rectangle {
 
         HorizontalLayout {
             spacing: 10px;
-            IconButton { icon: Icons.arrow-left; filled: true; clicked => { PlayerState.back(); } }
+            IconButton { icon: Icons.arrow-left; filled: true; tooltip: I18n.tr("Back to the library"); clicked => { PlayerState.back(); } }
             if !PlayerState.renaming: Text {
                 text: PlayerState.title;
                 font-size: 18px;
@@ -321,19 +327,20 @@ export component PlayerPage inherits Rectangle {
                 accepted => { PlayerState.rename(); }
             }
             if PlayerState.renaming: TextButton { text: I18n.tr("Save name"); kind: 1; clicked => { PlayerState.rename(); } }
-            if PlayerState.renaming: IconButton { icon: Icons.xmark; filled: true; clicked => { PlayerState.renaming = false; } }
+            if PlayerState.renaming: IconButton { icon: Icons.xmark; filled: true; tooltip: I18n.tr("Cancel"); clicked => { PlayerState.renaming = false; } }
             if !PlayerState.renaming: IconButton {
                 icon: Icons.pen;
                 filled: true;
+                tooltip: I18n.tr("Rename the clip");
                 clicked => {
                     PlayerState.rename-text = PlayerState.title;
                     PlayerState.renaming = true;
                 }
             }
-            IconButton { icon: Icons.scissors; filled: true; active: PlayerState.editing; clicked => { PlayerState.editing = !PlayerState.editing; } }
-            IconButton { icon: Icons.bolt; filled: true; clicked => { PlayerState.compress-open = true; } }
-            IconButton { icon: Icons.folder-open; filled: true; clicked => { PlayerState.reveal(); } }
-            if !PlayerState.confirm-delete: IconButton { icon: Icons.trash; filled: true; icon-color: Theme.danger; clicked => { PlayerState.confirm-delete = true; } }
+            IconButton { icon: Icons.scissors; filled: true; active: PlayerState.editing; tooltip: PlayerState.editing ? I18n.tr("Close the editor") : I18n.tr("Edit: trim and choose audio tracks"); clicked => { PlayerState.editing = !PlayerState.editing; } }
+            IconButton { icon: Icons.bolt; filled: true; tooltip: I18n.tr("Compress to a smaller file"); clicked => { PlayerState.compress-open = true; } }
+            IconButton { icon: Icons.folder-open; filled: true; tooltip: I18n.tr("Show the file in Explorer"); clicked => { PlayerState.reveal(); } }
+            if !PlayerState.confirm-delete: IconButton { icon: Icons.trash; filled: true; icon-color: Theme.danger; tooltip: I18n.tr("Delete the clip"); clicked => { PlayerState.confirm-delete = true; } }
             if PlayerState.confirm-delete: TextButton { text: I18n.tr("Delete clip"); icon: Icons.trash; has-icon: true; kind: 2; clicked => { PlayerState.delete(); } }
             if PlayerState.confirm-delete: TextButton { text: I18n.tr("Keep"); clicked => { PlayerState.confirm-delete = false; } }
         }
@@ -383,15 +390,16 @@ export component PlayerPage inherits Rectangle {
                 Timeline { }
                 HorizontalLayout {
                     spacing: 6px;
-                    IconButton { icon: Icons.rotate-left; icon-size: 15px; clicked => { PlayerState.skip(-5); } }
+                    IconButton { icon: Icons.rotate-left; icon-size: 15px; tooltip: I18n.tr("Back 5 seconds"); clicked => { PlayerState.skip(-5); } }
                     IconButton {
                         icon: PlayerState.playing ? Icons.pause : Icons.play;
                         size: 40px;
                         icon-size: 18px;
                         filled: true;
+                        tooltip: PlayerState.playing ? I18n.tr("Pause") : I18n.tr("Play");
                         clicked => { PlayerState.toggle-play(); }
                     }
-                    IconButton { icon: Icons.rotate-right; icon-size: 15px; clicked => { PlayerState.skip(5); } }
+                    IconButton { icon: Icons.rotate-right; icon-size: 15px; tooltip: I18n.tr("Forward 5 seconds"); clicked => { PlayerState.skip(5); } }
                     Text {
                         text: PlayerState.position-text + " / " + PlayerState.duration-text;
                         vertical-alignment: center;
@@ -401,6 +409,7 @@ export component PlayerPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     IconButton {
                         icon: PlayerState.muted || PlayerState.volume == 0 ? Icons.volume-xmark : (PlayerState.volume < 50 ? Icons.volume-low : Icons.volume-high);
+                        tooltip: PlayerState.muted ? I18n.tr("Unmute") : I18n.tr("Mute");
                         clicked => { PlayerState.toggle-mute(); }
                     }
                     Slider {

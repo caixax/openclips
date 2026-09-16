@@ -27,6 +27,26 @@ const KIND_APP: &str = "app";
 /// Hotkey rows use key capture action ids from this value upwards.
 pub const SAVE_ACTION_BASE: i32 = 100;
 
+/// The AAC bitrates the audio section offers, in kbps.
+pub const AUDIO_BITRATES: [u32; 8] = [64, 96, 128, 160, 192, 224, 256, 320];
+
+/// Kinds offered by the add row of the audio section, in combo order.
+const ADD_KINDS: [AudioDeviceKind; 3] = [
+    AudioDeviceKind::Output,
+    AudioDeviceKind::Input,
+    AudioDeviceKind::Application,
+];
+
+/// The list entry closest to `kbps`, so a hand edited config still maps
+/// to a choice.
+fn audio_bitrate_index(kbps: u32) -> i32 {
+    AUDIO_BITRATES
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, b)| b.abs_diff(kbps))
+        .map_or(0, |(i, _)| i as i32)
+}
+
 /// Quality presets as (name, fps, bitrate in kbps). The last entry is custom.
 pub const QUALITY_PRESETS: [(&str, u32, u32); 3] = [
     ("Low", 30, 8000),
@@ -195,13 +215,78 @@ pub fn add_app_source(state: &SettingsState<'_>, exe: &str) {
     state.set_audio_sources(ModelRc::new(VecModel::from(rows)));
 }
 
-pub fn remove_audio_source(state: &SettingsState<'_>, id: &str) {
+pub fn remove_audio_source(state: &SettingsState<'_>, kind: &str, id: &str) {
     let rows: Vec<AudioSourceRow> = state
         .get_audio_sources()
         .iter()
-        .filter(|r| !(r.kind == KIND_APP && r.id == id))
+        .filter(|r| !(r.kind == kind && r.id == id))
         .collect();
     state.set_audio_sources(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Adds a row for a connected device unless one exists.
+pub fn add_device_source(state: &SettingsState<'_>, device: &AudioDeviceInfo) {
+    let kind = kind_name(device.kind);
+    let mut rows: Vec<AudioSourceRow> = state.get_audio_sources().iter().collect();
+    if rows
+        .iter()
+        .any(|r| r.kind == kind && r.id == device.id.as_str())
+    {
+        return;
+    }
+    rows.push(AudioSourceRow {
+        id: device.id.clone().into(),
+        kind: kind.into(),
+        name: device.name.clone().into(),
+        enabled: true,
+        volume: 100.0,
+        muted: false,
+        connected: true,
+    });
+    state.set_audio_sources(ModelRc::new(VecModel::from(rows)));
+}
+
+/// The connected devices of the kind chosen in the add row that are not
+/// listed yet, in name order. The page shows their names; the caller keeps
+/// the list to resolve the chosen index.
+pub fn device_candidates(
+    state: &SettingsState<'_>,
+    devices: &[AudioDeviceInfo],
+) -> Vec<AudioDeviceInfo> {
+    let kind = ADD_KINDS
+        .get(state.get_add_kind_index().max(0) as usize)
+        .copied()
+        .unwrap_or(AudioDeviceKind::Output);
+    let listed: Vec<(SharedString, SharedString)> = state
+        .get_audio_sources()
+        .iter()
+        .map(|r| (r.kind, r.id))
+        .collect();
+    let mut candidates: Vec<AudioDeviceInfo> = devices
+        .iter()
+        .filter(|d| d.kind == kind)
+        .filter(|d| {
+            !listed
+                .iter()
+                .any(|(k, id)| k == kind_name(d.kind) && id == d.id.as_str())
+        })
+        .cloned()
+        .collect();
+    candidates.sort_by_key(|d| d.name.to_lowercase());
+    candidates
+}
+
+/// Shows `candidates` in the add row, keeping the selection in range.
+pub fn set_device_candidates(state: &SettingsState<'_>, candidates: &[AudioDeviceInfo]) {
+    let names: Vec<SharedString> = candidates
+        .iter()
+        .map(|d| SharedString::from(d.name.as_str()))
+        .collect();
+    let index = state
+        .get_device_candidate_index()
+        .clamp(0, (names.len() as i32 - 1).max(0));
+    state.set_device_candidates(ModelRc::new(VecModel::from(names)));
+    state.set_device_candidate_index(index);
 }
 
 /// Fills the settings page from a config. `default_clips_dir` is shown when
@@ -272,7 +357,12 @@ pub fn populate(
 
     state.set_audio_enabled(config.audio.enabled);
     state.set_separate_tracks(config.audio.separate_tracks);
-    state.set_audio_bitrate_kbps(config.audio.bitrate_kbps as i32);
+    let bitrates: Vec<SharedString> = AUDIO_BITRATES
+        .iter()
+        .map(|b| SharedString::from(format!("{b} kbps")))
+        .collect();
+    state.set_audio_bitrate_names(ModelRc::new(VecModel::from(bitrates)));
+    state.set_audio_bitrate_index(audio_bitrate_index(config.audio.bitrate_kbps));
     set_audio_sources(state, config, audio_devices);
 
     state.set_games_scope_index(match config.games.scope {
@@ -340,45 +430,30 @@ fn kind_from_name(name: &str) -> AudioDeviceKind {
     }
 }
 
-/// Builds the audio rows: every connected device, plus configured devices
-/// that are not connected right now so their settings are not lost.
+/// Builds the audio rows: one per configured source, in config order. A
+/// device that is not connected right now keeps its row (greyed out) so its
+/// settings are not lost; the current device name is used when it is.
 pub fn audio_rows(config: &Config, devices: &[AudioDeviceInfo]) -> Vec<AudioSourceRow> {
-    let mut rows: Vec<AudioSourceRow> = devices
+    config
+        .audio
+        .sources
         .iter()
-        .map(|device| {
-            let configured = config
-                .audio
-                .sources
+        .map(|source| {
+            let device = devices
                 .iter()
-                .find(|s| s.id == device.id && s.kind == device.kind);
+                .find(|d| d.id == source.id && d.kind == source.kind);
+            let name = device.map(|d| d.name.as_str()).unwrap_or(&source.name);
             AudioSourceRow {
-                id: device.id.clone().into(),
-                kind: kind_name(device.kind).into(),
-                name: device.name.clone().into(),
-                enabled: configured.is_some_and(|s| s.enabled),
-                volume: configured.map(|s| s.volume * 100.0).unwrap_or(100.0),
-                muted: configured.is_some_and(|s| s.muted),
-                connected: true,
-            }
-        })
-        .collect();
-    for source in &config.audio.sources {
-        let connected = devices
-            .iter()
-            .any(|d| d.id == source.id && d.kind == source.kind);
-        if !connected {
-            rows.push(AudioSourceRow {
                 id: source.id.clone().into(),
                 kind: kind_name(source.kind).into(),
-                name: source.name.clone().into(),
+                name: name.into(),
                 enabled: source.enabled,
                 volume: source.volume * 100.0,
                 muted: source.muted,
-                connected: source.kind == AudioDeviceKind::Application,
-            });
-        }
-    }
-    rows
+                connected: device.is_some() || source.kind == AudioDeviceKind::Application,
+            }
+        })
+        .collect()
 }
 
 /// Replaces the audio rows from the current config and device list. Edits
@@ -400,11 +475,12 @@ pub fn refresh_audio_sources(
     set_audio_sources(state, &edited, devices);
 }
 
+/// Every row is a configured source, switched on or off; removing the row
+/// is what drops it from the config.
 fn collect_audio_sources(state: &SettingsState<'_>) -> Vec<AudioSourceConfig> {
     state
         .get_audio_sources()
         .iter()
-        .filter(|row| row.enabled || !row.connected || row.kind == KIND_APP)
         .map(|row| AudioSourceConfig {
             id: row.id.to_string(),
             name: row.name.to_string(),
@@ -478,7 +554,10 @@ pub fn collect(
 
     config.audio.enabled = state.get_audio_enabled();
     config.audio.separate_tracks = state.get_separate_tracks();
-    config.audio.bitrate_kbps = state.get_audio_bitrate_kbps().max(1) as u32;
+    config.audio.bitrate_kbps = AUDIO_BITRATES
+        .get(state.get_audio_bitrate_index().max(0) as usize)
+        .copied()
+        .unwrap_or(AUDIO_BITRATES[3]);
     config.audio.sources = collect_audio_sources(state);
 
     config.games.scope = if state.get_games_scope_index() == 1 {

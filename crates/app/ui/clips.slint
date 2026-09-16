@@ -124,8 +124,8 @@ export component ClipsPage inherits Rectangle {
         HorizontalLayout {
             spacing: 10px;
             alignment: start;
-            IconButton { icon: Icons.arrows-rotate; filled: true; clicked => { LibraryState.refresh(); } }
-            IconButton { icon: Icons.folder-open; filled: true; clicked => { LibraryState.open-folder(); } }
+            IconButton { icon: Icons.arrows-rotate; filled: true; tooltip: I18n.tr("Rescan the clip folders"); clicked => { LibraryState.refresh(); } }
+            IconButton { icon: Icons.folder-open; filled: true; tooltip: I18n.tr("Open the clips folder"); clicked => { LibraryState.open-folder(); } }
             ComboBox {
                 width: 150px;
                 model: [I18n.tr("All types"), I18n.tr("Clips"), I18n.tr("Recordings"), I18n.tr("Edited")];
