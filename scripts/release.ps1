@@ -142,7 +142,9 @@ Step "Writing checksums"
 $lines = Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(exe|zip|deb|rpm|zst|gz)$' } | ForEach-Object {
     "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
 }
-Set-Content dist/SHA256SUMS.txt ($lines -join "`n") -Encoding ascii
+# LF only, also at the end: a CR glued to the last file name breaks every
+# Unix tool that reads this file (install.sh, sha256sum -c).
+[IO.File]::WriteAllText((Join-Path $repo "dist\SHA256SUMS.txt"), (($lines -join "`n") + "`n"), [Text.Encoding]::ASCII)
 Get-Content dist/SHA256SUMS.txt
 
 Step "Committing and tagging v$next"

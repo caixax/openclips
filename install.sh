@@ -179,7 +179,8 @@ if [ "$dry_run" -eq 0 ]; then
         fetch "$asset" || die "release $tag has no Linux build"
     fi
     curl -fsSL -o "$tmp/SHA256SUMS.txt" "$base/SHA256SUMS.txt" || die "release $tag has no SHA256SUMS.txt"
-    expected="$(awk -v f="$asset" '$2 == f { print $1 }' "$tmp/SHA256SUMS.txt")"
+    # The file may come from a Windows machine with CRLF line ends.
+    expected="$(tr -d '' < "$tmp/SHA256SUMS.txt" | awk -v f="$asset" '$2 == f { print $1 }')"
     [ -n "$expected" ] || die "SHA256SUMS.txt does not list $asset"
     actual="$(sha256sum "$tmp/$asset" | cut -d' ' -f1)"
     [ "$expected" = "$actual" ] || die "checksum mismatch for $asset, nothing was installed"
