@@ -65,7 +65,21 @@ impl MediaTools for GstMediaTools {
     }
 
     fn trim(&self, job: &TrimJob) -> Result<ClipFile, CaptureError> {
-        super::trim::trim(job)
+        let clip = super::trim::trim(job)?;
+        // The muxer can finish without complaint and still leave a file no
+        // demuxer accepts. Such a file must not reach the library, and with
+        // "replace original" it must never take the place of a good clip.
+        match self.probe(&clip.path) {
+            Ok(info) if info.width > 0 && !info.duration.is_zero() => Ok(clip),
+            outcome => {
+                let _ = std::fs::remove_file(&clip.path);
+                let reason = match outcome {
+                    Err(err) => format!("the cut could not be read back: {err}"),
+                    Ok(_) => "the cut came out without a playable video track".to_owned(),
+                };
+                Err(media_error(&job.input, reason))
+            }
+        }
     }
 
     fn thumbnail(

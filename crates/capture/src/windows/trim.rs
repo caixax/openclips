@@ -16,7 +16,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use openclips_core::clip::ClipFile;
 use openclips_core::media::{
-    AudioCodec, AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo, VideoCodec,
+    AudioCodec, AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo, Timestamp, VideoCodec,
 };
 use openclips_core::trim::{TrimMode, TrimRange};
 
@@ -37,6 +37,15 @@ fn media_error(path: &Path, reason: impl ToString) -> CaptureError {
         path: path.to_path_buf(),
         reason: reason.to_string(),
     }
+}
+
+/// Running time of `pts` within the sample's segment, or `None` when the
+/// timestamp lies outside of it (before the cut starts or after it ends).
+fn segment_running_time(sample: &gst::Sample, pts: Option<gst::ClockTime>) -> Option<Timestamp> {
+    let segment = sample.segment()?;
+    let segment = segment.downcast_ref::<gst::ClockTime>()?;
+    let running = segment.to_running_time(pts?)?;
+    Some(Timestamp::from_nanos(running.nseconds()))
 }
 
 /// Pulls the next sample from `sink`. A pipeline error only reaches the bus,
@@ -485,10 +494,19 @@ pub fn trim(job: &TrimJob) -> Result<ClipFile, CaptureError> {
                 let Some(buffer) = sample.buffer() else {
                     continue;
                 };
+                // The demuxer starts each audio track on the packet that
+                // straddles the cut, a few milliseconds before the segment.
+                // Such a packet has no running time; handing it over with
+                // its file timestamp instead put the track's start seconds
+                // late, and the muxer then placed the whole track after the
+                // video, which played as a clip without sound.
+                let Some(pts) = segment_running_time(&sample, buffer.pts()) else {
+                    continue;
+                };
                 let map = buffer.map_readable().map_err(|e| media_error(input, e))?;
                 session.push_audio(&AudioPacket {
                     track: info.index,
-                    pts: running_time(&sample, buffer.pts()),
+                    pts,
                     duration: buffer.duration().map(|d| d.into()),
                     data: Arc::from(map.as_slice()),
                 })?;

@@ -46,7 +46,11 @@ fn main() {
             video_bitrate_kbps: 12_000,
             audio_bitrate_kbps: 160,
             scale_height: None,
-            keep_audio: Vec::new(),
+            // OPENCLIPS_KEEP=1,0,1 drops the second track, like the
+            // editor's toggles.
+            keep_audio: std::env::var("OPENCLIPS_KEEP")
+                .map(|v| v.split(',').map(|k| k.trim() != "0").collect())
+                .unwrap_or_default(),
             audio_labels: Vec::new(),
         };
         let started = Instant::now();
