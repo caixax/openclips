@@ -6,9 +6,16 @@ without waiting for GitHub runners.
 .DESCRIPTION
 Picks the next version (or the one given), writes it into Cargo.toml, runs
 the tests, builds the portable zip and the NSIS installer with the GStreamer
-runtime bundled, writes SHA256SUMS.txt, commits and tags vX.Y.Z, pushes, and
+runtime bundled, builds the Linux packages inside the WSL distros of this
+machine, writes SHA256SUMS.txt, commits and tags vX.Y.Z, pushes, and
 publishes the GitHub release with gh. Installed copies of the app pick the
 release up on their next start.
+
+The Linux packages come from scripts/linux/build.sh, run in one distro per
+family at the same time: a .deb (and the generic tarball, because its glibc
+is the oldest) on the first of -LinuxDistros, then an .rpm and a pacman
+package. Prepare each distro once with scripts/linux/setup-wsl.sh. A failed
+Linux build stops the release before anything is tagged.
 
 .PARAMETER Patch
 Bump the patch number (default when nothing else is given).
@@ -28,6 +35,12 @@ Do not run cargo test first.
 .PARAMETER NoPublish
 Build, commit and tag, but do not push or create the GitHub release.
 
+.PARAMETER SkipLinux
+Release Windows only.
+
+.PARAMETER LinuxDistros
+WSL distro names to build in. The first one also builds the tarball.
+
 .EXAMPLE
 scripts\release.ps1 -Patch
 scripts\release.ps1 -V 0.3.0
@@ -39,7 +52,9 @@ param(
     [switch]$Major,
     [Alias("V")][string]$Version,
     [switch]$SkipTests,
-    [switch]$NoPublish
+    [switch]$NoPublish,
+    [switch]$SkipLinux,
+    [string[]]$LinuxDistros = @("Ubuntu-22.04", "FedoraLinux-43", "archlinux")
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,8 +104,42 @@ Step "Building the portable zip and the installer"
 if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 Run "powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -BundleRuntime -Installer"
 
+if (-not $SkipLinux) {
+    Step "Building the Linux packages in WSL ($($LinuxDistros -join ', '))"
+    # The checkout as WSL sees it: I:\Projects\openclips -> /mnt/i/Projects/openclips.
+    $drive = $repo.Substring(0, 1).ToLower()
+    $script = "/mnt/$drive" + ($repo.Substring(2) -replace '\\', '/') + "/scripts/linux/build.sh"
+    New-Item -ItemType Directory -Force dist | Out-Null
+    $jobs = @()
+    for ($i = 0; $i -lt $LinuxDistros.Count; $i++) {
+        $distro = $LinuxDistros[$i]
+        $flag = if ($i -eq 0) { "--tarball" } else { "" }
+        Write-Host "> wsl -d $distro -- bash $script $flag" -ForegroundColor DarkGray
+        $jobs += Start-Job -Name $distro -ArgumentList $distro, $script, $flag -ScriptBlock {
+            param($distro, $script, $flag)
+            $output = if ($flag) { wsl.exe -d $distro -- bash $script $flag 2>&1 } else { wsl.exe -d $distro -- bash $script 2>&1 }
+            [pscustomobject]@{ Code = $LASTEXITCODE; Tail = ($output | Select-Object -Last 25) -join "`n" }
+        }
+    }
+    $failed = @()
+    foreach ($job in $jobs) {
+        $result = Receive-Job -Job $job -Wait -AutoRemoveJob
+        if ($result.Code -ne 0) {
+            $failed += $job.Name
+            Write-Host "`n--- $($job.Name) failed:`n$($result.Tail)" -ForegroundColor Red
+        } else {
+            Write-Host "$($job.Name): ok" -ForegroundColor Green
+        }
+    }
+    if ($failed.Count -gt 0) {
+        # Nothing is committed yet; put the version back so a retry starts clean.
+        git checkout -- Cargo.toml Cargo.lock
+        throw "the Linux build failed in: $($failed -join ', ')"
+    }
+}
+
 Step "Writing checksums"
-$lines = Get-ChildItem dist -File | Where-Object { $_.Extension -in ".exe", ".zip" } | ForEach-Object {
+$lines = Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(exe|zip|deb|rpm|zst|gz)$' } | ForEach-Object {
     "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
 }
 Set-Content dist/SHA256SUMS.txt ($lines -join "`n") -Encoding ascii
@@ -112,5 +161,8 @@ Run "git push origin v$next"
 
 Step "Publishing the GitHub release"
 $assets = @("dist/OpenClips-$next-setup.exe", "dist/OpenClips-$next-win64.zip", "dist/SHA256SUMS.txt")
+if (-not $SkipLinux) {
+    $assets += Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(deb|rpm|zst|gz)$' } | ForEach-Object { "dist/$($_.Name)" }
+}
 Run "gh release create v$next --title `"OpenClips v$next`" --generate-notes $($assets -join ' ')"
 Write-Host "`nReleased v$next" -ForegroundColor Green

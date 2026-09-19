@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=OpenClips
+GenericName=Game clip recorder
+Comment=Keeps the last moments of your game in memory and saves them as a clip with one key
+Comment[es]=Guarda los últimos momentos de tu partida en memoria y los convierte en clip con una tecla
+Exec=openclips
+Icon=openclips
+Terminal=false
+Categories=AudioVideo;Video;Recorder;Game;
+Keywords=clip;replay;record;screen;game;capture;
+StartupNotify=true
+StartupWMClass=openclips
+Actions=save-clip;toggle-recording;
+
+[Desktop Action save-clip]
+Name=Save a clip
+Name[es]=Guardar un clip
+Exec=openclips --save-clip
+
+[Desktop Action toggle-recording]
+Name=Start or stop recording
+Name[es]=Iniciar o detener la grabación
+Exec=openclips --toggle-recording

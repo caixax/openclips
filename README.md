@@ -4,7 +4,7 @@
 
 <h1 align="center">OpenClips</h1>
 
-<p align="center">A lightweight, open source game clip recorder for Windows. Keep a rolling buffer of recent gameplay in memory, press a hotkey, and the last N seconds land on your disk as an MP4. That is the whole product.</p>
+<p align="center">A lightweight, open source game clip recorder for Windows and Linux. Keep a rolling buffer of recent gameplay in memory, press a hotkey, and the last N seconds land on your disk as an MP4. That is the whole product.</p>
 
 <p align="center"><a href="#install">Install</a> · <a href="#features">Features</a> · <a href="#building">Building</a> · <a href="#configuration">Configuration</a> · <a href="#architecture">Architecture</a> · <a href="#roadmap">Roadmap</a></p>
 
@@ -17,12 +17,42 @@ OpenClips replaces tools like ShadowPlay, ReLive and Medal with a strict philoso
 
 - No cloud. No account. No telemetry. No ads. Nothing phones home.
 - Everything stays local. A clip is just an MP4 file in a folder you chose.
-- Low overhead. Video is encoded on the GPU (NVENC, Quick Sync, AMF) with a software fallback.
+- Low overhead. Video is encoded on the GPU (NVENC, Quick Sync, AMF, VA-API) with a software fallback.
 - Instant. The app lives in the tray and reacts immediately to a hotkey.
 
 ## Install
 
+### Windows
+
 Download `OpenClips-<version>-setup.exe` and run it. The installer is per user (no administrator prompt), asks for its language (preselecting the Windows one, and the app starts in that language the first time), puts the app under `%LOCALAPPDATA%\Programs\OpenClips` together with the GStreamer runtime it needs, and offers a desktop shortcut and a "launch when Windows starts" option. There is also a portable `OpenClips-<version>-win64.zip`: unzip anywhere and start `openclips.exe`. Uninstalling or deleting the folder leaves your clips, settings and logs where they are.
+
+### Linux
+
+```text
+curl -fsSL https://raw.githubusercontent.com/caixax/openclips/main/install.sh | bash
+```
+
+The script looks at the machine (distribution, desktop, X11 or Wayland, GPU), downloads the package of the latest release for that distribution family, checks it against the release's `SHA256SUMS.txt` and installs it with the system's package manager, which brings GStreamer along. It then adds what depends on the machine: the screen sharing portal of your desktop and the PipeWire plugin on Wayland, the VA-API plugin and driver on Intel and AMD, OpenH264 on Fedora. It ends by listing the encoders it found and says what is missing if there is none. Pass options after `bash -s --`: `--yes` to skip the question, `--version X.Y.Z`, `--dry-run`, `--uninstall`.
+
+| Distribution | Package |
+|---|---|
+| Debian 12+, Ubuntu 22.04+, Mint, Pop!_OS | `openclips_<version>_amd64.deb` |
+| Fedora, openSUSE | `openclips-<version>.x86_64.rpm` |
+| Arch, Manjaro, EndeavourOS, CachyOS | `openclips-<version>-x86_64.pkg.tar.zst` |
+| Anything else | `openclips-<version>-linux-x86_64.tar.gz`, unpacked into `~/.local` |
+
+The packages can also be downloaded from the releases page and installed by hand. GStreamer is never bundled on Linux: hardware encoding only works through the GStreamer your distribution built against its own drivers.
+
+What works where:
+
+| Session | Screen | Keys |
+|---|---|---|
+| X11 (any desktop) | read directly, no dialog | global hotkeys, set in Settings |
+| Wayland on KDE, GNOME, Hyprland, Sway and others with a portal | the desktop's screen sharing dialog, asked once and remembered | bind a key to a command in the desktop's shortcut settings |
+
+Under Wayland no application may grab keys globally, so the running app takes commands instead: `openclips --save-clip`, `openclips --toggle-buffer`, `openclips --toggle-recording`. Bind them in System Settings, Shortcuts (KDE), Settings, Keyboard, Custom Shortcuts (GNOME), or `bindsym` / `bind` in a Sway or Hyprland config. They work on X11 too. The clip saved notice is a desktop notification on Linux. Not on Linux yet: per application audio tracks, game icons and the hook based game capture; the tray icon needs a desktop with a system tray (GNOME needs the AppIndicator extension).
+
+### First clip
 
 Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clips`. `Alt+9` starts or stops the buffer, `Alt+0` starts or stops a full recording. Every key can be changed, and any number of extra keys can be added, in Settings.
 
@@ -71,7 +101,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 
 ## Roadmap
 
-- **Linux.** The capture backend is a trait with one Windows implementation today. A Linux backend (PipeWire through the desktop ScreenCast portal, VAAPI or NVENC encode, PulseAudio or PipeWire audio) slots into `crates/capture` without touching the rest, and the config, library and UI already avoid Windows specific paths.
+- **Linux, the rest of it.** Capture, encoding, the editor and the packages are there. Still to come: frames kept on the GPU from PipeWire into VA-API and NVENC (they cross system memory today), per application audio tracks through PipeWire nodes, keys through the GlobalShortcuts portal where the desktop has it, and icons for native and Proton games.
 - **Auto clips from game events.** Save a clip on its own when you get a kill, a multi kill or an ace. CS2 and Dota 2 expose Game State Integration, League of Legends the Live Client Data API, both official and anti cheat safe; games without an API (Valorant, Fortnite, Apex) need screen recognition of the kill feed on the frames already captured. The rule model (game, event, threshold, seconds before and after) would live in `core` with one event source per game.
 
 ## Building
@@ -89,6 +119,12 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
   Plugins used: `d3d11` (screen capture), `nvcodec`, `qsv`, `amfcodec` and `mediafoundation` (hardware encoders), `x264` (software fallback), `videoparsersbad` (`h264parse`), `isomp4` (MP4 muxing), `app` (`appsink` and `appsrc`), `wasapi2` (audio). Game capture also links the `gstreamer-d3d11-1.0` library (found through pkg-config like the rest). All of them ship with the official installer.
 
 - For the installer: NSIS 3.
+
+### Linux
+
+`sudo bash scripts/linux/setup-wsl.sh` installs the GStreamer development files, what Slint links against, the packaging tools and a Rust toolchain on Arch, Debian and Ubuntu, Fedora and openSUSE (it is named after WSL because that is where the release builds run, but it does the same on a real install). Then `PKG_CONFIG=pkg-config cargo build --release`: the variable matters because `.cargo/config.toml` carries defaults for the Windows GStreamer install that only apply to unset variables.
+
+From a Windows checkout, `wsl -d <distro> -- bash /mnt/<drive>/.../scripts/linux/dev.sh <cargo arguments>` mirrors the working tree into the distro's own filesystem and runs cargo there (building on `/mnt` works but is many times slower). `scripts/linux/build.sh` builds the release binary and the distro's package into `dist/`, and `scripts/release.ps1` runs it in one WSL distro per family as part of a release. `scripts/linux/portal-test.sh <command>` runs a command inside a throwaway Wayland session (headless sway, PipeWire, the wlroots portal), which is how the portal capture is exercised on a machine without a Linux desktop.
 
 ### Build and run
 
@@ -271,6 +307,8 @@ elease.bat -Patch` (or `-Minor`, `-Major`, `-V 0.3.0`) runs the tests, builds, t
 With Discord running, OpenClips shows "Clipping <game>" (with "Replay buffer on" or "Recording" underneath and a running timer) as your Discord activity, the way Medal does. It is on by default and can be switched off under Settings, Discord, where the game name can also be hidden. It uses the OpenClips application registered on Discord, so it works out of the box; an own Application ID from <https://discord.com/developers/applications> can be pasted into the same section to show a different name or artwork (upload `crates/app/assets/discord-logo.png`, or your own image, as the App Icon and again under Rich Presence, Art Assets with the name `logo`). Presence runs on its own thread and reconnects quietly when Discord starts later.
 
 ## Architecture
+
+Every backend is GStreamer; only the ends of the pipelines differ by platform. `crates/capture/src/gst` holds what is shared: the capture lifecycle, the encoder tail, the audio tracks, the clip and recording muxers, the trimmer, the prober and the player. A platform module implements one trait, `Platform`, for what differs: the video head up to the encoder, the source element of an audio device, monitors, processes, icons, encoder candidates. `windows` does it with `d3d11screencapturesrc`, the game capture hook and `wasapi2src`; `linux` with `pipewiresrc` behind the ScreenCast portal on Wayland, `ximagesrc` on X11 (`OPENCLIPS_CAPTURE=x11|portal` overrides the choice), `pulsesrc` for sound (PipeWire speaks the same protocol), XRandR for monitors and `/proc` for processes, where a Wine or Proton process is named after its Windows executable so the games database recognises it.
 
 The code is a Cargo workspace with three crates and a strict dependency direction: `app` depends on `core` and `capture`, `capture` depends on `core`, and `core` depends on nothing platform specific.
 
