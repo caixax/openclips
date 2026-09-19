@@ -1,42 +1,113 @@
-//! The video head on X11:
+//! The video head. Two sources, picked from the session:
 //!
 //! ```text
-//! ximagesrc -> capsfilter(fps) -> videorate -> capsfilter(grid)
-//!   -> [videoscale] -> videoconvert -> capsfilter(square pixels)
+//! Wayland: pipewiresrc (portal ScreenCast) -.
+//! X11:     ximagesrc ----------------------+-> capsfilter(fps) -> videorate
+//!   -> capsfilter(grid) -> [videoscale] -> videoconvert -> capsfilter(square pixels)
 //! ```
 //!
 //! `ximagesrc` reads the root window, so it sees whatever the X server
 //! composites: every window on an X11 session. Under Wayland the root window
-//! of XWayland only holds X clients, which is why a Wayland session needs the
-//! portal source instead.
+//! of XWayland only holds X clients, so a Wayland session goes through the
+//! ScreenCast portal, which works the same on every desktop that has one.
+//! `OPENCLIPS_CAPTURE=x11` or `=portal` overrides the choice.
 
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
-use openclips_core::capture::CaptureSettings;
+use openclips_core::capture::{CaptureSettings, MonitorInfo};
 use openclips_core::config::DisplaySelection;
 use tracing::{info, warn};
 
-use super::monitors;
+use super::{monitors, portal};
 use crate::error::CaptureError;
 use crate::gst::{VideoHead, make, props};
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(8);
 
-pub fn build_head(settings: &CaptureSettings) -> Result<VideoHead, CaptureError> {
+/// Which source a session calls for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Portal,
+    X11,
+}
+
+/// The source for this session. A Wayland session is one that says so, or
+/// one with a Wayland socket that does not claim to be X11.
+fn preferred_source() -> Source {
+    match std::env::var("OPENCLIPS_CAPTURE").as_deref() {
+        Ok("x11") => return Source::X11,
+        Ok("portal") => return Source::Portal,
+        _ => {}
+    }
+    let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let wayland =
+        session == "wayland" || (session != "x11" && std::env::var_os("WAYLAND_DISPLAY").is_some());
+    if wayland { Source::Portal } else { Source::X11 }
+}
+
+/// A source element, what it captures (for the log) and what has to stay
+/// alive while it runs.
+type SourcePart = (gst::Element, String, Option<Box<dyn std::any::Any + Send>>);
+
+pub fn build_head(
+    settings: &CaptureSettings,
+    cancel: &AtomicBool,
+) -> Result<VideoHead, CaptureError> {
     if settings.game_capture_pid.is_some() {
         return Err(CaptureError::GameCapture(
             "game capture through a hook only exists on Windows".to_owned(),
         ));
     }
+    let fps = settings.fps.max(1) as i32;
+    let source = preferred_source();
+    info!("screen source for this session: {source:?}");
+    if source == Source::Portal {
+        match portal::open(settings.show_cursor, cancel) {
+            Ok(cast) => return finish_head(portal_source(cast, fps)?, settings, fps, None),
+            Err(portal::Failure::Refused(err)) => return Err(err),
+            // No portal at all (a bare window manager, WSLg): the X server,
+            // if there is one, is the only thing left to read.
+            Err(portal::Failure::Unavailable(reason)) => {
+                warn!("the ScreenCast portal is unavailable ({reason}), trying X11");
+            }
+        }
+    }
+    let (src, description, target) = x11_source(settings)?;
+    finish_head((src, description, None), settings, fps, target)
+}
+
+/// `pipewiresrc` on the node of the cast. The cast rides along as the
+/// keepalive: its descriptor is the connection the element uses.
+fn portal_source(cast: portal::Cast, fps: i32) -> Result<SourcePart, CaptureError> {
+    let src = make("pipewiresrc")?;
+    src.set_property("fd", cast.remote_fd());
+    src.set_property("path", cast.node_id.to_string());
+    props::set_bool(&src, "do-timestamp", true);
+    // Compositors only send a frame when the picture changes. Without this
+    // a still desktop produces nothing: no first frame, and a replay buffer
+    // that stops growing. The source repeats its last frame instead.
+    if !props::set_number(&src, "keepalive-time", i64::from((1000 / fps).max(1))) {
+        warn!("this pipewiresrc cannot repeat frames; a still screen will stall the capture");
+    }
+    props::set_bool(&src, "always-copy", true);
+    let description = match cast.size {
+        Some((width, height)) => format!("the shared screen ({width}x{height}, PipeWire)"),
+        None => "the shared screen (PipeWire)".to_owned(),
+    };
+    Ok((src, description, Some(Box::new(cast))))
+}
+
+fn x11_source(
+    settings: &CaptureSettings,
+) -> Result<(gst::Element, String, Option<MonitorInfo>), CaptureError> {
     if std::env::var_os("DISPLAY").is_none() {
         return Err(CaptureError::PipelineBuild(
-            "no X11 display to capture (DISPLAY is not set)".to_owned(),
+            "there is no screen to capture: no ScreenCast portal and no X11 display".to_owned(),
         ));
     }
-    let fps = settings.fps.max(1) as i32;
-
     let src = make("ximagesrc")?;
     // Damage tracking sends partial updates, which saves nothing here (the
     // encoder wants whole frames) and stalls when nothing moves.
@@ -63,14 +134,23 @@ pub fn build_head(settings: &CaptureSettings) -> Result<VideoHead, CaptureError>
             src.set_property("starty", monitor.y.max(0) as u32);
             src.set_property("endx", (monitor.x.max(0) as u32 + width).saturating_sub(1));
             src.set_property("endy", (monitor.y.max(0) as u32 + height).saturating_sub(1));
-            format!("{} ({}x{})", monitor.name, width, height)
+            format!("{} ({}x{}, X11)", monitor.name, width, height)
         }
         None => {
             warn!("no monitor layout from the X server, capturing the whole screen");
             "the whole X11 screen".to_owned()
         }
     };
+    Ok((src, description, target))
+}
 
+/// Everything after the source, the same for both.
+fn finish_head(
+    (src, description, keepalive): SourcePart,
+    settings: &CaptureSettings,
+    fps: i32,
+    target: Option<MonitorInfo>,
+) -> Result<VideoHead, CaptureError> {
     let rate_filter = make("capsfilter")?;
     rate_filter.set_property(
         "caps",
@@ -116,7 +196,7 @@ pub fn build_head(settings: &CaptureSettings) -> Result<VideoHead, CaptureError>
     Ok(VideoHead {
         elements,
         context: None,
-        keepalive: None,
+        keepalive,
         first_frame_timeout: FIRST_FRAME_TIMEOUT,
         description,
     })

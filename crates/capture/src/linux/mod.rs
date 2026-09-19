@@ -1,10 +1,12 @@
-//! The Linux side of the GStreamer backend: the screen through `ximagesrc`
-//! on X11, sound through the PulseAudio protocol (which PipeWire speaks
+//! The Linux side of the GStreamer backend: the screen through the
+//! ScreenCast portal and PipeWire on Wayland and through `ximagesrc` on X11,
+//! sound through the PulseAudio protocol (which PipeWire speaks
 //! too), monitors through XRandR and processes through `/proc`. Everything
 //! after the encoder is shared (see `crate::gst`).
 
 mod audio;
 mod monitors;
+mod portal;
 mod processes;
 mod video;
 
@@ -45,8 +47,8 @@ impl IconExtractor for NoIcons {
 impl Platform for Native {
     const NAME: &'static str = "Linux (GStreamer)";
 
-    // The screen source is checked when a capture starts, because which one
-    // is needed depends on the session (X11 or Wayland).
+    // The screen source (`pipewiresrc` or `ximagesrc`) is checked when a
+    // capture starts, because which one is needed depends on the session.
     const REQUIRED_ELEMENTS: &'static [&'static str] = &["videoconvert", "videoscale", "pulsesrc"];
 
     // All of them take system memory for now; the GPU paths (DMABuf into
@@ -119,9 +121,9 @@ impl Platform for Native {
         settings: &CaptureSettings,
         _encoder: EncoderSpec,
         _sink: Arc<dyn FrameSink>,
-        _cancel: &AtomicBool,
+        cancel: &AtomicBool,
     ) -> Result<VideoHead, CaptureError> {
-        video::build_head(settings)
+        video::build_head(settings, cancel)
     }
 
     /// Scales before converting, so the colour conversion runs on the small
