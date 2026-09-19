@@ -203,7 +203,7 @@ fn run(
 
     // The producer competes with the game for the processor; the same
     // scheduling class as the streaming threads keeps its pace.
-    super::pipeline::raise_streaming_thread();
+    super::video::raise_streaming_thread();
 
     let period = Duration::from_nanos(frame_interval_ns);
     let mut frames: u64 = 0;

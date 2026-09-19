@@ -22,8 +22,8 @@ use openclips_core::trim::{TrimMode, TrimRange};
 
 use super::audio;
 use super::encoders::{self, EncoderTuning};
-use super::pipeline::running_time;
 use super::recording::Mp4Session;
+use super::running_time;
 use crate::backend::{RecordingSession, TrimJob};
 use crate::error::CaptureError;
 

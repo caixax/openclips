@@ -5,16 +5,20 @@
 //! platform neutral [`CaptureBackend`] trait and the shared types from
 //! `openclips-core`.
 //!
-//! A future Linux backend (PipeWire through the desktop portal, VAAPI
-//! encode) is expected to be a sibling of the `windows` module and nothing
-//! else.
+//! Every backend is GStreamer. `gst` holds what they share (the capture
+//! lifecycle, encoding, muxing, trimming, playback); a platform module
+//! supplies the screen and audio sources and the operating system services.
 
 mod backend;
 mod error;
 pub mod platform;
 
 #[cfg(windows)]
+mod gst;
+#[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+use windows as native;
 
 pub use backend::{
     CaptureBackend, ClipWriter, FrameSink, IconExtractor, MediaInfo, MediaTools, Player,
@@ -27,7 +31,7 @@ pub use error::CaptureError;
 pub fn create_backend() -> Result<Box<dyn CaptureBackend>, CaptureError> {
     #[cfg(windows)]
     {
-        Ok(Box::new(windows::WindowsBackend::new()?))
+        Ok(Box::new(gst::GstBackend::new()?))
     }
     #[cfg(not(windows))]
     {

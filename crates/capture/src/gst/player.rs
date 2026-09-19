@@ -3,8 +3,8 @@
 //! `audiomixer` to the default output, so a clip with separate desktop,
 //! microphone and application tracks is heard as a whole and any track can
 //! be silenced on its own. Frames are scaled to at most [`MAX_FRAME_WIDTH`]
-//! and converted to RGBA on the GPU, then read back once, so the processor
-//! never touches a full size picture.
+//! and converted to RGBA by the platform's chain (on the GPU where there is
+//! one), so the UI never touches a full size picture.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,8 +17,8 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use tracing::{info, warn};
 
-use super::encoders;
 use super::media::file_uri;
+use super::{Native, Platform, encoders, make};
 use crate::backend::{Player, PlayerSink};
 use crate::error::CaptureError;
 
@@ -70,12 +70,6 @@ impl AudioMix {
             volume.set_property("volume", self.level);
         }
     }
-}
-
-fn make(name: &str) -> Result<gst::Element, CaptureError> {
-    gst::ElementFactory::make(name)
-        .build()
-        .map_err(|_| CaptureError::MissingElement(name.to_owned()))
 }
 
 impl GstPlayer {
@@ -236,23 +230,10 @@ fn attach_track(pipeline: &gst::Pipeline, mix: &mut AudioMix, pad: &gst::Pad) ->
     Some(())
 }
 
-/// `d3d11upload -> d3d11convert -> capsfilter -> d3d11download -> appsink`.
-/// The decoder is the D3D11 one when the hardware has it, so the picture
-/// stays on the GPU for the scale and the colour conversion and only the
-/// small RGBA result comes back; a software decoder's frames are uploaded
-/// first and take the same path.
+/// The platform's conversion chain (decoded frames in, small RGBA in system
+/// memory out) followed by the `appsink` that hands frames to the UI.
 fn build_video_sink(sink: Arc<dyn PlayerSink>) -> Result<gst::Element, CaptureError> {
-    let upload = make("d3d11upload")?;
-    let convert = make("d3d11convert")?;
-    let caps = gst::Caps::builder("video/x-raw")
-        .features(["memory:D3D11Memory"])
-        .field("format", "RGBA")
-        .field("width", gst::IntRange::new(16, MAX_FRAME_WIDTH))
-        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-        .build();
-    let filter = make("capsfilter")?;
-    filter.set_property("caps", &caps);
-    let download = make("d3d11download")?;
+    let mut chain = Native::player_video_chain(MAX_FRAME_WIDTH)?;
     let appsink = gst_app::AppSink::builder()
         .sync(true)
         .max_buffers(2)
@@ -280,14 +261,15 @@ fn build_video_sink(sink: Arc<dyn PlayerSink>) -> Result<gst::Element, CaptureEr
     );
 
     let bin = gst::Bin::with_name("openclips-video-sink");
-    let appsink_element: gst::Element = appsink.upcast();
-    bin.add_many([&upload, &convert, &filter, &download, &appsink_element])
+    chain.push(appsink.upcast());
+    let refs: Vec<&gst::Element> = chain.iter().collect();
+    bin.add_many(&refs)
         .map_err(|e| CaptureError::Playback(e.to_string()))?;
-    gst::Element::link_many([&upload, &convert, &filter, &download, &appsink_element])
-        .map_err(|e| CaptureError::Playback(e.to_string()))?;
-    let target = upload
-        .static_pad("sink")
-        .ok_or_else(|| CaptureError::Playback("d3d11upload has no sink pad".to_owned()))?;
+    gst::Element::link_many(&refs).map_err(|e| CaptureError::Playback(e.to_string()))?;
+    let target = chain
+        .first()
+        .and_then(|first| first.static_pad("sink"))
+        .ok_or_else(|| CaptureError::Playback("the video chain has no sink pad".to_owned()))?;
     let ghost =
         gst::GhostPad::with_target(&target).map_err(|e| CaptureError::Playback(e.to_string()))?;
     bin.add_pad(&ghost)

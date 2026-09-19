@@ -6,62 +6,31 @@
 //! deliver a first frame before a start counts as successful, and the caller
 //! moves on to the next encoder when it does not.
 //!
-//! Media Foundation elements must never run before NVENC in the same
-//! process: once an MF encoder has been loaded, NVENC session creation fails
-//! with NV_ENC_ERR_INVALID_VERSION. That is why `mfh264enc` sits behind every
-//! vendor encoder and why the audio branch avoids `mfaacenc`.
+//! The candidates and their order come from the platform
+//! ([`Platform::ENCODERS`]); how each kind is tuned is the same everywhere.
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use openclips_core::capture::{EncoderInfo, EncoderKind};
 use tracing::{debug, info};
 
-use super::props;
+use super::{Native, Platform, props};
 
-/// Candidate encoders in order of preference. `d3d11_input` marks encoders
-/// that accept frames on the GPU, which avoids a readback for every frame.
+/// A candidate encoder. `gpu_input` marks encoders that accept frames in
+/// the GPU memory the platform's video head produces, which avoids a
+/// readback for every frame.
 #[derive(Debug, Clone, Copy)]
 pub struct EncoderSpec {
     pub kind: EncoderKind,
     pub element: &'static str,
-    pub d3d11_input: bool,
+    pub gpu_input: bool,
 }
 
-const CANDIDATES: &[EncoderSpec] = &[
-    EncoderSpec {
-        kind: EncoderKind::Nvenc,
-        element: "nvd3d11h264enc",
-        d3d11_input: true,
-    },
-    EncoderSpec {
-        kind: EncoderKind::Nvenc,
-        element: "nvh264enc",
-        d3d11_input: false,
-    },
-    EncoderSpec {
-        kind: EncoderKind::QuickSync,
-        element: "qsvh264enc",
-        d3d11_input: true,
-    },
-    EncoderSpec {
-        kind: EncoderKind::Amf,
-        element: "amfh264enc",
-        d3d11_input: true,
-    },
-    EncoderSpec {
-        kind: EncoderKind::MediaFoundation,
-        element: "mfh264enc",
-        d3d11_input: false,
-    },
-    EncoderSpec {
-        kind: EncoderKind::Software,
-        element: "x264enc",
-        d3d11_input: false,
-    },
-];
-
 pub fn spec_for(element: &str) -> Option<EncoderSpec> {
-    CANDIDATES.iter().copied().find(|c| c.element == element)
+    Native::ENCODERS
+        .iter()
+        .copied()
+        .find(|c| c.element == element)
 }
 
 /// Lists the registered candidates, one per kind, best first. The hardware
@@ -69,7 +38,7 @@ pub fn spec_for(element: &str) -> Option<EncoderSpec> {
 /// are present, so registration is a meaningful first filter.
 pub fn discover() -> Vec<EncoderInfo> {
     let mut found: Vec<EncoderInfo> = Vec::new();
-    for candidate in CANDIDATES {
+    for candidate in Native::ENCODERS {
         if found.iter().any(|e| e.kind == candidate.kind) {
             continue;
         }
