@@ -3,6 +3,7 @@
 //! frames. Windows lets a process ask for a higher GPU scheduling class;
 //! the higher classes need administrator rights, so this is best effort.
 
+#[cfg(windows)]
 use tracing::info;
 
 #[cfg(windows)]

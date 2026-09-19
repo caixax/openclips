@@ -1,7 +1,10 @@
-//! The on-screen notice shown when a clip is saved. One small frameless
-//! window is created at startup, parked hidden between clips and placed at
-//! the bottom right of the game's screen each time, without taking the
-//! focus away from the game.
+//! The on-screen notice shown when a clip is saved. On Windows one small
+//! frameless window is created at startup, parked hidden between clips and
+//! placed at the bottom right of the game's screen each time, without taking
+//! the focus away from the game. On Linux a window cannot place itself or
+//! stay above a fullscreen game under Wayland, so the notice is a desktop
+//! notification, which every desktop shows in its own way without touching
+//! the focus.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -35,7 +38,7 @@ impl Toast {
     /// extended styles and would drop ours, so later shows and hides go
     /// straight to the OS (see `platform::set_visible`).
     pub fn prepare(&self) -> Result<(), AppError> {
-        if self.window.borrow().is_some() {
+        if cfg!(target_os = "linux") || self.window.borrow().is_some() {
             return Ok(());
         }
         let window = ToastWindow::new()?;
@@ -54,6 +57,19 @@ impl Toast {
     /// Shows `message` under `heading` for a few seconds. Showing again
     /// while visible replaces the text and restarts the timer.
     pub fn show(&self, heading: &str, message: &str) -> Result<(), AppError> {
+        #[cfg(target_os = "linux")]
+        {
+            notify(heading, message);
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.show_window(heading, message)
+        }
+    }
+
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    fn show_window(&self, heading: &str, message: &str) -> Result<(), AppError> {
         self.prepare()?;
         let window = self.window.borrow();
         let Some(window) = window.as_ref() else {
@@ -78,6 +94,34 @@ impl Toast {
     }
 }
 
+/// Sends the notice through `org.freedesktop.Notifications` from a worker
+/// thread: the D-Bus round trip must not hold up the UI thread, and a
+/// session without a notification server only costs a log line.
+#[cfg(target_os = "linux")]
+fn notify(heading: &str, message: &str) {
+    let (heading, message) = (heading.to_owned(), message.to_owned());
+    let spawned = std::thread::Builder::new()
+        .name("notify".to_owned())
+        .spawn(move || {
+            let sent = notify_rust::Notification::new()
+                .appname("OpenClips")
+                .summary(&heading)
+                .body(&message)
+                .icon("openclips")
+                .timeout(notify_rust::Timeout::Milliseconds(
+                    VISIBLE_FOR.as_millis() as u32
+                ))
+                .show();
+            if let Err(err) = sent {
+                warn!("the desktop notification could not be shown: {err}");
+            }
+        });
+    if let Err(err) = spawned {
+        warn!("could not spawn the notification thread: {err}");
+    }
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn finish_setup(weak: slint::Weak<ToastWindow>, attempts_left: u32) {
     slint::Timer::single_shot(SETUP_DELAY, move || {
         let Some(window) = weak.upgrade() else {
@@ -213,8 +257,13 @@ mod platform {
     }
 }
 
+// Unused on Linux, where the notice is a desktop notification; kept for the
+// platforms that are neither.
 #[cfg(not(windows))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 mod platform {
+    use slint::ComponentHandle;
+
     use super::ToastWindow;
 
     pub type Handle = ();

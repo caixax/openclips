@@ -8,7 +8,7 @@ import { AppInfo, AudioSourceRow, GameProfileRow, HotkeyRow } from "types.slint"
 export global SettingsState {
     in-out property <[string]> display-names: [I18n.tr("Primary display")];
     in-out property <int> display-index: 0;
-    in-out property <[string]> encoder-names: [I18n.tr("Automatic (best available)"), "NVIDIA NVENC", "Intel Quick Sync", "AMD AMF", I18n.tr("Software (x264)")];
+    in-out property <[string]> encoder-names: [I18n.tr("Automatic (best available)"), "NVIDIA NVENC", "Intel Quick Sync", "AMD AMF", I18n.tr("Software (x264)"), "VA-API (Intel, AMD)"];
     in-out property <int> encoder-index: 0;
     in-out property <int> quality-index: 1;
     in-out property <int> fps: 60;

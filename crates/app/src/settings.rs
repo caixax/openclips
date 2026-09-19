@@ -11,12 +11,14 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 use crate::ui::{AudioSourceRow, GameProfileRow, HotkeyRow, SettingsState};
 use slint::Image;
 
-const ENCODERS: [EncoderPreference; 5] = [
+/// In the order of `SettingsState.encoder-names`.
+const ENCODERS: [EncoderPreference; 6] = [
     EncoderPreference::Auto,
     EncoderPreference::Nvenc,
     EncoderPreference::QuickSync,
     EncoderPreference::Amf,
     EncoderPreference::Software,
+    EncoderPreference::Vaapi,
 ];
 
 const UNIT_SECONDS: i32 = 0;

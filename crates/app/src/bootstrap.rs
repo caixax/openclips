@@ -1,8 +1,14 @@
 //! Finds the GStreamer runtime before any of its DLLs are needed.
 //!
-//! The GStreamer imports are delay loaded (see `build.rs`), so the process
-//! starts without them on `PATH`. This module points the loader at the
-//! installed runtime and produces a readable error when it is missing.
+//! On Windows the GStreamer imports are delay loaded (see `build.rs`), so
+//! the process starts without them on `PATH`. This module points the loader
+//! at the installed runtime and produces a readable error when it is
+//! missing. Elsewhere GStreamer is a system library the dynamic linker has
+//! already resolved, and there is nothing to find.
+
+// The search below is Windows only, but it is plain path logic and its
+// tests run everywhere.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +62,17 @@ pub fn find_runtime(exe_dir: Option<&Path>) -> Option<Runtime> {
 
 /// Registers the runtime folder with the DLL loader and returns it. Only
 /// the search path changes; nothing is loaded yet.
+#[cfg(not(windows))]
+pub fn locate() -> Result<Runtime, String> {
+    Ok(Runtime {
+        root: PathBuf::from("/usr"),
+        bin: PathBuf::from("/usr/bin"),
+    })
+}
+
+/// Registers the runtime folder with the DLL loader and returns it. Only
+/// the search path changes; nothing is loaded yet.
+#[cfg(windows)]
 pub fn locate() -> Result<Runtime, String> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -92,11 +109,6 @@ fn register_dll_directory(bin: &Path) -> Result<(), String> {
         // SAFETY: called on the main thread before any other thread exists.
         unsafe { std::env::set_var("PATH", joined) };
     }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn register_dll_directory(_bin: &Path) -> Result<(), String> {
     Ok(())
 }
 

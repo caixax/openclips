@@ -78,18 +78,75 @@ mod imp {
     }
 }
 
+/// A Unix socket in the runtime directory. Whoever binds it is the instance;
+/// a later launch connects, writes `show` and leaves. A socket file left by
+/// a copy that died is detected by the refused connection and replaced.
 #[cfg(not(windows))]
 mod imp {
-    pub struct Guard;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use tracing::warn;
+
+    pub struct Guard {
+        show: Arc<AtomicBool>,
+        path: PathBuf,
+    }
 
     impl Guard {
         pub fn take_show_request(&self) -> bool {
-            false
+            self.show.swap(false, Ordering::SeqCst)
         }
     }
 
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn socket_path() -> PathBuf {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(std::env::temp_dir)
+            .join("openclips.sock")
+    }
+
     pub fn claim() -> Option<Guard> {
-        Some(Guard)
+        let path = socket_path();
+        if let Ok(mut running) = UnixStream::connect(&path) {
+            let _ = running.write_all(b"show\n");
+            return None;
+        }
+        let _ = std::fs::remove_file(&path);
+        let show = Arc::new(AtomicBool::new(false));
+        match UnixListener::bind(&path) {
+            Ok(listener) => {
+                let flag = show.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("instance".to_owned())
+                    .spawn(move || {
+                        for stream in listener.incoming().flatten() {
+                            let mut line = String::new();
+                            if BufReader::new(stream).read_line(&mut line).is_ok()
+                                && line.trim() == "show"
+                            {
+                                flag.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    });
+                if let Err(err) = spawned {
+                    warn!("could not watch for a second launch: {err}");
+                }
+            }
+            // Not being able to guard is no reason not to run.
+            Err(err) => warn!("could not claim {}: {err}", path.display()),
+        }
+        Some(Guard { show, path })
     }
 }
 

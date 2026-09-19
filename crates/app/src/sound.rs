@@ -26,7 +26,37 @@ pub fn play_clip_saved() {
     }
 }
 
+/// No sound API is linked in: the WAV is written to the runtime directory
+/// once and handed to whichever command line player the sound server of the
+/// session ships (PipeWire, PulseAudio, ALSA, in that order).
 #[cfg(not(windows))]
 pub fn play_clip_saved() {
-    warn!("clip sound is not available on this platform");
+    use std::process::{Command, Stdio};
+
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let file = dir.join("openclips-clip-saved.wav");
+    if !file.is_file()
+        && let Err(err) = std::fs::write(&file, CLIP_SAVED)
+    {
+        warn!("the clip sound could not be written: {err}");
+        return;
+    }
+    for player in ["pw-play", "paplay", "aplay"] {
+        let spawned = Command::new(player)
+            .arg(&file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = spawned {
+            // Reaped off the UI thread so no zombie is left behind.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return;
+        }
+    }
+    warn!("the clip sound could not be played: no pw-play, paplay or aplay");
 }

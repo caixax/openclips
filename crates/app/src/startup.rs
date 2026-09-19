@@ -1,6 +1,7 @@
-//! "Launch on startup" through the per user Run key, plus the values the
-//! installer leaves for the app. Nothing is written to the Run key unless
-//! the user turns the option on, and turning it off removes the value again.
+//! "Launch on startup": the per user Run key on Windows, an XDG autostart
+//! entry (`~/.config/autostart/openclips.desktop`) elsewhere, plus the values
+//! the Windows installer leaves for the app. Nothing is written unless the
+//! user turns the option on, and turning it off removes it again.
 
 use openclips_core::config::Language;
 
@@ -8,6 +9,7 @@ use openclips_core::config::Language;
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const APP_KEY: &str = r"Software\OpenClips";
+#[cfg(windows)]
 const VALUE_NAME: &str = "OpenClips";
 
 /// Makes the registry match the setting. `minimized` decides whether the
@@ -27,8 +29,19 @@ pub fn apply(enabled: bool, minimized: bool) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = (enabled, minimized);
-        Err("launch on startup is only implemented on Windows".to_owned())
+        let path = autostart::entry_path().ok_or("no configuration folder was found")?;
+        if !enabled {
+            return match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(err.to_string()),
+            };
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, autostart::entry(&exe, minimized)).map_err(|e| e.to_string())
     }
 }
 
@@ -52,7 +65,52 @@ pub fn is_enabled() -> bool {
     }
     #[cfg(not(windows))]
     {
-        false
+        autostart::entry_path().is_some_and(|p| p.is_file())
+    }
+}
+
+#[cfg(not(windows))]
+mod autostart {
+    use std::path::{Path, PathBuf};
+
+    /// `$XDG_CONFIG_HOME/autostart/openclips.desktop`, with the usual
+    /// fallback to `~/.config`.
+    pub fn entry_path() -> Option<PathBuf> {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        Some(config.join("autostart").join("openclips.desktop"))
+    }
+
+    /// The desktop entry. `Exec` quoting follows the Desktop Entry
+    /// Specification: the path goes in double quotes with `"`, `` ` ``, `$`
+    /// and `\` escaped.
+    pub fn entry(exe: &Path, minimized: bool) -> String {
+        let mut quoted = String::new();
+        for c in exe.to_string_lossy().chars() {
+            if matches!(c, '"' | '`' | '$' | '\\') {
+                quoted.push('\\');
+            }
+            quoted.push(c);
+        }
+        let flag = if minimized { " --minimized" } else { "" };
+        format!(
+            "[Desktop Entry]\nType=Application\nName=OpenClips\nComment=Replay buffer and clips\n\
+             Exec=\"{quoted}\"{flag}\nIcon=openclips\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn entry_quotes_the_executable_and_passes_the_flag() {
+            let text = entry(Path::new("/opt/my apps/open$clips"), true);
+            assert!(text.contains("Exec=\"/opt/my apps/open\\$clips\" --minimized\n"));
+            assert!(text.starts_with("[Desktop Entry]\n"));
+        }
     }
 }
 
