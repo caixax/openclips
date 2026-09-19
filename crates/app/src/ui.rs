@@ -729,11 +729,18 @@ fn apply_update_event(window: &MainWindow, event: UpdateEvent) {
         UpdateEvent::Available { version, url } => {
             window.set_update_ready(false);
             window.set_update_page(url.into());
-            window.set_update_message(
-                crate::i18n::tr("OpenClips {version} is available. This portable copy does not update itself; download it from the release page.")
-                    .replace("{version}", &version)
-                    .into(),
-            );
+            // On Linux the package manager owns the files, so the app never
+            // replaces itself there.
+            let text = if cfg!(target_os = "linux") {
+                crate::i18n::tr(
+                    "OpenClips {version} is available. Run the install script again, or install the package from the release page.",
+                )
+            } else {
+                crate::i18n::tr(
+                    "OpenClips {version} is available. This portable copy does not update itself; download it from the release page.",
+                )
+            };
+            window.set_update_message(text.replace("{version}", &version).into());
         }
         UpdateEvent::UpToDate { .. } | UpdateEvent::Failed(_) => {}
     }

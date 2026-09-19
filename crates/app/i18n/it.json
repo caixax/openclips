@@ -169,6 +169,7 @@
   "Open the clips folder": "Apri la cartella delle clip",
   "OpenClips keeps the last moments of your game in memory. Press one key and those seconds become a clip on your disk. Nothing is uploaded and there is no account: the clips are yours.": "OpenClips tiene in memoria gli ultimi momenti della tua partita. Premi un tasto e quei secondi diventano un clip sul tuo disco. Niente viene caricato e non serve un account: i clip sono tuoi.",
   "OpenClips knows a few thousand games by their executable. It can wait for one of them, or record the display all the time.": "OpenClips conosce qualche migliaio di giochi dal loro eseguibile. Può aspettarne uno o registrare lo schermo tutto il tempo.",
+  "OpenClips {version} is available. Run the install script again, or install the package from the release page.": "OpenClips {version} è disponibile. Esegui di nuovo lo script di installazione o installa il pacchetto dalla pagina della release.",
   "OpenClips {version} is available. This portable copy does not update itself; download it from the release page.": "OpenClips {version} è disponibile. Questa copia portatile non si aggiorna da sola; scaricala dalla pagina della release.",
   "OpenClips {version} is being downloaded in the background.": "OpenClips {version} è in download in background.",
   "OpenClips {version} is ready. It installs on the next start, or now if you prefer.": "OpenClips {version} è pronto. Si installa al prossimo avvio, o adesso se preferisci.",
