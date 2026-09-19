@@ -24,6 +24,8 @@ pub enum EncoderKind {
     Nvenc,
     QuickSync,
     Amf,
+    /// VA-API, the hardware encoder interface of Intel and AMD GPUs on Linux.
+    Vaapi,
     MediaFoundation,
     Software,
 }
@@ -34,6 +36,7 @@ impl EncoderKind {
             EncoderKind::Nvenc => "NVIDIA NVENC",
             EncoderKind::QuickSync => "Intel Quick Sync",
             EncoderKind::Amf => "AMD AMF",
+            EncoderKind::Vaapi => "VA-API",
             EncoderKind::MediaFoundation => "Media Foundation",
             EncoderKind::Software => "Software (x264)",
         }
@@ -64,6 +67,7 @@ pub fn choose_encoder(
         EncoderPreference::Nvenc => Some(EncoderKind::Nvenc),
         EncoderPreference::QuickSync => Some(EncoderKind::QuickSync),
         EncoderPreference::Amf => Some(EncoderKind::Amf),
+        EncoderPreference::Vaapi => Some(EncoderKind::Vaapi),
         EncoderPreference::Software => Some(EncoderKind::Software),
     };
     if let Some(kind) = wanted
@@ -71,10 +75,11 @@ pub fn choose_encoder(
     {
         return Some(found);
     }
-    const ORDER: [EncoderKind; 5] = [
+    const ORDER: [EncoderKind; 6] = [
         EncoderKind::Nvenc,
         EncoderKind::QuickSync,
         EncoderKind::Amf,
+        EncoderKind::Vaapi,
         EncoderKind::MediaFoundation,
         EncoderKind::Software,
     ];

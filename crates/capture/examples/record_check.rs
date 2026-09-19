@@ -81,6 +81,7 @@ impl FrameSink for Sink {
 }
 
 /// User plus kernel time of this process, in milliseconds.
+#[cfg(windows)]
 fn cpu_time_ms() -> u64 {
     use windows::Win32::Foundation::FILETIME;
     use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
@@ -104,6 +105,28 @@ fn cpu_time_ms() -> u64 {
     }
     let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
     (ticks(kernel) + ticks(user)) / 10_000
+}
+
+/// User plus kernel time of this process, in milliseconds, from
+/// `/proc/self/stat` (fields 14 and 15, in clock ticks of 10 ms).
+#[cfg(not(windows))]
+fn cpu_time_ms() -> u64 {
+    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
+        return 0;
+    };
+    // The process name (field 2) may hold spaces; count from its closing
+    // parenthesis.
+    let Some(rest) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+        return 0;
+    };
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let ticks = |index: usize| {
+        fields
+            .get(index)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    (ticks(11) + ticks(12)) * 10
 }
 
 fn main() {

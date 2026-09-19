@@ -23,6 +23,9 @@ use super::{Native, Platform, props};
 pub struct EncoderSpec {
     pub kind: EncoderKind,
     pub element: &'static str,
+    // Read by the video heads that have a GPU path; the Linux head does not
+    // have one yet.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub gpu_input: bool,
 }
 
@@ -124,6 +127,17 @@ pub fn configure(enc: &gst::Element, spec: EncoderSpec, tuning: &EncoderTuning) 
             props::set_nick(enc, "rate-control", "cbr");
             props::set_nick(enc, "usage", "ultra-low-latency");
         }
+        EncoderKind::Vaapi => {
+            // `vah264enc` and the older `vaapih264enc` spell the same
+            // settings differently; each ignores the other's names.
+            props::set_number(enc, "bitrate", bitrate);
+            props::set_number(enc, "key-int-max", gop);
+            props::set_number(enc, "keyframe-period", gop);
+            props::set_number(enc, "b-frames", 0);
+            props::set_number(enc, "max-bframes", 0);
+            props::set_nick(enc, "rate-control", "cbr");
+            props::set_number(enc, "target-usage", 4);
+        }
         EncoderKind::MediaFoundation => {
             props::set_number(enc, "bitrate", bitrate);
             props::set_number(enc, "max-bitrate", bitrate);
@@ -131,6 +145,15 @@ pub fn configure(enc: &gst::Element, spec: EncoderSpec, tuning: &EncoderTuning) 
             props::set_number(enc, "bframes", 0);
             props::set_nick(enc, "rc-mode", "cbr");
             props::set_bool(enc, "low-latency", true);
+        }
+        // OpenH264 (what Fedora ships instead of x264) counts in bits.
+        EncoderKind::Software if spec.element == "openh264enc" => {
+            props::set_number(enc, "bitrate", bitrate * 1000);
+            props::set_number(enc, "max-bitrate", bitrate * 1000);
+            props::set_number(enc, "gop-size", gop);
+            props::set_nick(enc, "rate-control", "bitrate");
+            props::set_nick(enc, "usage-type", "screen");
+            props::set_nick(enc, "complexity", "low");
         }
         EncoderKind::Software => {
             props::set_number(enc, "bitrate", bitrate);

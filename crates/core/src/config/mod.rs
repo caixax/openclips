@@ -237,6 +237,8 @@ pub enum EncoderPreference {
     QuickSync,
     Amf,
     Software,
+    /// VA-API (Intel and AMD GPUs on Linux).
+    Vaapi,
 }
 
 /// Which Windows screen capture API drives the source. Windows Graphics

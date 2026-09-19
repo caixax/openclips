@@ -1,6 +1,8 @@
 # Defaults for locating the GStreamer MSVC development files on Windows.
 # Each entry only applies when the variable is not already set, so an
 # installation in a different location just needs the variables exported.
+# On Linux export PKG_CONFIG=pkg-config (scripts/linux/dev.sh and build.sh do)
+# or these Windows paths are what the build scripts try to run.
 [env]
 PKG_CONFIG_PATH = { value = "C:/Program Files/gstreamer/1.0/msvc_x86_64/lib/pkgconfig", force = false }
 PKG_CONFIG = { value = "C:/Program Files/gstreamer/1.0/msvc_x86_64/bin/pkg-config.exe", force = false }

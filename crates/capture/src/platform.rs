@@ -19,7 +19,7 @@ impl Platform {
 
     /// Whether a capture backend exists for this platform in the current build.
     pub const fn has_backend(self) -> bool {
-        matches!(self, Platform::Windows)
+        matches!(self, Platform::Windows | Platform::Linux)
     }
 
     pub const fn name(self) -> &'static str {
