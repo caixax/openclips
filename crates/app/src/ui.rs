@@ -1245,10 +1245,17 @@ fn start_status_timer(shared: &SharedRef) {
             *ticks = ticks.wrapping_add(1);
             *ticks
         };
-        if s.instance.take_show_request() {
-            info!("another launch asked for the window");
-            if let Err(err) = show_window(&s) {
-                error!("could not show the main window: {err}");
+        for command in s.instance.take_commands() {
+            info!("another launch sent {command:?}");
+            match command {
+                crate::instance::Command::Show => {
+                    if let Err(err) = show_window(&s) {
+                        error!("could not show the main window: {err}");
+                    }
+                }
+                crate::instance::Command::SaveClip => save_clip(&s, None),
+                crate::instance::Command::ToggleBuffer => toggle_buffer(&s),
+                crate::instance::Command::ToggleRecording => toggle_recording(&s),
             }
         }
         // In the tray nothing shows the status, so half the ticks are skipped.

@@ -78,10 +78,17 @@ fn run() -> Result<(), AppError> {
         "starting OpenClips"
     );
 
-    let Some(instance) = instance::claim() else {
-        info!("OpenClips is already running; asked it to show its window");
+    let request = instance::Command::from_args(std::env::args());
+    let Some(instance) = instance::claim(request) else {
+        info!("OpenClips is already running; sent it {request:?}");
         return Ok(());
     };
+    // A command is for the running copy. Without one there is nothing to
+    // act on, and starting the whole app from a key binding would surprise.
+    if request != instance::Command::Show {
+        eprintln!("openclips: not running, nothing to send {request:?} to");
+        return Ok(());
+    }
 
     gpu::raise_gpu_priority();
     let first_run = !paths.config_file().exists();
