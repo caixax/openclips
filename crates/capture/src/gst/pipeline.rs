@@ -324,6 +324,9 @@ fn build(
     gst::Element::link_many(&refs).map_err(|e| CaptureError::PipelineBuild(e.to_string()))?;
     // A head whose frames live on a GPU device of its own publishes it, so
     // every element picks that device up and none copies frames to another.
+    if head.system_clock {
+        pipeline.use_clock(Some(&gst::SystemClock::obtain()));
+    }
     if let Some(context) = &head.context {
         pipeline.set_context(context);
     }

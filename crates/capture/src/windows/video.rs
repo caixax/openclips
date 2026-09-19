@@ -87,6 +87,7 @@ pub fn build_head(
     Ok(VideoHead {
         elements,
         context,
+        system_clock: false,
         keepalive: game_source.map(|source| Box::new(source) as Box<dyn std::any::Any + Send>),
         first_frame_timeout,
         description: match (&settings.game_capture_pid, &settings.display) {

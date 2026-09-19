@@ -93,6 +93,12 @@ impl Platform for Native {
 
     const AAC_ENCODERS: &'static [&'static str] = &["fdkaacenc", "avenc_aac", "voaacenc", "faac"];
 
+    // A PipeWire screen cast can renegotiate its buffers right after the
+    // first frame (the wlroots portal does), and a `pipewiresrc` caught by
+    // that in its first moments stays without a format. The next start gets
+    // through, and with the stored restore token it asks the user nothing.
+    const RETRY_SOFTWARE_STARTS: bool = true;
+
     fn new() -> Result<Self, CaptureError> {
         Ok(Self {
             processes: Arc::new(processes::ProcWatcher),

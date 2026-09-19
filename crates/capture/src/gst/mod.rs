@@ -52,6 +52,10 @@ pub struct VideoHead {
     /// Kept alive as long as the pipeline runs (a hook session, a portal
     /// session), dropped after it stops.
     pub keepalive: Option<Box<dyn Any + Send>>,
+    /// Run the pipeline on the system clock instead of letting it pick one
+    /// from its elements. For sources that offer a clock of their own which
+    /// the rest of the pipeline cannot follow.
+    pub system_clock: bool,
     /// How long the first encoded frame may take.
     pub first_frame_timeout: Duration,
     /// What is being captured, for the log.
@@ -68,6 +72,11 @@ pub trait Platform: Clone + Send + Sync + Sized + 'static {
     const ENCODERS: &'static [EncoderSpec];
     /// AAC encoders to look for, best first.
     const AAC_ENCODERS: &'static [&'static str];
+    /// Whether a start that produced no frame is tried again with a
+    /// software encoder too. Hardware encoders always are (they refuse a
+    /// session now and then); this is for platforms whose screen source can
+    /// lose its first negotiation.
+    const RETRY_SOFTWARE_STARTS: bool = false;
 
     /// Called after GStreamer is initialized.
     fn new() -> Result<Self, CaptureError>;
@@ -163,7 +172,7 @@ fn start_pipeline(
     sink: Arc<dyn FrameSink>,
     cancel: &AtomicBool,
 ) -> Result<pipeline::CapturePipeline, CaptureError> {
-    let attempts = if settings.encoder.kind.is_hardware() {
+    let attempts = if settings.encoder.kind.is_hardware() || Native::RETRY_SOFTWARE_STARTS {
         START_ATTEMPTS
     } else {
         1

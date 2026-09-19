@@ -26,6 +26,9 @@ use crate::error::CaptureError;
 use crate::gst::{VideoHead, make, props};
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(8);
+/// A cast that is going to deliver does so at once; one that lost its
+/// negotiation never will, and the sooner the retry the better.
+const PORTAL_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Which source a session calls for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,13 +154,21 @@ fn finish_head(
     fps: i32,
     target: Option<MonitorInfo>,
 ) -> Result<VideoHead, CaptureError> {
-    let rate_filter = make("capsfilter")?;
-    rate_filter.set_property(
-        "caps",
-        gst::Caps::builder("video/x-raw")
-            .field("framerate", gst::Fraction::new(fps, 1))
-            .build(),
-    );
+    // `ximagesrc` grabs at the rate the caps ask for, so it is told. A
+    // PipeWire node runs at the compositor's pace and announces a variable
+    // rate; pinning one there leaves the two sides without a common format.
+    let paced_by_caps = keepalive.is_none();
+    let mut elements = vec![src];
+    if paced_by_caps {
+        let rate_filter = make("capsfilter")?;
+        rate_filter.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("framerate", gst::Fraction::new(fps, 1))
+                .build(),
+        );
+        elements.push(rate_filter);
+    }
     // The source paces itself, but its timestamps drift under load;
     // videorate re-stamps frames onto an exact grid so the ring buffer math
     // and the container frame rate stay honest.
@@ -171,7 +182,8 @@ fn finish_head(
             .build(),
     );
 
-    let mut elements = vec![src, rate_filter, rate, grid_filter];
+    elements.push(rate);
+    elements.push(grid_filter);
     // Square pixels always, so the encoded parameters never change with the
     // display mode (see the Windows head for what that breaks).
     let mut out_caps =
@@ -196,8 +208,16 @@ fn finish_head(
     Ok(VideoHead {
         elements,
         context: None,
+        // `pipewiresrc` offers the PipeWire graph clock. A pipeline that
+        // picks it never sees time advance the way its live audio sources
+        // and the frame rate grid expect, and no frame comes out.
+        system_clock: !paced_by_caps,
         keepalive,
-        first_frame_timeout: FIRST_FRAME_TIMEOUT,
+        first_frame_timeout: if !paced_by_caps {
+            PORTAL_FIRST_FRAME_TIMEOUT
+        } else {
+            FIRST_FRAME_TIMEOUT
+        },
         description,
     })
 }

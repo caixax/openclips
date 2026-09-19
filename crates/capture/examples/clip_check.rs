@@ -48,7 +48,16 @@ fn main() {
     let _log = openclips_core::logging::init(&std::env::temp_dir().join("openclips-clip-check"))
         .expect("logging");
     let mut backend = openclips_capture::create_backend().expect("backend");
-    let encoder = choose_encoder(backend.available_encoders(), EncoderPreference::Auto)
+    // OPENCLIPS_ENCODER=software|nvenc|vaapi|quicksync|amf picks the encoder.
+    let preference = match std::env::var("OPENCLIPS_ENCODER").as_deref() {
+        Ok("software") => EncoderPreference::Software,
+        Ok("nvenc") => EncoderPreference::Nvenc,
+        Ok("vaapi") => EncoderPreference::Vaapi,
+        Ok("quicksync") => EncoderPreference::QuickSync,
+        Ok("amf") => EncoderPreference::Amf,
+        _ => EncoderPreference::Auto,
+    };
+    let encoder = choose_encoder(backend.available_encoders(), preference)
         .cloned()
         .expect("encoder");
     // OPENCLIPS_STRETCH=1 scales to the desktop size like the app's option.
