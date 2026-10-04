@@ -76,10 +76,34 @@ impl CapturePipeline {
             });
         }
         if let Err(err) = pipeline.set_state(gst::State::Playing) {
+            // The state change only says that some element refused. Which
+            // one, and why, is in the error it posted on the bus: an audio
+            // device that is unplugged must be reported as that device, so
+            // the caller goes on without it instead of trying every encoder
+            // against the same missing microphone.
+            let cause = bus
+                .pop_filtered(&[gst::MessageType::Error])
+                .and_then(|msg| match msg.view() {
+                    gst::MessageView::Error(error) => {
+                        Some(classify_error(error, &built.source_names))
+                    }
+                    _ => None,
+                });
             let _ = pipeline.set_state(gst::State::Null);
-            return Err(CaptureError::EncoderStart {
-                encoder: settings.encoder.element.clone(),
-                reason: format!("could not start capture: {err}"),
+            return Err(match cause {
+                Some(source @ CaptureError::AudioSource { .. }) => source,
+                Some(CaptureError::Pipeline { message, element }) => CaptureError::EncoderStart {
+                    encoder: settings.encoder.element.clone(),
+                    reason: if element.is_empty() {
+                        message
+                    } else {
+                        format!("{message} [{element}]")
+                    },
+                },
+                _ => CaptureError::EncoderStart {
+                    encoder: settings.encoder.element.clone(),
+                    reason: format!("could not start capture: {err}"),
+                },
             });
         }
         if let Err(err) = wait_for_first_frame(

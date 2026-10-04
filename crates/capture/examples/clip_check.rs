@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use openclips_capture::{CaptureError, FrameSink};
-use openclips_core::capture::{CaptureSettings, choose_encoder};
-use openclips_core::config::{AudioConfig, CaptureConfig, EncoderPreference};
+use openclips_core::capture::{AudioDeviceKind, CaptureSettings, choose_encoder};
+use openclips_core::config::{AudioConfig, AudioSourceConfig, CaptureConfig, EncoderPreference};
 use openclips_core::media::{AudioPacket, AudioTrackInfo, EncodedFrame, StreamInfo};
 use openclips_core::replay::{ReplayBuffer, ReplayLimits};
 
@@ -65,7 +65,19 @@ fn main() {
         stretch: std::env::var("OPENCLIPS_STRETCH").as_deref() == Ok("1"),
         ..CaptureConfig::default()
     };
-    let settings = CaptureSettings::from_config(&capture, &AudioConfig::default(), encoder);
+    // OPENCLIPS_MIC=<device id> adds a microphone with that id next to the
+    // default output; an id that does not exist shows how a start copes with
+    // a device that is not there.
+    let mut audio = AudioConfig::default();
+    if let Ok(id) = std::env::var("OPENCLIPS_MIC") {
+        audio.sources.push(AudioSourceConfig {
+            id,
+            name: "Test microphone".to_owned(),
+            kind: AudioDeviceKind::Input,
+            ..AudioSourceConfig::default()
+        });
+    }
+    let settings = CaptureSettings::from_config(&capture, &audio, encoder);
     let ring = Arc::new(Ring(Mutex::new(ReplayBuffer::new(ReplayLimits {
         max_duration: Duration::from_secs(30),
         max_bytes: 512 * 1024 * 1024,
