@@ -47,6 +47,13 @@ pub enum RecordingState {
     Failed(String),
 }
 
+/// First wait before a failed capture is started again; doubles up to
+/// [`RETRY_MAX`] while it keeps failing.
+const RETRY_FIRST: Duration = Duration::from_secs(5);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+/// How often the device list is read while an audio device is left out.
+const AUDIO_RECHECK: Duration = Duration::from_secs(15);
+
 #[derive(Debug, Clone)]
 pub struct EngineStatus {
     pub buffer: BufferState,
@@ -265,8 +272,19 @@ pub struct Engine {
     /// A config change that needs a pipeline rebuild, deferred while a
     /// recording is active.
     restart_pending: bool,
-    /// Audio sources that failed this session, skipped until settings change.
+    /// Audio sources that failed this session, skipped until they come back
+    /// (see `recover`) or the settings change.
     unavailable_audio: HashSet<String>,
+    /// The audio devices present at the last look, by source key. A device
+    /// that failed and was absent then, and is present now, was plugged in
+    /// or switched on; one that was present all along fails for another
+    /// reason and is left alone.
+    audio_present: HashSet<String>,
+    audio_checked: Instant,
+    /// When a capture that failed is started again on its own, and the wait
+    /// after the attempt that follows.
+    retry_at: Option<Instant>,
+    retry_delay: Duration,
     /// Process ids of the application audio sources the capture started with.
     app_audio: Vec<(String, u32)>,
     notice: Option<String>,
@@ -323,6 +341,10 @@ impl Engine {
             finishing: false,
             restart_pending: false,
             unavailable_audio: HashSet::new(),
+            audio_present: HashSet::new(),
+            audio_checked: Instant::now(),
+            retry_at: None,
+            retry_delay: RETRY_FIRST,
             app_audio: Vec::new(),
             notice: None,
             last_failure: None,
@@ -847,7 +869,7 @@ impl Engine {
             }
             Err(CaptureError::AudioSource { key, message }) => {
                 warn!("audio source {key} failed to start: {message}");
-                self.unavailable_audio.insert(key.clone());
+                self.set_audio_unavailable(&key);
                 self.add_notice(
                     crate::i18n::tr("Audio device {name} is unavailable, capturing without it.")
                         .replace("{name}", &self.audio_source_name(&key)),
@@ -984,7 +1006,7 @@ impl Engine {
                 // `CaptureSink::rotate_recording`), so the recording goes on
                 // in a new one instead of stalling.
                 CaptureError::AudioSource { key, .. } => {
-                    self.unavailable_audio.insert(key.clone());
+                    self.set_audio_unavailable(&key);
                     let name = self.audio_source_name(&key);
                     match self.restart_capture() {
                         Ok(()) => self.add_notice(
@@ -1024,6 +1046,7 @@ impl Engine {
                 other => self.last_failure = Some(other.to_string()),
             }
         }
+        self.recover();
         let starting_for_buffer =
             self.starting.is_some() && (self.buffer_wanted || self.auto_buffer);
         let buffer_state = match (&self.last_failure, self.is_buffering()) {
@@ -1074,6 +1097,87 @@ impl Engine {
 
     fn wants_capture(&self) -> bool {
         self.buffer_wanted || self.auto_buffer || self.recording_wanted
+    }
+
+    /// Source keys of the audio devices that exist right now.
+    fn present_audio(&self) -> HashSet<String> {
+        self.backend
+            .list_audio_devices()
+            .unwrap_or_default()
+            .iter()
+            .map(|d| audio_source_key(d.kind, &d.id))
+            .collect()
+    }
+
+    /// Leaves `key` out of the capture and remembers which devices existed
+    /// at that moment, so its return can be told apart later.
+    fn set_audio_unavailable(&mut self, key: &str) {
+        self.unavailable_audio.insert(key.to_owned());
+        self.audio_present = self.present_audio();
+        self.audio_checked = Instant::now();
+    }
+
+    /// Keeps the capture alive without the user: a start that failed is
+    /// tried again after a growing wait, and an audio device that was
+    /// missing is taken back in when it shows up. Called with every status
+    /// poll.
+    fn recover(&mut self) {
+        let now = Instant::now();
+        if self.is_capturing() {
+            self.retry_at = None;
+            self.retry_delay = RETRY_FIRST;
+        } else if self.last_failure.is_some() && self.wants_capture() && self.starting.is_none() {
+            match self.retry_at {
+                None => self.retry_at = Some(now + self.retry_delay),
+                Some(at) if now >= at => {
+                    info!(
+                        "trying the capture again after a failure (next wait {} s)",
+                        (self.retry_delay * 2).min(RETRY_MAX).as_secs()
+                    );
+                    self.retry_at = None;
+                    self.retry_delay = (self.retry_delay * 2).min(RETRY_MAX);
+                    self.stop_backend();
+                    if let Err(err) = self.start_capture() {
+                        self.last_failure = Some(err.to_string());
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+
+        if self.unavailable_audio.is_empty()
+            || now.duration_since(self.audio_checked) < AUDIO_RECHECK
+        {
+            return;
+        }
+        self.audio_checked = now;
+        let present = self.present_audio();
+        let back: Vec<String> = self
+            .unavailable_audio
+            .iter()
+            .filter(|key| present.contains(*key) && !self.audio_present.contains(*key))
+            .cloned()
+            .collect();
+        self.audio_present = present;
+        // Taking a device back in means a restart, which a running
+        // recording must not pay for; it is picked up after it.
+        if back.is_empty() || self.recording_wanted {
+            return;
+        }
+        let names: Vec<String> = back.iter().map(|k| self.audio_source_name(k)).collect();
+        info!("audio device(s) back: {}", names.join(", "));
+        for key in &back {
+            self.unavailable_audio.remove(key);
+        }
+        if self.is_engaged() {
+            match self.restart_capture() {
+                Ok(()) => self.add_notice(
+                    crate::i18n::tr("Audio device {name} is back, capturing it again.")
+                        .replace("{name}", &names.join(", ")),
+                ),
+                Err(err) => self.last_failure = Some(err.to_string()),
+            }
+        }
     }
 
     /// At most three automatic restarts per minute; after that the failure

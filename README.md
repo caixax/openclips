@@ -75,7 +75,7 @@ Press `Alt+8` while you play and the last moments land in `Videos\OpenClips\Clip
 
 - Any combination of playback devices (WASAPI loopback) and microphones, added one by one from a list, each with volume and mute, mixed into one track or split into desktop and microphone tracks.
 - Per application tracks: give Discord, a browser or a music player its own track through the Windows process loopback API, then mute it in the editor.
-- A device that fails mid capture is dropped and capture goes on without it.
+- A device that is missing when capture starts, or fails while it runs, is dropped and capture goes on without it; when it is plugged back in it is picked up again on its own. A capture that cannot start at all is retried with a growing wait, and a notice says so when it stops.
 
 **Clips and editing**
 

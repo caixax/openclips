@@ -131,6 +131,8 @@ struct Shared {
     autosave: RefCell<Option<slint::Timer>>,
     /// Clears the "saved" notice again.
     message_timer: RefCell<Option<slint::Timer>>,
+    /// The capture failure was announced; reset when capture runs again.
+    capture_failure_shown: Cell<bool>,
     /// The audio devices as last enumerated, and the ones the add row of
     /// the audio section offers right now, in the order it shows them.
     audio_devices: RefCell<Vec<AudioDeviceInfo>>,
@@ -241,6 +243,7 @@ pub fn build(ctx: Context) -> Result<App, AppError> {
         timer: RefCell::new(None),
         autosave: RefCell::new(None),
         message_timer: RefCell::new(None),
+        capture_failure_shown: Cell::new(false),
         audio_devices: RefCell::new(Vec::new()),
         audio_candidates: RefCell::new(Vec::new()),
         startup_warning: RefCell::new(ctx.startup_warning),
@@ -1423,6 +1426,21 @@ fn refresh_status(shared: &SharedRef) {
     if let RecordingState::Failed(reason) = &status.recording {
         shared.texts.borrow_mut().recording_message =
             crate::i18n::tr("Recording failed: {error}").replace("{error}", reason);
+    }
+    // A capture that dies while the window is in the tray would otherwise
+    // go unnoticed until the next clip is missing. Said once per failure;
+    // the engine keeps retrying on its own.
+    match &status.buffer {
+        BufferState::Failed(_) if !shared.capture_failure_shown.replace(true) => {
+            if let Err(err) = shared.toast.show(
+                &crate::i18n::tr("Capture stopped"),
+                &crate::i18n::tr("OpenClips keeps trying to start it again."),
+            ) {
+                warn!("could not show the capture failure notice: {err}");
+            }
+        }
+        BufferState::Running => shared.capture_failure_shown.set(false),
+        _ => {}
     }
 
     shared.with_window(|window| {
